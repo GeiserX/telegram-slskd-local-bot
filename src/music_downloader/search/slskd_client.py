@@ -163,18 +163,22 @@ class SlskdClient:
             logger.exception(f"slskd search failed for: {query}")
             return []
 
-    def parse_results(self, responses: list[dict]) -> list[SearchResult]:
+    # Audio formats accepted in fallback mode (lossless + common lossy)
+    AUDIO_EXTENSIONS = {"flac", "alac", "wav", "aiff", "mp3", "aac", "m4a", "ogg", "opus", "wma"}
+
+    def parse_results(self, responses: list[dict], flac_only: bool = True) -> list[SearchResult]:
         """
         Parse raw slskd search responses into SearchResult objects.
-        Only includes FLAC files.
 
         Args:
             responses: Raw responses from slskd search API.
+            flac_only: If True, only include FLAC files. If False, include all audio formats.
 
         Returns:
-            List of SearchResult objects (FLAC only).
+            List of SearchResult objects.
         """
         results = []
+        allowed = {"flac"} if flac_only else self.AUDIO_EXTENSIONS
 
         for response in responses:
             username = response.get("username", "")
@@ -186,7 +190,7 @@ class SlskdClient:
                 filename = f.get("filename", "")
                 extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
-                if extension != "flac":
+                if extension not in allowed:
                     continue
 
                 results.append(
@@ -204,7 +208,8 @@ class SlskdClient:
                     )
                 )
 
-        logger.info(f"Parsed {len(results)} FLAC results from {len(responses)} responses")
+        label = "FLAC" if flac_only else "audio"
+        logger.info(f"Parsed {len(results)} {label} results from {len(responses)} responses")
         return results
 
     def enqueue_download(self, result: SearchResult) -> bool:

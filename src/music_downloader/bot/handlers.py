@@ -35,6 +35,7 @@ class PendingSearch:
     track: TrackInfo
     results: list[SearchResult] = field(default_factory=list)
     message_id: int | None = None
+    is_fallback: bool = False  # True when showing mixed-format results (not FLAC-only)
 
 
 class MusicBot:
@@ -177,18 +178,36 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Step 2: Search slskd (use resolved metadata + "flac" for better results)
+        # Step 2: Search slskd — two-phase: FLAC first, then all formats as fallback
         search_query = f"{track.artist} {track.title} flac"
         raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
-        all_results = self.slskd.parse_results(raw_responses)
+        all_results = self.slskd.parse_results(raw_responses, flac_only=True)
 
         # Step 3: Score and rank
         ranked = self.scorer.score_results(all_results, track)
+        is_fallback = False
+
+        # Fallback: if no FLAC results, search without "flac" and include all audio formats
+        if not ranked:
+            await searching_msg.edit_text(
+                f"🎵 *{track.artist} - {track.title}*\n"
+                f"Duration: {track.duration_display}\n\n"
+                f"No FLAC found. Searching all formats...",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+            fallback_query = f"{track.artist} {track.title}"
+            fallback_responses = await self.slskd.search(
+                fallback_query, timeout_secs=self.config.search_timeout_secs
+            )
+            fallback_results = self.slskd.parse_results(fallback_responses, flac_only=False)
+            ranked = self.scorer.score_results(fallback_results, track)
+            is_fallback = True
 
         if not ranked:
             await searching_msg.edit_text(
                 f"🎵 *{track.artist} - {track.title}* ({track.duration_display})\n\n"
-                f"No FLAC results found on Soulseek matching this track.\n"
+                f"No results found on Soulseek matching this track.\n"
                 f"Try a different search query.",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -200,14 +219,15 @@ class MusicBot:
             track=track,
             results=ranked,
             message_id=searching_msg.message_id,
+            is_fallback=is_fallback,
         )
 
-        # Step 4: Auto-mode or show results
-        if self.auto_mode:
+        # Step 4: Auto-mode (only for FLAC results) or show results
+        if self.auto_mode and not is_fallback:
             await self._do_download(update, context, chat_id, 0, searching_msg)
         else:
-            # Show top results
-            results_text = self._format_results(track, ranked[: self.config.max_results])
+            # Show top results (always manual selection for fallback)
+            results_text = self._format_results(track, ranked[: self.config.max_results], is_fallback)
             await searching_msg.edit_text(
                 results_text,
                 parse_mode=ParseMode.MARKDOWN,
@@ -341,19 +361,31 @@ class MusicBot:
         self._add_history(track, result, "success")
         logger.info(f"Successfully processed: {target_name}")
 
-    def _format_results(self, track: TrackInfo, results: list[SearchResult]) -> str:
+    def _format_results(
+        self, track: TrackInfo, results: list[SearchResult], is_fallback: bool = False
+    ) -> str:
         """Format search results for display in Telegram."""
-        lines = [
-            f"🎵 *{track.artist} - {track.title}*",
-            f"Duration: {track.duration_display} | Album: {track.album}\n",
-            f"Found {len(results)} matches:\n",
-        ]
+        if is_fallback:
+            header = [
+                f"🎵 *{track.artist} - {track.title}*",
+                f"Duration: {track.duration_display} | Album: {track.album}\n",
+                f"⚠️ No FLAC found — showing all formats ({len(results)} matches):\n",
+            ]
+        else:
+            header = [
+                f"🎵 *{track.artist} - {track.title}*",
+                f"Duration: {track.duration_display} | Album: {track.album}\n",
+                f"Found {len(results)} FLAC matches:\n",
+            ]
 
+        lines = header
         for i, r in enumerate(results):
             slot_icon = "🟢" if r.has_free_slot else "🔴"
+            fmt = r.extension.upper()
+            format_tag = f" [{fmt}]" if is_fallback else ""
             lines.append(
                 f"*#{i + 1}* {slot_icon} `{r.duration_display}` | "
-                f"{r.quality_display} | {r.size_mb:.0f}MB\n"
+                f"{r.quality_display}{format_tag} | {r.size_mb:.0f}MB\n"
                 f"    _{r.basename}_"
             )
 
