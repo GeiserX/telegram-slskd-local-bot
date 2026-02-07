@@ -1,0 +1,57 @@
+services:
+  music-downloader:
+    build: .
+    container_name: music_downloader
+    restart: unless-stopped
+
+    environment:
+      # Telegram Bot (required)
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
+
+      # Spotify API (required)
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
+
+      # slskd Connection (required)
+      SLSKD_HOST: ${SLSKD_HOST}
+      SLSKD_API_KEY: ${SLSKD_API_KEY}
+
+      # Paths (container paths)
+      DOWNLOAD_DIR: /downloads
+      OUTPUT_DIR: /music
+
+      # Download Behavior
+      AUTO_MODE: ${AUTO_MODE:-false}
+      MAX_RESULTS: ${MAX_RESULTS:-5}
+      DURATION_TOLERANCE_SECS: ${DURATION_TOLERANCE_SECS:-5}
+      SEARCH_TIMEOUT_SECS: ${SEARCH_TIMEOUT_SECS:-30}
+      DOWNLOAD_TIMEOUT_SECS: ${DOWNLOAD_TIMEOUT_SECS:-600}
+      EXCLUDE_KEYWORDS: ${EXCLUDE_KEYWORDS:-live,remix,acoustic,karaoke,instrumental,cover,demo,radio edit,tribute,remaster}
+      FILENAME_TEMPLATE: ${FILENAME_TEMPLATE:-{artist} - {title}}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+    volumes:
+      # Mount slskd completed downloads directory (read-only)
+      # Adjust the host path to match your slskd downloads location
+      - ${SLSKD_DOWNLOAD_PATH:-./downloads}:/downloads:ro
+
+      # Mount output music directory (read-write)
+      # This is where renamed FLAC files are placed
+      - ${MUSIC_OUTPUT_PATH:-./music}:/music
+
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"

@@ -1,0 +1,8 @@
+python-telegram-bot>=22.6
+spotipy>=2.25.2
+slskd-api>=0.1.5
+mutagen>=1.47.0
+fastapi>=0.115.0
+uvicorn>=0.32.0
+python-dotenv>=1.0.1
+httpx>=0.28.0

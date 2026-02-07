@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Environment files
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+ENV/
+env/
+
+# Documentation
+README.md
+*.md
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local dev data
+music/
+output/
