@@ -250,7 +250,7 @@ class MusicBot:
 
         try:
             # Get multiple Spotify results
-            tracks = self.spotify.search_multiple(query, limit=5)
+            tracks = self.spotify.search_multiple(query, limit=10)
             if not tracks:
                 await _safe_edit(
                     searching_msg,
@@ -259,11 +259,12 @@ class MusicBot:
                 )
                 return
 
-            # Deduplicate by artist + title (same song from different albums)
+            # Deduplicate by artist + title + album (preserves remastered,
+            # live, deluxe editions while collapsing true duplicates).
             seen = set()
             unique_tracks = []
             for t in tracks:
-                key = (t.artist.lower(), t.title.lower())
+                key = (t.artist.lower(), t.title.lower(), t.album.lower())
                 if key not in seen:
                     seen.add(key)
                     unique_tracks.append(t)
@@ -493,7 +494,7 @@ class MusicBot:
 
         # Run download in background so user can select more files
         context.application.create_task(
-            self._do_download(context, chat_id, track, result, status_msg),
+            self._do_download(context, chat_id, track, result, status_msg, index),
             update=update,
         )
 
@@ -506,9 +507,12 @@ class MusicBot:
         self._dl_counter += 1
         return str(self._dl_counter)
 
-    async def _do_download(self, context, chat_id: int, track: TrackInfo, result: SearchResult, status_msg):
+    async def _do_download(
+        self, context, chat_id: int, track: TrackInfo, result: SearchResult, status_msg, result_index: int = 0
+    ):
         """Download a file, send it to Telegram for preview, and ask for approval."""
         dl_id = self._next_dl_id()
+        label = f"#{result_index + 1}"
 
         try:
             # Enqueue download in slskd
@@ -556,7 +560,7 @@ class MusicBot:
 
             # Update status message
             await status_msg.edit_text(
-                f"✅ *Downloaded!* Sending preview...\n"
+                f"✅ *{label} Downloaded!* Sending preview...\n"
                 f"`{result.basename}`\n"
                 f"Quality: {result.quality_display} | {result.duration_display}",
                 parse_mode=ParseMode.MARKDOWN,
@@ -569,7 +573,8 @@ class MusicBot:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"⚠️ File too large for Telegram preview ({file_size / (1024 * 1024):.0f}MB > 50MB).\n"
+                        f"⚠️ {label} File too large for Telegram preview "
+                        f"({file_size / (1024 * 1024):.0f}MB > 50MB).\n"
                         f"Save to library?"
                     ),
                     reply_markup=build_approve_keyboard(dl_id),
@@ -584,7 +589,7 @@ class MusicBot:
                         title=track.title,
                         performer=track.artist,
                         duration=track.duration_secs,
-                        caption="Save to library?",
+                        caption=f"{label} Save to library?",
                         reply_markup=build_approve_keyboard(dl_id),
                     )
 
