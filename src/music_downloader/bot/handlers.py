@@ -259,15 +259,36 @@ class MusicBot:
                 )
                 return
 
+            # If the query has "artist - title" form, use the artist portion
+            # to filter out irrelevant Spotify results (Spotify search is loose).
+            query_artist = ""
+            if " - " in query:
+                query_artist = query.split(" - ", 1)[0].strip().lower()
+
             # Deduplicate by artist + title + album (preserves remastered,
             # live, deluxe editions while collapsing true duplicates).
             seen = set()
             unique_tracks = []
             for t in tracks:
+                # Skip results whose artist doesn't match the queried one
+                if query_artist and query_artist not in t.artist.lower():
+                    continue
                 key = (t.artist.lower(), t.title.lower(), t.album.lower())
                 if key not in seen:
                     seen.add(key)
                     unique_tracks.append(t)
+
+            # If artist filter removed everything, fall back to unfiltered dedup
+            if not unique_tracks:
+                seen = set()
+                for t in tracks:
+                    key = (t.artist.lower(), t.title.lower(), t.album.lower())
+                    if key not in seen:
+                        seen.add(key)
+                        unique_tracks.append(t)
+
+            # Cap to 5 displayed results
+            unique_tracks = unique_tracks[:5]
 
             # If only 1 unique track, auto-select and go straight to slskd
             if len(unique_tracks) == 1:
