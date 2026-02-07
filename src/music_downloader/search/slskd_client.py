@@ -81,11 +81,14 @@ class DownloadStatus:
 
     @property
     def is_complete(self) -> bool:
-        return self.state in ("Completed", "Succeeded")
+        # slskd returns comma-separated states like "Completed, Succeeded"
+        state_lower = self.state.lower()
+        return "completed" in state_lower or "succeeded" in state_lower
 
     @property
     def is_failed(self) -> bool:
-        return self.state in ("Errored", "Rejected", "TimedOut", "Cancelled")
+        state_lower = self.state.lower()
+        return any(kw in state_lower for kw in ("errored", "rejected", "timedout", "cancelled"))
 
     @property
     def is_active(self) -> bool:

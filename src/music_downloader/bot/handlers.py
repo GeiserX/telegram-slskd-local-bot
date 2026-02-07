@@ -17,7 +17,11 @@ from telegram.ext import (
     filters,
 )
 
-from music_downloader.bot.keyboards import build_auto_mode_keyboard, build_results_keyboard
+from music_downloader.bot.keyboards import (
+    build_approve_keyboard,
+    build_auto_mode_keyboard,
+    build_results_keyboard,
+)
 from music_downloader.config import Config
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.processor.file_handler import FileProcessor
@@ -26,16 +30,29 @@ from music_downloader.search.slskd_client import SearchResult, SlskdClient
 
 logger = logging.getLogger(__name__)
 
+# Telegram bot API file size limit: 50 MB
+TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024
+
 
 @dataclass
 class PendingSearch:
-    """Holds state for an active search/download session."""
+    """Holds state for an active search session."""
 
     query: str
     track: TrackInfo
     results: list[SearchResult] = field(default_factory=list)
     message_id: int | None = None
-    is_fallback: bool = False  # True when showing mixed-format results (not FLAC-only)
+    is_fallback: bool = False
+
+
+@dataclass
+class PendingDownload:
+    """Tracks a single file download waiting for approval."""
+
+    track: TrackInfo
+    result: SearchResult
+    source_path: str | None = None  # Path in /downloads
+    status_message_id: int | None = None
 
 
 class MusicBot:
@@ -59,13 +76,18 @@ class MusicBot:
         # Per-user pending searches (chat_id -> PendingSearch)
         self.pending: dict[int, PendingSearch] = {}
 
+        # Active downloads keyed by short numeric ID
+        # download_id -> PendingDownload
+        self.downloads: dict[str, PendingDownload] = {}
+        self._dl_counter = 0
+
         # Download history (last N downloads)
         self.history: list[dict] = []
 
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot."""
         if not self.config.telegram_allowed_users:
-            return True  # No restrictions
+            return True
         return user_id in self.config.telegram_allowed_users
 
     async def _check_auth(self, update: Update) -> bool:
@@ -85,7 +107,8 @@ class MusicBot:
             return
 
         await update.message.reply_text(
-            "Send me a song name (e.g., `Nancy Sinatra Bang Bang`) and I'll find and download it in FLAC.\n\n"
+            "Send me a song name (e.g., `Nancy Sinatra Bang Bang`) "
+            "and I'll find and download it in FLAC.\n\n"
             "Commands:\n"
             "/auto — Toggle auto-download mode\n"
             "/status — Show active downloads\n"
@@ -108,23 +131,32 @@ class MusicBot:
         mode_str = "ON" if self.auto_mode else "OFF"
         await update.message.reply_text(
             f"Auto-download mode is currently: *{mode_str}*\n\n"
-            "When ON, the best match is downloaded automatically without asking you to pick.",
+            "When ON, the best FLAC match is downloaded automatically without asking you to pick.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=build_auto_mode_keyboard(self.auto_mode),
         )
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status command — show active searches."""
+        """Handle /status command — show active searches and downloads."""
         if not await self._check_auth(update):
             return
 
-        if not self.pending:
+        lines = []
+
+        if self.pending:
+            lines.append("*Active searches:*\n")
+            for _chat_id, pending in self.pending.items():
+                lines.append(f"• {pending.track.artist} - {pending.track.title}")
+
+        if self.downloads:
+            lines.append("\n*Active downloads:*\n")
+            for dl_id, dl in self.downloads.items():
+                lines.append(f"• {dl.track.artist} - {dl.track.title} ({dl.result.basename})")
+
+        if not lines:
             await update.message.reply_text("No active searches or downloads.")
             return
 
-        lines = ["*Active searches:*\n"]
-        for _chat_id, pending in self.pending.items():
-            lines.append(f"• {pending.track.artist} - {pending.track.title}")
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,7 +171,7 @@ class MusicBot:
         lines = ["*Recent downloads:*\n"]
         for entry in self.history[-10:]:
             status = entry.get("status", "unknown")
-            icon = "✅" if status == "success" else "❌"
+            icon = {"success": "✅", "rejected": "🚫"}.get(status, "❌")
             lines.append(f"{icon} {entry.get('filename', 'unknown')}")
 
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
@@ -160,7 +192,9 @@ class MusicBot:
         chat_id = update.effective_chat.id
 
         # Step 1: Resolve metadata via Spotify
-        searching_msg = await update.message.reply_text(f"🔍 Looking up: `{query}`", parse_mode=ParseMode.MARKDOWN)
+        searching_msg = await update.message.reply_text(
+            f"🔍 Looking up: `{query}`", parse_mode=ParseMode.MARKDOWN
+        )
 
         track = self.spotify.search(query)
         if not track:
@@ -178,7 +212,7 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Step 2: Search slskd — two-phase: FLAC first, then all formats as fallback
+        # Step 2: Search slskd — FLAC first, then all formats as fallback
         search_query = f"{track.artist} {track.title} flac"
         raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
         all_results = self.slskd.parse_results(raw_responses, flac_only=True)
@@ -222,17 +256,13 @@ class MusicBot:
             is_fallback=is_fallback,
         )
 
-        # Step 4: Auto-mode (only for FLAC results) or show results
-        if self.auto_mode and not is_fallback:
-            await self._do_download(update, context, chat_id, 0, searching_msg)
-        else:
-            # Show top results (always manual selection for fallback)
-            results_text = self._format_results(track, ranked[: self.config.max_results], is_fallback)
-            await searching_msg.edit_text(
-                results_text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=build_results_keyboard(ranked, self.config.max_results),
-            )
+        # Step 4: Show results with selection keyboard
+        results_text = self._format_results(track, ranked[: self.config.max_results], is_fallback)
+        await searching_msg.edit_text(
+            results_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_results_keyboard(ranked, self.config.max_results),
+        )
 
     # =========================================================================
     # CALLBACK QUERY HANDLER (button presses)
@@ -259,107 +289,219 @@ class MusicBot:
             )
             return
 
-        # Download selection
+        # Download selection from results
         if data.startswith("dl:"):
-            pending = self.pending.get(chat_id)
-            if not pending:
-                await query.edit_message_text("Search expired. Send a new query.")
-                return
+            await self._handle_download_selection(update, context, chat_id, data)
+            return
 
-            action = data.split(":", 1)[1]
+        # Approve/reject downloaded file
+        if data.startswith("approve:") or data.startswith("reject:"):
+            await self._handle_approval(update, context, chat_id, data)
+            return
 
-            if action == "cancel":
-                del self.pending[chat_id]
-                await query.edit_message_text("Cancelled.")
-                return
-
-            if action == "auto":
-                index = 0
-            else:
-                try:
-                    index = int(action)
-                except ValueError:
-                    return
-
-            await self._do_download(update, context, chat_id, index, query.message)
-
-    # =========================================================================
-    # DOWNLOAD LOGIC
-    # =========================================================================
-
-    async def _do_download(self, update, context, chat_id: int, index: int, message):
-        """Execute the download for the selected result."""
+    async def _handle_download_selection(self, update, context, chat_id: int, data: str):
+        """Handle when user picks a file to download from results."""
+        query = update.callback_query
         pending = self.pending.get(chat_id)
-        if not pending or index >= len(pending.results):
-            await message.edit_text("Invalid selection.")
+        if not pending:
+            await query.edit_message_text("Search expired. Send a new query.")
+            return
+
+        action = data.split(":", 1)[1]
+
+        if action == "cancel":
+            del self.pending[chat_id]
+            await query.edit_message_text("Cancelled.")
+            return
+
+        if action == "auto":
+            index = 0
+        else:
+            try:
+                index = int(action)
+            except ValueError:
+                return
+
+        if index >= len(pending.results):
             return
 
         result = pending.results[index]
         track = pending.track
 
-        await message.edit_text(
-            f"⬇️ *Downloading...*\n\n"
-            f"{track.artist} - {track.title}\n"
-            f"From: `{result.username}`\n"
-            f"File: `{result.basename}`\n"
-            f"Quality: {result.quality_display}",
+        # DON'T edit the results message — send a NEW message for this download
+        # The results keyboard stays active so user can pick more files
+        status_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"⬇️ *Downloading #{index + 1}...*\n"
+                f"{track.artist} - {track.title}\n"
+                f"From: `{result.username}`\n"
+                f"File: `{result.basename}`"
+            ),
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Enqueue download in slskd
-        success = self.slskd.enqueue_download(result)
-        if not success:
-            await message.edit_text(
-                f"❌ Failed to enqueue download from {result.username}.\n"
-                f"The user might be offline. Try another result.",
+        # Run download in background so user can select more files
+        context.application.create_task(
+            self._do_download(context, chat_id, track, result, status_msg),
+            update=update,
+        )
+
+    # =========================================================================
+    # DOWNLOAD + PREVIEW + APPROVAL
+    # =========================================================================
+
+    def _next_dl_id(self) -> str:
+        """Generate a short unique download ID."""
+        self._dl_counter += 1
+        return str(self._dl_counter)
+
+    async def _do_download(self, context, chat_id: int, track: TrackInfo, result: SearchResult, status_msg):
+        """Download a file, send it to Telegram for preview, and ask for approval."""
+        dl_id = self._next_dl_id()
+
+        try:
+            # Enqueue download in slskd
+            success = self.slskd.enqueue_download(result)
+            if not success:
+                await status_msg.edit_text(
+                    f"❌ Failed to enqueue download from `{result.username}`.\n"
+                    f"The user might be offline.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+
+            # Wait for download to complete
+            status = await self.slskd.wait_for_download(
+                username=result.username,
+                filename=result.filename,
+                timeout_secs=self.config.download_timeout_secs,
             )
+
+            if status is None or status.is_failed:
+                state = status.state if status else "Timeout"
+                await status_msg.edit_text(
+                    f"❌ Download failed: {state}\n"
+                    f"File: `{result.basename}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                self._add_history(track, result, "failed")
+                return
+
+            # Find the downloaded file on disk
+            source_path = self.processor.find_downloaded_file(result.username, result.filename)
+            if not source_path:
+                await status_msg.edit_text(
+                    "❌ Downloaded file not found on disk.\nCheck DOWNLOAD_DIR configuration.",
+                )
+                self._add_history(track, result, "file_not_found")
+                return
+
+            # Store as pending download for approval
+            pending_dl = PendingDownload(
+                track=track,
+                result=result,
+                source_path=source_path,
+                status_message_id=status_msg.message_id,
+            )
+            self.downloads[dl_id] = pending_dl
+
+            # Update status message
+            await status_msg.edit_text(
+                f"✅ *Downloaded!* Sending preview...\n"
+                f"`{result.basename}`\n"
+                f"Quality: {result.quality_display} | {result.duration_display}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+            # Send the file to Telegram for preview
+            file_size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
+
+            if file_size > TELEGRAM_FILE_LIMIT:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"⚠️ File too large for Telegram preview ({file_size / (1024*1024):.0f}MB > 50MB).\n"
+                        f"Save to library?"
+                    ),
+                    reply_markup=build_approve_keyboard(dl_id),
+                )
+            else:
+                target_name = self.processor.build_filename(
+                    track.artist, track.title, result.extension
+                )
+                with open(source_path, "rb") as f:
+                    await context.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=f,
+                        filename=target_name,
+                        title=track.title,
+                        performer=track.artist,
+                        duration=track.duration_secs,
+                        caption="Save to library?",
+                        reply_markup=build_approve_keyboard(dl_id),
+                    )
+
+        except Exception:
+            logger.exception(f"Download failed for {result.basename}")
+            await status_msg.edit_text(
+                f"❌ Error downloading `{result.basename}`. Check logs.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+    async def _handle_approval(self, update, context, chat_id: int, data: str):
+        """Handle approve/reject of a downloaded file."""
+        query = update.callback_query
+        action, dl_id = data.split(":", 1)
+
+        pending_dl = self.downloads.pop(dl_id, None)
+        if not pending_dl:
+            await query.edit_message_reply_markup(reply_markup=None)
             return
 
-        # Wait for download to complete
-        status = await self.slskd.wait_for_download(
-            username=result.username,
-            filename=result.filename,
-            timeout_secs=self.config.download_timeout_secs,
-        )
+        track = pending_dl.track
+        result = pending_dl.result
 
-        if status is None or status.is_failed:
-            state = status.state if status else "Timeout"
-            await message.edit_text(f"❌ Download failed: {state}\nTry another result or search again.")
-            self._add_history(track, result, "failed")
-            return
+        if action == "approve":
+            # Copy to output directory with proper naming
+            if pending_dl.source_path:
+                target_path = self.processor.process_file(
+                    pending_dl.source_path, track.artist, track.title
+                )
+                if target_path:
+                    target_name = os.path.basename(target_path)
+                    await self._edit_approval_message(
+                        query, f"✅ Saved: `{target_name}`"
+                    )
+                    self._add_history(track, result, "success")
+                    logger.info(f"Approved and saved: {target_name}")
+                else:
+                    await self._edit_approval_message(query, "❌ Failed to save file. Check logs.")
+                    self._add_history(track, result, "process_failed")
+            else:
+                await self._edit_approval_message(query, "❌ Source file not found.")
+                self._add_history(track, result, "file_not_found")
 
-        # Find the downloaded file on disk
-        source_path = self.processor.find_downloaded_file(result.username, result.filename)
-        if not source_path:
-            await message.edit_text("❌ Downloaded file not found on disk. Check DOWNLOAD_DIR configuration.")
-            self._add_history(track, result, "file_not_found")
-            return
+        elif action == "reject":
+            await self._edit_approval_message(
+                query, f"🚫 Rejected: {track.artist} - {track.title}"
+            )
+            self._add_history(track, result, "rejected")
+            logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
 
-        # Rename and move to output directory
-        target_path = self.processor.process_file(source_path, track.artist, track.title)
-        if not target_path:
-            await message.edit_text("❌ Failed to process file. Check logs.")
-            self._add_history(track, result, "process_failed")
-            return
+    @staticmethod
+    async def _edit_approval_message(query, text: str):
+        """Edit the approval message — works for both audio captions and text messages."""
+        try:
+            # Try editing as audio caption first
+            await query.edit_message_caption(caption=text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            # Fall back to editing as text message (for files > 50MB)
+            await query.edit_message_text(text=text, parse_mode=ParseMode.MARKDOWN)
 
-        # Cleanup the original download
-        self.processor.cleanup_download(source_path)
-
-        # Remove from pending
-        self.pending.pop(chat_id, None)
-
-        # Report success
-        target_name = os.path.basename(target_path) if target_path else f"{track.artist} - {track.title}.flac"
-        await message.edit_text(
-            f"✅ *Downloaded and saved!*\n\n"
-            f"`{target_name}`\n"
-            f"Quality: {result.quality_display}\n"
-            f"Duration: {result.duration_display}",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-
-        self._add_history(track, result, "success")
-        logger.info(f"Successfully processed: {target_name}")
+    # =========================================================================
+    # HELPERS
+    # =========================================================================
 
     def _format_results(
         self, track: TrackInfo, results: list[SearchResult], is_fallback: bool = False
@@ -397,7 +539,7 @@ class MusicBot:
             {
                 "artist": track.artist,
                 "title": track.title,
-                "filename": f"{track.artist} - {track.title}.flac",
+                "filename": f"{track.artist} - {track.title}.{result.extension}",
                 "source_user": result.username,
                 "status": status,
             }

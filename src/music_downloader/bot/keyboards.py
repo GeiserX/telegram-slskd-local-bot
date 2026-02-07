@@ -31,13 +31,13 @@ def build_results_keyboard(results: list[SearchResult], max_results: int = 5) ->
     return InlineKeyboardMarkup(buttons)
 
 
-def build_confirm_keyboard() -> InlineKeyboardMarkup:
-    """Build a simple confirm/cancel keyboard."""
+def build_approve_keyboard(download_id: str) -> InlineKeyboardMarkup:
+    """Build approve/reject keyboard for a downloaded file."""
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Confirm", callback_data="confirm:yes"),
-                InlineKeyboardButton("Cancel", callback_data="confirm:no"),
+                InlineKeyboardButton("✅ Save to library", callback_data=f"approve:{download_id}"),
+                InlineKeyboardButton("🚫 Reject", callback_data=f"reject:{download_id}"),
             ]
         ]
     )
