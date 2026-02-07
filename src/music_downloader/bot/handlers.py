@@ -201,8 +201,7 @@ class MusicBot:
         if similar:
             existing_list = "\n".join(f"• `{f}`" for f in similar[:5])
             await update.message.reply_text(
-                f"⚠️ *Similar files already in library:*\n\n{existing_list}\n\n"
-                f"Continue searching anyway?",
+                f"⚠️ *Similar files already in library:*\n\n{existing_list}\n\nContinue searching anyway?",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=build_duplicate_keyboard(),
             )
@@ -282,9 +281,7 @@ class MusicBot:
             )
 
             fallback_query = f"{track.artist} {track.title}"
-            fallback_responses = await self.slskd.search(
-                fallback_query, timeout_secs=self.config.search_timeout_secs
-            )
+            fallback_responses = await self.slskd.search(fallback_query, timeout_secs=self.config.search_timeout_secs)
             fallback_results = self.slskd.parse_results(fallback_responses, flac_only=False)
             ranked = self.scorer.score_results(fallback_results, track)
             is_fallback = True
@@ -477,8 +474,7 @@ class MusicBot:
             success = self.slskd.enqueue_download(result)
             if not success:
                 await status_msg.edit_text(
-                    f"❌ Failed to enqueue download from `{result.username}`.\n"
-                    f"The user might be offline.",
+                    f"❌ Failed to enqueue download from `{result.username}`.\nThe user might be offline.",
                     parse_mode=ParseMode.MARKDOWN,
                 )
                 return
@@ -493,8 +489,7 @@ class MusicBot:
             if status is None or status.is_failed:
                 state = status.state if status else "Timeout"
                 await status_msg.edit_text(
-                    f"❌ Download failed: {state}\n"
-                    f"File: `{result.basename}`",
+                    f"❌ Download failed: {state}\nFile: `{result.basename}`",
                     parse_mode=ParseMode.MARKDOWN,
                 )
                 self._add_history(track, result, "failed")
@@ -533,15 +528,13 @@ class MusicBot:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"⚠️ File too large for Telegram preview ({file_size / (1024*1024):.0f}MB > 50MB).\n"
+                        f"⚠️ File too large for Telegram preview ({file_size / (1024 * 1024):.0f}MB > 50MB).\n"
                         f"Save to library?"
                     ),
                     reply_markup=build_approve_keyboard(dl_id),
                 )
             else:
-                target_name = self.processor.build_filename(
-                    track.artist, track.title, result.extension
-                )
+                target_name = self.processor.build_filename(track.artist, track.title, result.extension)
                 with open(source_path, "rb") as f:
                     await context.bot.send_audio(
                         chat_id=chat_id,
@@ -577,14 +570,10 @@ class MusicBot:
         if action == "approve":
             # Copy to output directory with proper naming
             if pending_dl.source_path:
-                target_path = self.processor.process_file(
-                    pending_dl.source_path, track.artist, track.title
-                )
+                target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
                 if target_path:
                     target_name = os.path.basename(target_path)
-                    await self._edit_approval_message(
-                        query, f"✅ Saved: `{target_name}`"
-                    )
+                    await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
                     self._add_history(track, result, "success")
                     logger.info(f"Approved and saved: {target_name}")
                 else:
@@ -595,9 +584,7 @@ class MusicBot:
                 self._add_history(track, result, "file_not_found")
 
         elif action == "reject":
-            await self._edit_approval_message(
-                query, f"🚫 Rejected: {track.artist} - {track.title}"
-            )
+            await self._edit_approval_message(query, f"🚫 Rejected: {track.artist} - {track.title}")
             self._add_history(track, result, "rejected")
             logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
 
@@ -628,9 +615,7 @@ class MusicBot:
         lines.append("\nPick the correct version:")
         return "\n".join(lines)
 
-    def _format_results(
-        self, track: TrackInfo, results: list[SearchResult], is_fallback: bool = False
-    ) -> str:
+    def _format_results(self, track: TrackInfo, results: list[SearchResult], is_fallback: bool = False) -> str:
         """Format search results for display in Telegram."""
         if is_fallback:
             header = [
