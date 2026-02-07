@@ -43,6 +43,25 @@ Project description: Automated music discovery and download via Telegram bot. Re
 - Do NOT commit directly to main branch
 - Create descriptive branch names (e.g., `feat/batch-import`, `fix/duration-matching`)
 
+## Deployment Workflow
+
+### Versioning Rules
+
+- **NEVER** force-retag an existing version. Each release gets a unique semver tag.
+- **Patch** (`v0.3.0` -> `v0.3.1`): Bug fixes, UX tweaks, small changes
+- **Minor** (`v0.3.x` -> `v0.4.0`): New features, significant behavior changes
+- **Major** (`v0.x.y` -> `v1.0.0`): Breaking changes
+- Check the latest tag before tagging: `git describe --tags --abbrev=0`
+- Also update the image tag in `gitea/watchtower/slskd-importer/docker-compose.yml` to match
+
+### Release Steps
+
+1. Commit to `main`, create a **new** semver tag (e.g. `git tag v0.3.1`), push with `--tags`
+2. GHA `docker-publish.yml` builds and pushes `drumsergio/telegram-slskd-local-bot:<tag>` to Docker Hub
+3. Update `gitea/watchtower/slskd-importer/docker-compose.yml` with the new tag, commit and push to Gitea
+4. Redeploy via Portainer API on **watchtower** (stack ID `195`, endpoint `2`)
+5. Verify with `docker ps --filter name=slskd_importer` on watchtower
+
 ## Important Files to Read
 
 Always read these files first to understand the project context:
@@ -100,6 +119,7 @@ Follow these conventions:
 - Write self-documenting code
 - Add comments for complex logic only
 - Keep functions focused and testable
+- **Linter/Formatter:** `ruff check src/` and `ruff format src/` -- always run before committing
 
 ## Key Architecture Decisions
 
@@ -118,6 +138,21 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 - **Spotify API**: Client Credentials flow (no user login). Used only for metadata resolution.
 - **slskd API**: REST API with API key auth. Used for search, download, and file management.
 - **Telegram Bot API**: Long-polling mode. Restricted to allowed user IDs.
+
+### Telegram Message UX Patterns
+
+- **Markdown escaping**: Dynamic text (filenames, paths from Soulseek) must be escaped with `_escape_md()` or wrapped in backtick code spans to avoid `BadRequest` from Telegram's Markdown parser
+- **Safe edits**: Always use the `_safe_edit()` wrapper (catches `BadRequest`, `TimedOut`, `NetworkError`) instead of raw `msg.edit_text()`
+- **Result identification**: Download messages must include `#number` labels matching the result list so users can tell concurrent downloads apart
+- **Spotify results cap**: Show max 5 results to the user; fetch 10 from the API for filtering headroom
+- **Spotify artist filter**: When query contains `artist - title`, filter Spotify results by artist substring match before dedup to remove noise; fall back to unfiltered if the filter empties the list
+
+### Soulseek (slskd) Search Patterns
+
+- **Single query, local filtering**: Never append format keywords (e.g. "flac") to the slskd search query -- Soulseek matches keywords against full file paths, which is unreliable. Instead, search with `artist title` and filter results locally by file extension (`.flac` preferred, fall back to other audio formats)
+- **Search lifecycle**: `search_text()` -> poll `state()` -> `stop()` on timeout -> grab partial results from `search_responses()` -> `delete()` cleanup
+- **Async wrapping**: All synchronous `slskd-api` calls must be wrapped with `asyncio.to_thread()` to avoid blocking the Telegram bot event loop
+- **Timeouts**: Hard timeout via `asyncio.wait_for()` around the entire search+poll loop; `searches.stop()` actively cancels the server-side search on timeout
 
 ## Testing Strategy
 
