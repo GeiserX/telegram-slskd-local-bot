@@ -7,8 +7,12 @@ import logging
 import os
 import re
 import shutil
+from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
+
+# Audio extensions to check for duplicates
+_AUDIO_EXTENSIONS = {".flac", ".alac", ".wav", ".aiff", ".mp3", ".aac", ".m4a", ".ogg", ".opus", ".wma"}
 
 
 class FileProcessor:
@@ -22,6 +26,54 @@ class FileProcessor:
         # Ensure output directory exists
         os.makedirs(self.output_dir, exist_ok=True)
         logger.info(f"File processor initialized: downloads={download_dir}, output={output_dir}")
+
+    def find_similar(self, query: str, threshold: float = 0.6) -> list[str]:
+        """
+        Find files in the output directory with names similar to the query.
+        Uses fuzzy matching on the filename stem (without extension).
+
+        Args:
+            query: The search query or "Artist - Title" string to match against.
+            threshold: Minimum similarity ratio (0.0 to 1.0). Default 0.6.
+
+        Returns:
+            List of matching filenames sorted by similarity (best first).
+        """
+        if not os.path.isdir(self.output_dir):
+            return []
+
+        query_lower = query.lower()
+        # Extract individual words for word-level matching
+        query_words = set(re.findall(r"\w+", query_lower))
+
+        matches = []
+        for filename in os.listdir(self.output_dir):
+            _, ext = os.path.splitext(filename)
+            if ext.lower() not in _AUDIO_EXTENSIONS:
+                continue
+
+            stem = os.path.splitext(filename)[0].lower()
+            stem_words = set(re.findall(r"\w+", stem))
+
+            # Word overlap ratio
+            if query_words and stem_words:
+                common = query_words & stem_words
+                word_ratio = len(common) / min(len(query_words), len(stem_words))
+            else:
+                word_ratio = 0.0
+
+            # Sequence similarity
+            seq_ratio = SequenceMatcher(None, query_lower, stem).ratio()
+
+            # Use the best of both approaches
+            best_ratio = max(word_ratio, seq_ratio)
+
+            if best_ratio >= threshold:
+                matches.append((filename, best_ratio))
+
+        # Sort by similarity descending
+        matches.sort(key=lambda x: x[1], reverse=True)
+        return [m[0] for m in matches]
 
     def build_filename(self, artist: str, title: str, extension: str = "flac") -> str:
         """

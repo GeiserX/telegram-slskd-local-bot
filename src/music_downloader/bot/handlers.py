@@ -20,6 +20,7 @@ from telegram.ext import (
 from music_downloader.bot.keyboards import (
     build_approve_keyboard,
     build_auto_mode_keyboard,
+    build_duplicate_keyboard,
     build_results_keyboard,
 )
 from music_downloader.config import Config
@@ -39,7 +40,7 @@ class PendingSearch:
     """Holds state for an active search session."""
 
     query: str
-    track: TrackInfo
+    track: TrackInfo | None = None
     results: list[SearchResult] = field(default_factory=list)
     message_id: int | None = None
     is_fallback: bool = False
@@ -191,9 +192,31 @@ class MusicBot:
 
         chat_id = update.effective_chat.id
 
+        # Step 0: Check for similar files already in the library
+        similar = self.processor.find_similar(query)
+        if similar:
+            existing_list = "\n".join(f"• `{f}`" for f in similar[:5])
+            await update.message.reply_text(
+                f"⚠️ *Similar files already in library:*\n\n{existing_list}\n\n"
+                f"Continue searching anyway?",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_duplicate_keyboard(),
+            )
+            # Store the query so we can resume if user clicks "Continue"
+            self.pending[chat_id] = PendingSearch(query=query, track=None)
+            return
+
+        await self._do_search(update, context, query)
+
+    async def _do_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
+        """Execute the Spotify + slskd search flow."""
+        chat_id = update.effective_chat.id
+
         # Step 1: Resolve metadata via Spotify
-        searching_msg = await update.message.reply_text(
-            f"🔍 Looking up: `{query}`", parse_mode=ParseMode.MARKDOWN
+        searching_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🔍 Looking up: `{query}`",
+            parse_mode=ParseMode.MARKDOWN,
         )
 
         track = self.spotify.search(query)
@@ -289,6 +312,11 @@ class MusicBot:
             )
             return
 
+        # Duplicate check response
+        if data.startswith("dup:"):
+            await self._handle_duplicate_response(update, context, chat_id, data)
+            return
+
         # Download selection from results
         if data.startswith("dl:"):
             await self._handle_download_selection(update, context, chat_id, data)
@@ -298,6 +326,24 @@ class MusicBot:
         if data.startswith("approve:") or data.startswith("reject:"):
             await self._handle_approval(update, context, chat_id, data)
             return
+
+    async def _handle_duplicate_response(self, update, context, chat_id: int, data: str):
+        """Handle Continue/Cancel response to duplicate detection."""
+        query = update.callback_query
+        action = data.split(":", 1)[1]
+
+        pending = self.pending.pop(chat_id, None)
+
+        if action == "cancel" or not pending:
+            await query.edit_message_text("Cancelled.")
+            return
+
+        # User chose to continue — proceed with the search
+        await query.edit_message_text(
+            f"Continuing with search: `{pending.query}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await self._do_search(update, context, pending.query)
 
     async def _handle_download_selection(self, update, context, chat_id: int, data: str):
         """Handle when user picks a file to download from results."""

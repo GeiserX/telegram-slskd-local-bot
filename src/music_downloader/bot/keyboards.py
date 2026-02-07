@@ -43,6 +43,18 @@ def build_approve_keyboard(download_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def build_duplicate_keyboard() -> InlineKeyboardMarkup:
+    """Build Continue/Cancel keyboard for duplicate detection."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Continue anyway", callback_data="dup:continue"),
+                InlineKeyboardButton("Cancel", callback_data="dup:cancel"),
+            ]
+        ]
+    )
+
+
 def build_auto_mode_keyboard(current_mode: bool) -> InlineKeyboardMarkup:
     """Build keyboard to toggle auto mode."""
     if current_mode:
