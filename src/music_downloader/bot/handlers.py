@@ -296,35 +296,26 @@ class MusicBot:
                 f"🎵 *{track.artist} - {track.title}*\n"
                 f"Album: {track.album} ({track.year})\n"
                 f"Duration: {track.duration_display}\n\n"
-                f"Searching slskd for FLAC...",
+                f"Searching slskd...",
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-            # Search slskd — FLAC first, then all formats as fallback
-            search_query = f"{track.artist} {track.title} flac"
+            # Single search — filter by format locally instead of adding
+            # "flac" to the query (Soulseek keyword matching is unreliable
+            # for extensions embedded in file paths).
+            search_query = f"{track.artist} {track.title}"
             raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
-            all_results = self.slskd.parse_results(raw_responses, flac_only=True)
 
-            ranked = self.scorer.score_results(all_results, track)
+            # Try FLAC first from the same result set
+            flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
+            ranked = self.scorer.score_results(flac_results, track)
             is_fallback = False
 
-            # Fallback: if no FLAC results, search all audio formats
+            # Fallback: no FLAC survived scoring — try all audio formats
             if not ranked:
-                await _safe_edit(
-                    searching_msg,
-                    f"🎵 *{track.artist} - {track.title}*\n"
-                    f"Duration: {track.duration_display}\n\n"
-                    f"No FLAC found. Searching all formats...",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-
-                fallback_query = f"{track.artist} {track.title}"
-                fallback_responses = await self.slskd.search(
-                    fallback_query, timeout_secs=self.config.search_timeout_secs
-                )
-                fallback_results = self.slskd.parse_results(fallback_responses, flac_only=False)
-                ranked = self.scorer.score_results(fallback_results, track)
-                is_fallback = True
+                all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+                ranked = self.scorer.score_results(all_audio, track)
+                is_fallback = bool(ranked)
 
             if not ranked:
                 await _safe_edit(
