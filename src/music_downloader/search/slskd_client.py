@@ -116,6 +116,10 @@ class SlskdClient:
         """
         Start a search on slskd and wait for results.
 
+        All synchronous slskd API calls are run in a thread executor so they
+        don't block the event loop.  On timeout the search is explicitly
+        stopped and whatever partial results arrived are returned.
+
         Args:
             query: Search query text.
             timeout_secs: Maximum time to wait for results.
@@ -123,19 +127,39 @@ class SlskdClient:
         Returns:
             List of raw search response dicts from slskd API.
         """
-        try:
-            search_state = self.client.searches.search_text(searchText=query)
-            search_id = search_state["id"]
-            logger.info(f"Search started: id={search_id}, query='{query}'")
+        search_id: str | None = None
 
-            # Poll for results (async sleep to avoid blocking the event loop)
+        try:
+            return await asyncio.wait_for(
+                self._search_inner(query, timeout_secs),
+                timeout=timeout_secs + 10,  # hard safety net
+            )
+        except TimeoutError:
+            logger.warning(f"Hard timeout hit for search: {query}")
+            # _search_inner handles its own cleanup, but if the hard
+            # safety net fires we still try to grab partial results.
+            if search_id:
+                return await self._stop_and_collect(search_id)
+            return []
+        except Exception:
+            logger.exception(f"slskd search failed for: {query}")
+            return []
+
+    async def _search_inner(self, query: str, timeout_secs: int) -> list[dict]:
+        """Core search logic with polling, stop-on-timeout, and partial results."""
+        search_state = await asyncio.to_thread(self.client.searches.search_text, searchText=query)
+        search_id = search_state["id"]
+        logger.info(f"Search started: id={search_id}, query='{query}'")
+
+        timed_out = False
+        try:
             start = time.time()
             last_count = 0
-            stable_since = None
+            stable_since: float | None = None
 
             while time.time() - start < timeout_secs:
                 await asyncio.sleep(2)
-                state = self.client.searches.state(id=search_id)
+                state = await asyncio.to_thread(self.client.searches.state, id=search_id)
 
                 current_count = state.get("fileCount", 0)
                 is_complete = state.get("isComplete", False)
@@ -145,26 +169,48 @@ class SlskdClient:
                     stable_since = time.time()
                     logger.debug(f"Search progress: {current_count} files found")
                 elif stable_since and (time.time() - stable_since > 8):
-                    # Results haven't changed for 8 seconds, consider done
                     logger.info(f"Search stabilized with {current_count} files")
                     break
 
                 if is_complete:
                     logger.info(f"Search completed with {current_count} files")
                     break
-
-            # Get responses
-            responses = self.client.searches.search_responses(id=search_id)
-
-            # Clean up the search
-            with contextlib.suppress(Exception):
-                self.client.searches.delete(id=search_id)
-
-            return responses
+            else:
+                timed_out = True
+                logger.info(
+                    f"Search polling timeout ({timeout_secs}s) for '{query}', stopping and grabbing partial results"
+                )
 
         except Exception:
-            logger.exception(f"slskd search failed for: {query}")
-            return []
+            logger.exception(f"Error during search polling for: {query}")
+            timed_out = True
+
+        # Stop the search if it timed out (graceful cancel)
+        if timed_out:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(self.client.searches.stop, id=search_id)
+
+        # Grab whatever results have arrived (partial or complete)
+        responses = await asyncio.to_thread(self.client.searches.search_responses, id=search_id)
+
+        # Clean up
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self.client.searches.delete, id=search_id)
+
+        return responses
+
+    async def _stop_and_collect(self, search_id: str) -> list[dict]:
+        """Stop a search and return whatever partial results exist."""
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self.client.searches.stop, id=search_id)
+        try:
+            responses = await asyncio.to_thread(self.client.searches.search_responses, id=search_id)
+        except Exception:
+            logger.exception(f"Failed to collect partial results for {search_id}")
+            responses = []
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self.client.searches.delete, id=search_id)
+        return responses
 
     # Audio formats accepted in fallback mode (lossless + common lossy)
     AUDIO_EXTENSIONS = {"flac", "alac", "wav", "aiff", "mp3", "aac", "m4a", "ogg", "opus", "wma"}

@@ -6,8 +6,9 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from telegram import Update
+from telegram import Message, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -41,6 +42,25 @@ def _escape_md(text: str) -> str:
     for ch in r"\_*[]()~`>#+-=|{}.!":
         text = text.replace(ch, f"\\{ch}")
     return text
+
+
+async def _safe_edit(msg: Message, text: str, **kwargs) -> bool:
+    """Edit a Telegram message, swallowing common failures.
+
+    Returns True on success, False if the edit failed (logged as warning).
+    """
+    try:
+        await msg.edit_text(text, **kwargs)
+        return True
+    except BadRequest as exc:
+        logger.warning(f"Telegram edit failed (BadRequest): {exc}")
+        return False
+    except TimedOut:
+        logger.warning("Telegram edit timed out")
+        return False
+    except NetworkError as exc:
+        logger.warning(f"Telegram edit network error: {exc}")
+        return False
 
 
 @dataclass
@@ -228,96 +248,119 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Get multiple Spotify results
-        tracks = self.spotify.search_multiple(query, limit=5)
-        if not tracks:
-            await searching_msg.edit_text(
-                f"Could not find `{query}` on Spotify. Try a more specific query.",
+        try:
+            # Get multiple Spotify results
+            tracks = self.spotify.search_multiple(query, limit=5)
+            if not tracks:
+                await _safe_edit(
+                    searching_msg,
+                    f"Could not find `{query}` on Spotify. Try a more specific query.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+
+            # Deduplicate by artist + title (same song from different albums)
+            seen = set()
+            unique_tracks = []
+            for t in tracks:
+                key = (t.artist.lower(), t.title.lower())
+                if key not in seen:
+                    seen.add(key)
+                    unique_tracks.append(t)
+
+            # If only 1 unique track, auto-select and go straight to slskd
+            if len(unique_tracks) == 1:
+                await self._do_slskd_search(context, chat_id, unique_tracks[0], searching_msg)
+                return
+
+            # Multiple distinct tracks — store them and let user pick
+            self._spotify_candidates[chat_id] = unique_tracks
+            await _safe_edit(
+                searching_msg,
+                self._format_spotify_results(unique_tracks),
                 parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True,
+                reply_markup=build_spotify_keyboard(unique_tracks),
             )
-            return
 
-        # Deduplicate by artist + title (same song from different albums)
-        seen = set()
-        unique_tracks = []
-        for t in tracks:
-            key = (t.artist.lower(), t.title.lower())
-            if key not in seen:
-                seen.add(key)
-                unique_tracks.append(t)
-
-        # If only 1 unique track, auto-select and go straight to slskd
-        if len(unique_tracks) == 1:
-            await self._do_slskd_search(context, chat_id, unique_tracks[0], searching_msg)
-            return
-
-        # Multiple distinct tracks — store them and let user pick
-        self._spotify_candidates[chat_id] = unique_tracks
-        await searching_msg.edit_text(
-            self._format_spotify_results(unique_tracks),
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True,
-            reply_markup=build_spotify_keyboard(unique_tracks),
-        )
+        except Exception:
+            logger.exception(f"Unexpected error in _do_search for: {query}")
+            self._spotify_candidates.pop(chat_id, None)
+            await _safe_edit(searching_msg, "Something went wrong. Please try again.")
 
     async def _do_slskd_search(self, context, chat_id: int, track: TrackInfo, searching_msg):
         """Search slskd for a resolved Spotify track."""
-        await searching_msg.edit_text(
-            f"🎵 *{track.artist} - {track.title}*\n"
-            f"Album: {track.album} ({track.year})\n"
-            f"Duration: {track.duration_display}\n\n"
-            f"Searching slskd for FLAC...",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-
-        # Search slskd — FLAC first, then all formats as fallback
-        search_query = f"{track.artist} {track.title} flac"
-        raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
-        all_results = self.slskd.parse_results(raw_responses, flac_only=True)
-
-        ranked = self.scorer.score_results(all_results, track)
-        is_fallback = False
-
-        # Fallback: if no FLAC results, search all audio formats
-        if not ranked:
-            await searching_msg.edit_text(
+        try:
+            await _safe_edit(
+                searching_msg,
                 f"🎵 *{track.artist} - {track.title}*\n"
+                f"Album: {track.album} ({track.year})\n"
                 f"Duration: {track.duration_display}\n\n"
-                f"No FLAC found. Searching all formats...",
+                f"Searching slskd for FLAC...",
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-            fallback_query = f"{track.artist} {track.title}"
-            fallback_responses = await self.slskd.search(fallback_query, timeout_secs=self.config.search_timeout_secs)
-            fallback_results = self.slskd.parse_results(fallback_responses, flac_only=False)
-            ranked = self.scorer.score_results(fallback_results, track)
-            is_fallback = True
+            # Search slskd — FLAC first, then all formats as fallback
+            search_query = f"{track.artist} {track.title} flac"
+            raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
+            all_results = self.slskd.parse_results(raw_responses, flac_only=True)
 
-        if not ranked:
-            await searching_msg.edit_text(
-                f"🎵 *{track.artist} - {track.title}* ({track.duration_display})\n\n"
-                f"No results found on Soulseek matching this track.\n"
-                f"Try a different search query.",
-                parse_mode=ParseMode.MARKDOWN,
+            ranked = self.scorer.score_results(all_results, track)
+            is_fallback = False
+
+            # Fallback: if no FLAC results, search all audio formats
+            if not ranked:
+                await _safe_edit(
+                    searching_msg,
+                    f"🎵 *{track.artist} - {track.title}*\n"
+                    f"Duration: {track.duration_display}\n\n"
+                    f"No FLAC found. Searching all formats...",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+
+                fallback_query = f"{track.artist} {track.title}"
+                fallback_responses = await self.slskd.search(
+                    fallback_query, timeout_secs=self.config.search_timeout_secs
+                )
+                fallback_results = self.slskd.parse_results(fallback_responses, flac_only=False)
+                ranked = self.scorer.score_results(fallback_results, track)
+                is_fallback = True
+
+            if not ranked:
+                await _safe_edit(
+                    searching_msg,
+                    f"🎵 *{track.artist} - {track.title}* ({track.duration_display})\n\n"
+                    f"No results found on Soulseek matching this track.\n"
+                    f"Try a different search query.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+
+            # Store pending search
+            self.pending[chat_id] = PendingSearch(
+                query=f"{track.artist} {track.title}",
+                track=track,
+                results=ranked,
+                message_id=searching_msg.message_id,
+                is_fallback=is_fallback,
             )
-            return
 
-        # Store pending search
-        self.pending[chat_id] = PendingSearch(
-            query=f"{track.artist} {track.title}",
-            track=track,
-            results=ranked,
-            message_id=searching_msg.message_id,
-            is_fallback=is_fallback,
-        )
+            # Show results with selection keyboard
+            results_text = self._format_results(track, ranked[: self.config.max_results], is_fallback)
+            await _safe_edit(
+                searching_msg,
+                results_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_results_keyboard(ranked, self.config.max_results),
+            )
 
-        # Show results with selection keyboard
-        results_text = self._format_results(track, ranked[: self.config.max_results], is_fallback)
-        await searching_msg.edit_text(
-            results_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=build_results_keyboard(ranked, self.config.max_results),
-        )
+        except Exception:
+            logger.exception(f"Unexpected error in _do_slskd_search for: {track.artist} - {track.title}")
+            self.pending.pop(chat_id, None)
+            await _safe_edit(
+                searching_msg,
+                "Something went wrong during the search. Please try again.",
+            )
 
     # =========================================================================
     # CALLBACK QUERY HANDLER (button presses)
