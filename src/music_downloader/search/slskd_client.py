@@ -109,7 +109,7 @@ class SlskdClient:
         self.client = slskd_api.SlskdClient(host, api_key)
         logger.info(f"slskd client initialized for {host}")
 
-    def search(self, query: str, timeout_secs: int = 30) -> list[dict]:
+    async def search(self, query: str, timeout_secs: int = 30) -> list[dict]:
         """
         Start a search on slskd and wait for results.
 
@@ -125,13 +125,13 @@ class SlskdClient:
             search_id = search_state["id"]
             logger.info(f"Search started: id={search_id}, query='{query}'")
 
-            # Poll for results
+            # Poll for results (async sleep to avoid blocking the event loop)
             start = time.time()
             last_count = 0
             stable_since = None
 
             while time.time() - start < timeout_secs:
-                time.sleep(2)
+                await asyncio.sleep(2)
                 state = self.client.searches.state(id=search_id)
 
                 current_count = state.get("fileCount", 0)

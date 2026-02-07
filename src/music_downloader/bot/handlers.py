@@ -177,8 +177,9 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Step 2: Search slskd
-        raw_responses = self.slskd.search(query, timeout_secs=self.config.search_timeout_secs)
+        # Step 2: Search slskd (use resolved metadata + "flac" for better results)
+        search_query = f"{track.artist} {track.title} flac"
+        raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
         all_results = self.slskd.parse_results(raw_responses)
 
         # Step 3: Score and rank
