@@ -155,7 +155,7 @@ class MusicBot:
 
         if self.downloads:
             lines.append("\n*Active downloads:*\n")
-            for dl_id, dl in self.downloads.items():
+            for _dl_id, dl in self.downloads.items():
                 lines.append(f"• {dl.track.artist} - {dl.track.title} ({dl.result.basename})")
 
         if not lines:
@@ -406,7 +406,7 @@ class MusicBot:
         # Send a new message for the slskd search progress
         searching_msg = await context.bot.send_message(
             chat_id=chat_id,
-            text=f"🔍 Searching slskd for FLAC...",
+            text="🔍 Searching slskd for FLAC...",
             parse_mode=ParseMode.MARKDOWN,
         )
         await self._do_slskd_search(context, chat_id, track, searching_msg)
