@@ -4,6 +4,7 @@ Inline keyboard builders for the Telegram bot.
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.search.slskd_client import SearchResult
 
 
@@ -53,6 +54,20 @@ def build_duplicate_keyboard() -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def build_spotify_keyboard(tracks: list[TrackInfo]) -> InlineKeyboardMarkup:
+    """Build inline keyboard for selecting from multiple Spotify results."""
+    buttons = []
+    for i, t in enumerate(tracks):
+        label = f"#{i + 1} {t.artist} - {t.title} ({t.duration_display})"
+        # Truncate to fit Telegram's button text limit
+        if len(label) > 64:
+            label = label[:61] + "..."
+        buttons.append([InlineKeyboardButton(label, callback_data=f"sp:{i}")])
+
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="sp:cancel")])
+    return InlineKeyboardMarkup(buttons)
 
 
 def build_auto_mode_keyboard(current_mode: bool) -> InlineKeyboardMarkup:

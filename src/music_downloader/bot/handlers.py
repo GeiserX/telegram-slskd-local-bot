@@ -22,6 +22,7 @@ from music_downloader.bot.keyboards import (
     build_auto_mode_keyboard,
     build_duplicate_keyboard,
     build_results_keyboard,
+    build_spotify_keyboard,
 )
 from music_downloader.config import Config
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
@@ -81,6 +82,9 @@ class MusicBot:
         # download_id -> PendingDownload
         self.downloads: dict[str, PendingDownload] = {}
         self._dl_counter = 0
+
+        # Per-chat Spotify candidates when multiple tracks match (chat_id -> list[TrackInfo])
+        self._spotify_candidates: dict[int, list[TrackInfo]] = {}
 
         # Download history (last N downloads)
         self.history: list[dict] = []
@@ -209,24 +213,49 @@ class MusicBot:
         await self._do_search(update, context, query)
 
     async def _do_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
-        """Execute the Spotify + slskd search flow."""
+        """Resolve metadata via Spotify, then proceed to slskd search."""
         chat_id = update.effective_chat.id
 
-        # Step 1: Resolve metadata via Spotify
         searching_msg = await context.bot.send_message(
             chat_id=chat_id,
             text=f"🔍 Looking up: `{query}`",
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        track = self.spotify.search(query)
-        if not track:
+        # Get multiple Spotify results
+        tracks = self.spotify.search_multiple(query, limit=5)
+        if not tracks:
             await searching_msg.edit_text(
                 f"Could not find `{query}` on Spotify. Try a more specific query.",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
 
+        # Deduplicate by artist + title (same song from different albums)
+        seen = set()
+        unique_tracks = []
+        for t in tracks:
+            key = (t.artist.lower(), t.title.lower())
+            if key not in seen:
+                seen.add(key)
+                unique_tracks.append(t)
+
+        # If only 1 unique track, auto-select and go straight to slskd
+        if len(unique_tracks) == 1:
+            await self._do_slskd_search(context, chat_id, unique_tracks[0], searching_msg)
+            return
+
+        # Multiple distinct tracks — store them and let user pick
+        self._spotify_candidates[chat_id] = unique_tracks
+        await searching_msg.edit_text(
+            self._format_spotify_results(unique_tracks),
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+            reply_markup=build_spotify_keyboard(unique_tracks),
+        )
+
+    async def _do_slskd_search(self, context, chat_id: int, track: TrackInfo, searching_msg):
+        """Search slskd for a resolved Spotify track."""
         await searching_msg.edit_text(
             f"🎵 *{track.artist} - {track.title}*\n"
             f"Album: {track.album} ({track.year})\n"
@@ -235,16 +264,15 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Step 2: Search slskd — FLAC first, then all formats as fallback
+        # Search slskd — FLAC first, then all formats as fallback
         search_query = f"{track.artist} {track.title} flac"
         raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
         all_results = self.slskd.parse_results(raw_responses, flac_only=True)
 
-        # Step 3: Score and rank
         ranked = self.scorer.score_results(all_results, track)
         is_fallback = False
 
-        # Fallback: if no FLAC results, search without "flac" and include all audio formats
+        # Fallback: if no FLAC results, search all audio formats
         if not ranked:
             await searching_msg.edit_text(
                 f"🎵 *{track.artist} - {track.title}*\n"
@@ -272,14 +300,14 @@ class MusicBot:
 
         # Store pending search
         self.pending[chat_id] = PendingSearch(
-            query=query,
+            query=f"{track.artist} {track.title}",
             track=track,
             results=ranked,
             message_id=searching_msg.message_id,
             is_fallback=is_fallback,
         )
 
-        # Step 4: Show results with selection keyboard
+        # Show results with selection keyboard
         results_text = self._format_results(track, ranked[: self.config.max_results], is_fallback)
         await searching_msg.edit_text(
             results_text,
@@ -317,6 +345,11 @@ class MusicBot:
             await self._handle_duplicate_response(update, context, chat_id, data)
             return
 
+        # Spotify track selection
+        if data.startswith("sp:"):
+            await self._handle_spotify_selection(update, context, chat_id, data)
+            return
+
         # Download selection from results
         if data.startswith("dl:"):
             await self._handle_download_selection(update, context, chat_id, data)
@@ -344,6 +377,39 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
         await self._do_search(update, context, pending.query)
+
+    async def _handle_spotify_selection(self, update, context, chat_id: int, data: str):
+        """Handle Spotify track selection from multiple results."""
+        query = update.callback_query
+        action = data.split(":", 1)[1]
+
+        candidates = self._spotify_candidates.pop(chat_id, None)
+
+        if action == "cancel" or not candidates:
+            await query.edit_message_text("Cancelled.")
+            return
+
+        try:
+            index = int(action)
+        except ValueError:
+            return
+
+        if index >= len(candidates):
+            return
+
+        track = candidates[index]
+        await query.edit_message_text(
+            f"Selected: *{track.artist} - {track.title}* ({track.duration_display})",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        # Send a new message for the slskd search progress
+        searching_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🔍 Searching slskd for FLAC...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await self._do_slskd_search(context, chat_id, track, searching_msg)
 
     async def _handle_download_selection(self, update, context, chat_id: int, data: str):
         """Handle when user picks a file to download from results."""
@@ -548,6 +614,19 @@ class MusicBot:
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    @staticmethod
+    def _format_spotify_results(tracks: list[TrackInfo]) -> str:
+        """Format Spotify track candidates for selection."""
+        lines = ["🔍 *Multiple matches found on Spotify:*\n"]
+        for i, t in enumerate(tracks):
+            lines.append(
+                f"*#{i + 1}* {t.artist} - {t.title}\n"
+                f"    Album: {t.album} ({t.year}) | {t.duration_display}\n"
+                f"    [Listen on Spotify]({t.spotify_url})"
+            )
+        lines.append("\nPick the correct version:")
+        return "\n".join(lines)
 
     def _format_results(
         self, track: TrackInfo, results: list[SearchResult], is_fallback: bool = False
