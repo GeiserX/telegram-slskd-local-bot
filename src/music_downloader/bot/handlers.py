@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024
 
 
+def _escape_md(text: str) -> str:
+    """Escape Markdown V1 special characters for safe display."""
+    for ch in r"\_*[]()~`>#+-=|{}.!":
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 @dataclass
 class PendingSearch:
     """Holds state for an active search session."""
@@ -635,10 +642,11 @@ class MusicBot:
             slot_icon = "🟢" if r.has_free_slot else "🔴"
             fmt = r.extension.upper()
             format_tag = f" [{fmt}]" if is_fallback else ""
+            safe_name = _escape_md(r.basename)
             lines.append(
                 f"*#{i + 1}* {slot_icon} `{r.duration_display}` | "
                 f"{r.quality_display}{format_tag} | {r.size_mb:.0f}MB\n"
-                f"    _{r.basename}_"
+                f"    {safe_name}"
             )
 
         return "\n".join(lines)
