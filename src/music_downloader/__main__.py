@@ -58,7 +58,7 @@ def cmd_run(args):
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="music-downloader",
+        prog="slskd-importer",
         description="Automated music discovery and download via Telegram bot.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

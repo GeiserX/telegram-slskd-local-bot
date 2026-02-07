@@ -1,4 +1,4 @@
-# Music Downloader
+# telegram-slskd-local-bot
 
 Automated music discovery and download via Telegram bot. Resolves track metadata from Spotify, searches and downloads FLAC files from Soulseek (via [slskd](https://github.com/slskd/slskd)), renames them to `Artist - Title.flac`, and places them in your music library. Docker-ready.
 
@@ -37,9 +37,9 @@ Bot: Downloaded! Nancy Sinatra - Bang Bang (My Baby Shot Me Down).flac -> /music
 
 ```yaml
 services:
-  music-downloader:
-    image: drumsergio/music-downloader:0.1.0
-    container_name: music_downloader
+  slskd-importer:
+    image: drumsergio/telegram-slskd-local-bot:0.1.0
+    container_name: slskd_importer
     restart: unless-stopped
     environment:
       TELEGRAM_BOT_TOKEN: "your-bot-token"
@@ -62,8 +62,8 @@ services:
 
 ```bash
 # Clone the repo
-git clone https://github.com/GeiserX/music-downloader.git
-cd music-downloader
+git clone https://github.com/GeiserX/telegram-slskd-local-bot.git
+cd telegram-slskd-local-bot
 
 # Create virtual environment
 python -m venv venv
@@ -151,3 +151,9 @@ Results containing excluded keywords (live, remix, etc.) are automatically filte
 ## License
 
 [GPL-3.0](LICENSE)
+
+## Links
+
+- **Repository**: https://github.com/GeiserX/telegram-slskd-local-bot
+- **Telegram Bot**: [@slskdimporterbot](https://t.me/slskdimporterbot)
+- **Changelog**: [docs/CHANGELOG.md](docs/CHANGELOG.md)

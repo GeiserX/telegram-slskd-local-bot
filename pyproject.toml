@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "music-downloader"
+name = "telegram-slskd-local-bot"
 version = "0.1.0"
 description = "Automated music discovery and download via Telegram bot. Resolves metadata from Spotify, searches and downloads FLAC from Soulseek (slskd), and organizes your library."
 readme = "README.md"
@@ -45,13 +45,13 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/GeiserX/music-downloader"
-Repository = "https://github.com/GeiserX/music-downloader"
-Issues = "https://github.com/GeiserX/music-downloader/issues"
-Changelog = "https://github.com/GeiserX/music-downloader/blob/master/docs/CHANGELOG.md"
+Homepage = "https://github.com/GeiserX/telegram-slskd-local-bot"
+Repository = "https://github.com/GeiserX/telegram-slskd-local-bot"
+Issues = "https://github.com/GeiserX/telegram-slskd-local-bot/issues"
+Changelog = "https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/CHANGELOG.md"
 
 [project.scripts]
-music-downloader = "music_downloader.__main__:main"
+slskd-importer = "music_downloader.__main__:main"
 
 [tool.setuptools]
 packages = ["music_downloader"]

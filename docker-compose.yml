@@ -1,7 +1,7 @@
 services:
-  music-downloader:
+  slskd-importer:
     build: .
-    container_name: music_downloader
+    container_name: slskd_importer
     restart: unless-stopped
 
     environment:

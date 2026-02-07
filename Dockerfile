@@ -14,13 +14,13 @@ COPY src/ ./src/
 COPY scripts/ ./scripts/
 
 # Create non-root user for security
-RUN useradd -m -u 1000 musicdl && \
+RUN useradd -m -u 1000 slskdimporter && \
     mkdir -p /downloads /music && \
-    chown -R musicdl:musicdl /app /downloads /music && \
+    chown -R slskdimporter:slskdimporter /app /downloads /music && \
     chmod +x /app/scripts/entrypoint.sh
 
 # Switch to non-root user
-USER musicdl
+USER slskdimporter
 
 # Set default environment variables
 ENV LOG_LEVEL=INFO \
