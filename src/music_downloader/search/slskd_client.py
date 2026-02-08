@@ -147,7 +147,11 @@ class SlskdClient:
 
     async def _search_inner(self, query: str, timeout_secs: int) -> list[dict]:
         """Core search logic with polling, stop-on-timeout, and partial results."""
-        search_state = await asyncio.to_thread(self.client.searches.search_text, searchText=query)
+        search_state = await asyncio.to_thread(
+            self.client.searches.search_text,
+            searchText=query,
+            searchTimeout=timeout_secs * 1000,  # align server-side timeout (ms)
+        )
         search_id = search_state["id"]
         logger.info(f"Search started: id={search_id}, query='{query}'")
 
@@ -190,8 +194,12 @@ class SlskdClient:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self.client.searches.stop, id=search_id)
 
-        # Grab whatever results have arrived (partial or complete)
-        responses = await asyncio.to_thread(self.client.searches.search_responses, id=search_id)
+        # Fetch responses embedded in the state dict.  The separate
+        # /searches/{id}/responses endpoint sometimes returns an empty
+        # list even when files exist; using state(includeResponses=True)
+        # is the reliable alternative.
+        final_state = await asyncio.to_thread(self.client.searches.state, id=search_id, includeResponses=True)
+        responses: list[dict] = final_state.get("responses", [])
 
         # Clean up
         with contextlib.suppress(Exception):
@@ -204,7 +212,8 @@ class SlskdClient:
         with contextlib.suppress(Exception):
             await asyncio.to_thread(self.client.searches.stop, id=search_id)
         try:
-            responses = await asyncio.to_thread(self.client.searches.search_responses, id=search_id)
+            final_state = await asyncio.to_thread(self.client.searches.state, id=search_id, includeResponses=True)
+            responses: list[dict] = final_state.get("responses", [])
         except Exception:
             logger.exception(f"Failed to collect partial results for {search_id}")
             responses = []
