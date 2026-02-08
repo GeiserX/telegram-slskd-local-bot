@@ -97,6 +97,34 @@ def _clean_search_title(title: str) -> str:
     return title.strip()
 
 
+def _build_reduced_queries(title: str, year: str) -> list[str]:
+    """Build fallback search queries by dropping one word at a time and appending the year.
+
+    Soulseek users sometimes block entire phrases (e.g. "Purple Rain").
+    Removing one keyword at a time while adding the album year often
+    bypasses server-side filters while still narrowing results enough
+    to find the right track.
+
+    Args:
+        title: The (cleaned) song title, e.g. "Purple Rain".
+        year: Album release year, e.g. "1984".
+
+    Returns:
+        List of fallback query strings.  Empty if the title has fewer
+        than 2 words or no year is available.
+    """
+    if not year:
+        return []
+    words = title.split()
+    if len(words) < 2:
+        return []
+    queries: list[str] = []
+    for i in range(len(words)):
+        reduced = " ".join(words[:i] + words[i + 1 :])
+        queries.append(f"{reduced} {year}")
+    return queries
+
+
 @dataclass
 class PendingSearch:
     """Holds state for an active search session."""
@@ -376,7 +404,7 @@ class MusicBot:
                 ranked = self.scorer.score_results(all_audio, track)
                 is_fallback = bool(ranked)
 
-            # Fallback: try song-name-only search (bypasses server-side
+            # Fallback 2: try song-name-only search (bypasses server-side
             # artist-name filters that block e.g. Prince, Linkin Park, Beatles).
             if not ranked:
                 logger.info(
@@ -398,6 +426,39 @@ class MusicBot:
                     all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
                     ranked = self.scorer.score_results(all_audio, track)
                     is_fallback = bool(ranked)
+
+            # Fallback 3: keyword reduction + album year.
+            # Some phrases are blocked entirely (e.g. "Purple Rain").
+            # Dropping one word at a time and appending the year often
+            # bypasses filters while keeping results relevant.
+            if not ranked:
+                reduced_queries = _build_reduced_queries(clean_title, track.year)
+                if reduced_queries:
+                    logger.info(
+                        "No results for title-only '%s', trying keyword reduction + year",
+                        clean_title,
+                    )
+                    await _safe_edit(
+                        searching_msg,
+                        f"🎵 *{track.artist} - {track.title}*\n\n"
+                        f"Still no results — trying keyword variations with year…",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    for fallback_query in reduced_queries:
+                        raw_responses = await self.slskd.search(
+                            fallback_query, timeout_secs=self.config.search_timeout_secs
+                        )
+                        flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
+                        ranked = self.scorer.score_results(flac_results, track)
+                        if ranked:
+                            logger.info("Keyword-reduction fallback hit: '%s'", fallback_query)
+                            break
+                        all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+                        ranked = self.scorer.score_results(all_audio, track)
+                        if ranked:
+                            is_fallback = True
+                            logger.info("Keyword-reduction fallback hit (non-FLAC): '%s'", fallback_query)
+                            break
 
             if not ranked:
                 await _safe_edit(

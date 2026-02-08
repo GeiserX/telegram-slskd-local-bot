@@ -145,8 +145,28 @@ class SlskdClient:
             logger.exception(f"slskd search failed for: {query}")
             return []
 
+    async def _cleanup_stale_searches(self):
+        """Delete old searches to prevent API response caching issues.
+
+        slskd keeps completed searches in memory.  When too many accumulate
+        the ``includeResponses`` parameter silently returns empty arrays
+        even though ``responseCount`` is > 0.  Clearing them before each
+        new search avoids this bug.
+        """
+        try:
+            existing = await asyncio.to_thread(self.client.searches.get_all)
+            if existing:
+                logger.debug("Cleaning %d stale searches", len(existing))
+                for s in existing:
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(self.client.searches.delete, id=s["id"])
+        except Exception:
+            logger.debug("Failed to clean stale searches", exc_info=True)
+
     async def _search_inner(self, query: str, timeout_secs: int) -> list[dict]:
         """Core search logic with polling, stop-on-timeout, and partial results."""
+        await self._cleanup_stale_searches()
+
         search_state = await asyncio.to_thread(
             self.client.searches.search_text,
             searchText=query,
