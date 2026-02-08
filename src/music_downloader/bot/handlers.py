@@ -376,6 +376,29 @@ class MusicBot:
                 ranked = self.scorer.score_results(all_audio, track)
                 is_fallback = bool(ranked)
 
+            # Fallback: try song-name-only search (bypasses server-side
+            # artist-name filters that block e.g. Prince, Linkin Park, Beatles).
+            if not ranked:
+                logger.info(
+                    "No results for '%s', retrying with title-only: '%s'",
+                    search_query,
+                    clean_title,
+                )
+                await _safe_edit(
+                    searching_msg,
+                    f"🎵 *{track.artist} - {track.title}*\n\n"
+                    f"No results with full query — retrying with song title only…",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                raw_responses = await self.slskd.search(clean_title, timeout_secs=self.config.search_timeout_secs)
+
+                flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
+                ranked = self.scorer.score_results(flac_results, track)
+                if not ranked:
+                    all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+                    ranked = self.scorer.score_results(all_audio, track)
+                    is_fallback = bool(ranked)
+
             if not ranked:
                 await _safe_edit(
                     searching_msg,
