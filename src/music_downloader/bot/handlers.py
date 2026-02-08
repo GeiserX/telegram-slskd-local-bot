@@ -711,9 +711,7 @@ class MusicBot:
 
             # Update status message
             await status_msg.edit_text(
-                f"✅ *{label} Downloaded!* Sending preview...\n"
-                f"`{result.basename}`\n"
-                f"{quality_line}",
+                f"✅ *{label} Downloaded!* Sending preview...\n`{result.basename}`\n{quality_line}",
                 parse_mode=ParseMode.MARKDOWN,
             )
 

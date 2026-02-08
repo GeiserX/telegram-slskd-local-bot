@@ -38,10 +38,10 @@ class FlacVerdict:
     @property
     def emoji(self) -> str:
         return {
-            "AUTHENTIC": "\u2705",   # ✅
+            "AUTHENTIC": "\u2705",  # ✅
             "WARNING": "\u26a0\ufe0f",  # ⚠️
             "SUSPICIOUS": "\U0001f7e0",  # 🟠
-            "FAKE": "\u274c",        # ❌
+            "FAKE": "\u274c",  # ❌
         }.get(self.verdict, "\u2753")  # ❓
 
     @property
