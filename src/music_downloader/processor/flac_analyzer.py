@@ -1,8 +1,8 @@
 """
-FLAC authenticity analyzer via spectral analysis.
+FLAC authenticity analyzer and audio preview utilities.
 
-Detects fake FLAC files (transcoded from lossy sources) by examining
-the high-frequency content.  True lossless audio has energy up to the
+Spectral analysis detects fake FLAC files (transcoded from lossy sources) by
+examining high-frequency content.  True lossless audio has energy up to the
 Nyquist frequency (~22.05 kHz at 44.1 kHz sample rate).  Lossy-to-lossless
 transcodes show a sharp spectral energy cutoff between 16-20 kHz caused by
 the original encoder's low-pass filter.
@@ -15,7 +15,9 @@ Verdicts:
 """
 
 import logging
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 
 import numpy as np
@@ -167,4 +169,57 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
 
     except Exception:
         logger.exception("Failed to analyze FLAC: %s", filepath)
+        return None
+
+
+def create_preview_clip(filepath: str, duration_secs: float = 30.0) -> str | None:
+    """
+    Extract a short preview clip from an audio file in the same format.
+
+    Reads *duration_secs* starting at 20% into the track (to skip
+    intros/silence) and writes a temporary file in the same format
+    and encoding as the original.
+
+    Args:
+        filepath: Path to the source audio file.
+        duration_secs: Length of the preview clip in seconds.
+
+    Returns:
+        Path to the temporary preview file, or None on error.
+        Caller is responsible for deleting the file after use.
+    """
+    try:
+        info = sf.info(filepath)
+        sr = info.samplerate
+        total_frames = info.frames
+
+        # Start at 20% of the track (skip intros, find recognisable content)
+        start_frame = int(total_frames * 0.2)
+        frames_to_read = min(int(sr * duration_secs), total_frames - start_frame)
+
+        if frames_to_read <= 0:
+            # Track is shorter than the requested clip — just use the whole thing
+            # (caller shouldn't need a preview for a tiny file, but handle it)
+            start_frame = 0
+            frames_to_read = total_frames
+
+        data, _ = sf.read(filepath, start=start_frame, frames=frames_to_read, always_2d=True)
+
+        # Write to a temp file in the same format
+        ext = os.path.splitext(filepath)[1].lower() or ".flac"
+        fd, preview_path = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+
+        sf.write(preview_path, data, sr, subtype=info.subtype)
+        preview_size = os.path.getsize(preview_path)
+        logger.info(
+            "Created %ds preview clip: %s (%.1f MB)",
+            duration_secs,
+            preview_path,
+            preview_size / (1024 * 1024),
+        )
+        return preview_path
+
+    except Exception:
+        logger.exception("Failed to create preview clip for: %s", filepath)
         return None

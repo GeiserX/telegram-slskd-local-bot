@@ -2,6 +2,7 @@
 Telegram bot handlers for music search and download.
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -29,7 +30,7 @@ from music_downloader.bot.keyboards import (
 from music_downloader.config import Config
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.processor.file_handler import FileProcessor
-from music_downloader.processor.flac_analyzer import FlacVerdict, analyze_flac
+from music_downloader.processor.flac_analyzer import FlacVerdict, analyze_flac, create_preview_clip
 from music_downloader.search.scorer import ResultScorer
 from music_downloader.search.slskd_client import SearchResult, SlskdClient
 
@@ -720,16 +721,46 @@ class MusicBot:
             caption = f"{label} {quality_line}\nSave to library?"
 
             if file_size > TELEGRAM_FILE_LIMIT:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"📁 {label} File too large for Telegram "
-                        f"({file_size / (1024 * 1024):.0f}MB > 50MB limit).\n"
-                        f"{quality_line}\n\n"
-                        f"Save to library?"
-                    ),
-                    reply_markup=build_approve_keyboard(dl_id),
-                )
+                # File too large to send directly — create a 30s preview clip
+                preview_path = await self._create_preview(source_path)
+                if preview_path:
+                    try:
+                        target_name = self.processor.build_filename(
+                            track.artist, f"{track.title} (30s preview)", result.extension
+                        )
+                        preview_caption = (
+                            f"🎧 {label} 30s preview "
+                            f"(full file: {file_size / (1024 * 1024):.0f}MB)\n"
+                            f"{quality_line}\n"
+                            f"Save to library?"
+                        )
+                        with open(preview_path, "rb") as f:
+                            await context.bot.send_audio(
+                                chat_id=chat_id,
+                                audio=f,
+                                filename=target_name,
+                                title=f"{track.title} (30s preview)",
+                                performer=track.artist,
+                                duration=30,
+                                caption=preview_caption,
+                                reply_markup=build_approve_keyboard(dl_id),
+                            )
+                    finally:
+                        # Clean up preview file
+                        with contextlib.suppress(OSError):
+                            os.unlink(preview_path)
+                else:
+                    # Preview creation failed — fall back to text-only message
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"📁 {label} File too large for Telegram "
+                            f"({file_size / (1024 * 1024):.0f}MB > 50MB limit).\n"
+                            f"{quality_line}\n\n"
+                            f"Save to library?"
+                        ),
+                        reply_markup=build_approve_keyboard(dl_id),
+                    )
             else:
                 target_name = self.processor.build_filename(track.artist, track.title, result.extension)
                 try:
@@ -824,6 +855,17 @@ class MusicBot:
             return verdict
         except Exception:
             logger.exception("FLAC analysis failed for %s", filepath)
+            return None
+
+    @staticmethod
+    async def _create_preview(filepath: str, duration_secs: float = 30.0) -> str | None:
+        """Create a short audio preview clip in a thread to avoid blocking."""
+        import asyncio
+
+        try:
+            return await asyncio.to_thread(create_preview_clip, filepath, duration_secs)
+        except Exception:
+            logger.exception("Preview clip creation failed for %s", filepath)
             return None
 
     # =========================================================================
