@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from music_downloader.bot.handlers import _build_reduced_queries, _clean_search_title
 
 
