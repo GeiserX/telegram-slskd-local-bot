@@ -4,6 +4,7 @@ Telegram bot handlers for music search and download.
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 
 from telegram import Message, Update
@@ -61,6 +62,39 @@ async def _safe_edit(msg: Message, text: str, **kwargs) -> bool:
     except NetworkError as exc:
         logger.warning(f"Telegram edit network error: {exc}")
         return False
+
+
+# Regex to strip Spotify version suffixes that pollute Soulseek keyword search.
+# Matches trailing " - Remastered 2009", " - Mono", " - Deluxe", etc.
+_VERSION_SUFFIX_RE = re.compile(
+    r"\s*[-–]\s*("
+    r"Mono|Stereo|Remaster(?:ed)?(?:\s+\d{4})?"
+    r"|Deluxe(?:\s+Edition)?"
+    r"|Ultimate\s+Mix|Single\s+Version|Album\s+Version"
+    r"|Radio\s+Edit|Bonus\s+Track|Anniversary(?:\s+Edition)?"
+    r"|Super\s+Deluxe|Special\s+Edition|\d{4}\s+Mix"
+    r").*$",
+    re.IGNORECASE,
+)
+
+# Same patterns but inside parentheses: "(Remastered 2009)", "(Mono)", etc.
+_VERSION_PAREN_RE = re.compile(
+    r"\s*\("
+    r"(?:Mono|Stereo|Remaster(?:ed)?(?:\s+\d{4})?"
+    r"|Deluxe(?:\s+Edition)?"
+    r"|Ultimate\s+Mix|Single\s+Version|Album\s+Version"
+    r"|Radio\s+Edit|Bonus\s+Track|Anniversary(?:\s+Edition)?"
+    r"|Super\s+Deluxe|Special\s+Edition|\d{4}\s+Mix)"
+    r"\)",
+    re.IGNORECASE,
+)
+
+
+def _clean_search_title(title: str) -> str:
+    """Strip Spotify version suffixes that add noise to Soulseek keyword search."""
+    title = _VERSION_SUFFIX_RE.sub("", title)
+    title = _VERSION_PAREN_RE.sub("", title)
+    return title.strip()
 
 
 @dataclass
@@ -325,7 +359,10 @@ class MusicBot:
             # Single search — filter by format locally instead of adding
             # "flac" to the query (Soulseek keyword matching is unreliable
             # for extensions embedded in file paths).
-            search_query = f"{track.artist} {track.title}"
+            # Also strip Spotify version suffixes like "- Remastered 2009",
+            # "- Mono" etc. that add useless keywords and kill results.
+            clean_title = _clean_search_title(track.title)
+            search_query = f"{track.artist} {clean_title}"
             raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
 
             # Try FLAC first from the same result set
