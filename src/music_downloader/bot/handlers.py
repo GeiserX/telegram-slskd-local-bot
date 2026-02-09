@@ -136,6 +136,7 @@ class PendingSearch:
     results: list[SearchResult] = field(default_factory=list)
     message_id: int | None = None
     is_fallback: bool = False
+    page: int = 0
 
 
 @dataclass
@@ -176,6 +177,8 @@ class MusicBot:
 
         # Per-chat Spotify candidates when multiple tracks match (chat_id -> list[TrackInfo])
         self._spotify_candidates: dict[int, list[TrackInfo]] = {}
+        # Current page for Spotify browsing (chat_id -> page)
+        self._spotify_page: dict[int, int] = {}
 
         # Download history (last N downloads)
         self.history: list[dict] = []
@@ -313,8 +316,8 @@ class MusicBot:
         )
 
         try:
-            # Get multiple Spotify results
-            tracks = self.spotify.search_multiple(query, limit=10)
+            # Get multiple Spotify results (fetch many, paginate in UI)
+            tracks = self.spotify.search_multiple(query, limit=20)
             if not tracks:
                 await _safe_edit(
                     searching_msg,
@@ -351,27 +354,26 @@ class MusicBot:
                         seen.add(key)
                         unique_tracks.append(t)
 
-            # Cap to 5 displayed results
-            unique_tracks = unique_tracks[:5]
-
             # If only 1 unique track, auto-select and go straight to slskd
             if len(unique_tracks) == 1:
                 await self._do_slskd_search(context, chat_id, unique_tracks[0], searching_msg)
                 return
 
-            # Multiple distinct tracks — store them and let user pick
+            # Multiple distinct tracks — store them and let user pick (page 0)
             self._spotify_candidates[chat_id] = unique_tracks
+            self._spotify_page[chat_id] = 0
             await _safe_edit(
                 searching_msg,
-                self._format_spotify_results(unique_tracks),
+                self._format_spotify_results(unique_tracks, page=0),
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=True,
-                reply_markup=build_spotify_keyboard(unique_tracks),
+                reply_markup=build_spotify_keyboard(unique_tracks, page=0),
             )
 
         except Exception:
             logger.exception(f"Unexpected error in _do_search for: {query}")
             self._spotify_candidates.pop(chat_id, None)
+            self._spotify_page.pop(chat_id, None)
             await _safe_edit(searching_msg, "Something went wrong. Please try again.")
 
     async def _do_slskd_search(self, context, chat_id: int, track: TrackInfo, searching_msg):
@@ -481,13 +483,13 @@ class MusicBot:
                 is_fallback=is_fallback,
             )
 
-            # Show results with selection keyboard
-            results_text = self._format_results(track, ranked[: self.config.max_results], is_fallback)
+            # Show results with selection keyboard (page 0)
+            results_text = self._format_results(track, ranked, is_fallback, page=0, page_size=self.config.max_results)
             await _safe_edit(
                 searching_msg,
                 results_text,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=build_results_keyboard(ranked, self.config.max_results),
+                reply_markup=build_results_keyboard(ranked, page=0, page_size=self.config.max_results),
             )
 
         except Exception:
@@ -528,9 +530,19 @@ class MusicBot:
             await self._handle_duplicate_response(update, context, chat_id, data)
             return
 
+        # Spotify page navigation
+        if data.startswith("sp_page:"):
+            await self._handle_spotify_page(update, context, chat_id, data)
+            return
+
         # Spotify track selection
         if data.startswith("sp:"):
             await self._handle_spotify_selection(update, context, chat_id, data)
+            return
+
+        # slskd results page navigation
+        if data.startswith("dl_page:"):
+            await self._handle_results_page(update, context, chat_id, data)
             return
 
         # Download selection from results
@@ -561,12 +573,34 @@ class MusicBot:
         )
         await self._do_search(update, context, pending.query)
 
+    async def _handle_spotify_page(self, update, context, chat_id: int, data: str):
+        """Handle Spotify page navigation (◀️ / ▶️)."""
+        query = update.callback_query
+        candidates = self._spotify_candidates.get(chat_id)
+        if not candidates:
+            await query.edit_message_text("Search expired. Send a new query.")
+            return
+
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            return
+
+        self._spotify_page[chat_id] = page
+        await query.edit_message_text(
+            self._format_spotify_results(candidates, page=page),
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+            reply_markup=build_spotify_keyboard(candidates, page=page),
+        )
+
     async def _handle_spotify_selection(self, update, context, chat_id: int, data: str):
         """Handle Spotify track selection from multiple results."""
         query = update.callback_query
         action = data.split(":", 1)[1]
 
         candidates = self._spotify_candidates.pop(chat_id, None)
+        self._spotify_page.pop(chat_id, None)
 
         if action == "cancel" or not candidates:
             await query.edit_message_text("Cancelled.")
@@ -593,6 +627,33 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
         await self._do_slskd_search(context, chat_id, track, searching_msg)
+
+    async def _handle_results_page(self, update, context, chat_id: int, data: str):
+        """Handle slskd results page navigation (◀️ / ▶️)."""
+        query = update.callback_query
+        pending = self.pending.get(chat_id)
+        if not pending or not pending.track:
+            await query.edit_message_text("Search expired. Send a new query.")
+            return
+
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            return
+
+        pending.page = page
+        results_text = self._format_results(
+            pending.track,
+            pending.results,
+            pending.is_fallback,
+            page=page,
+            page_size=self.config.max_results,
+        )
+        await query.edit_message_text(
+            results_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_results_keyboard(pending.results, page=page, page_size=self.config.max_results),
+        )
 
     async def _handle_download_selection(self, update, context, chat_id: int, data: str):
         """Handle when user picks a file to download from results."""
@@ -873,10 +934,20 @@ class MusicBot:
     # =========================================================================
 
     @staticmethod
-    def _format_spotify_results(tracks: list[TrackInfo]) -> str:
-        """Format Spotify track candidates for selection."""
-        lines = ["🔍 *Multiple matches found on Spotify:*\n"]
-        for i, t in enumerate(tracks):
+    def _format_spotify_results(tracks: list[TrackInfo], page: int = 0, page_size: int = 5) -> str:
+        """Format Spotify track candidates for selection (one page)."""
+        total = len(tracks)
+        start = page * page_size
+        end = min(start + page_size, total)
+        total_pages = (total + page_size - 1) // page_size
+
+        header = "🔍 *Multiple matches found on Spotify:*"
+        if total_pages > 1:
+            header += f" (page {page + 1}/{total_pages})"
+        lines = [header + "\n"]
+
+        for i in range(start, end):
+            t = tracks[i]
             lines.append(
                 f"*#{i + 1}* {t.artist} - {t.title}\n"
                 f"    Album: {t.album} ({t.year}) | {t.duration_display}\n"
@@ -885,23 +956,39 @@ class MusicBot:
         lines.append("\nPick the correct version:")
         return "\n".join(lines)
 
-    def _format_results(self, track: TrackInfo, results: list[SearchResult], is_fallback: bool = False) -> str:
-        """Format search results for display in Telegram."""
+    def _format_results(
+        self,
+        track: TrackInfo,
+        results: list[SearchResult],
+        is_fallback: bool = False,
+        page: int = 0,
+        page_size: int = 10,
+    ) -> str:
+        """Format search results for display in Telegram (one page)."""
+        total = len(results)
+        start = page * page_size
+        end = min(start + page_size, total)
+        total_pages = (total + page_size - 1) // page_size
+
         if is_fallback:
             header = [
                 f"🎵 *{track.artist} - {track.title}*",
                 f"Duration: {track.duration_display} | Album: {track.album}\n",
-                f"⚠️ No FLAC found — showing all formats ({len(results)} matches):\n",
+                f"⚠️ No FLAC found — showing all formats ({total} matches):\n",
             ]
         else:
             header = [
                 f"🎵 *{track.artist} - {track.title}*",
                 f"Duration: {track.duration_display} | Album: {track.album}\n",
-                f"Found {len(results)} FLAC matches:\n",
+                f"Found {total} FLAC matches:\n",
             ]
 
+        if total_pages > 1:
+            header.append(f"📄 Page {page + 1}/{total_pages}\n")
+
         lines = header
-        for i, r in enumerate(results):
+        for i in range(start, end):
+            r = results[i]
             slot_icon = "🟢" if r.has_free_slot else "🔴"
             fmt = r.extension.upper()
             format_tag = f" [{fmt}]" if is_fallback else ""

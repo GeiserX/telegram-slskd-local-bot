@@ -8,21 +8,37 @@ from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.search.slskd_client import SearchResult
 
 
-def build_results_keyboard(results: list[SearchResult], max_results: int = 5) -> InlineKeyboardMarkup:
+def build_results_keyboard(
+    results: list[SearchResult],
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
     """
     Build an inline keyboard with search results for the user to pick from.
 
     Each button shows: duration | quality | size
     Callback data format: dl:<index>
     """
-    buttons = []
-    for i, result in enumerate(results[:max_results]):
-        label = f"{result.duration_display} | {result.quality_display} | {result.size_mb:.0f}MB"
-        # Prefix with position number
-        label = f"#{i + 1} {label}"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"dl:{i}")])
+    start = page * page_size
+    end = min(start + page_size, len(results))
+    page_results = results[start:end]
 
-    # Add auto-pick and cancel buttons
+    buttons = []
+    for i, result in enumerate(page_results):
+        absolute_idx = start + i
+        label = f"#{absolute_idx + 1} {result.duration_display} | {result.quality_display} | {result.size_mb:.0f}MB"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"dl:{absolute_idx}")])
+
+    # Pagination row
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"dl_page:{page - 1}"))
+    if end < len(results):
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"dl_page:{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    # Action row
     action_row = []
     if results:
         action_row.append(InlineKeyboardButton("Auto-pick best", callback_data="dl:auto"))
@@ -56,15 +72,33 @@ def build_duplicate_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def build_spotify_keyboard(tracks: list[TrackInfo]) -> InlineKeyboardMarkup:
+def build_spotify_keyboard(
+    tracks: list[TrackInfo],
+    page: int = 0,
+    page_size: int = 5,
+) -> InlineKeyboardMarkup:
     """Build inline keyboard for selecting from multiple Spotify results."""
+    start = page * page_size
+    end = min(start + page_size, len(tracks))
+    page_tracks = tracks[start:end]
+
     buttons = []
-    for i, t in enumerate(tracks):
-        label = f"#{i + 1} {t.artist} - {t.title} ({t.duration_display})"
+    for i, t in enumerate(page_tracks):
+        absolute_idx = start + i
+        label = f"#{absolute_idx + 1} {t.artist} - {t.title} ({t.duration_display})"
         # Truncate to fit Telegram's button text limit
         if len(label) > 64:
             label = label[:61] + "..."
-        buttons.append([InlineKeyboardButton(label, callback_data=f"sp:{i}")])
+        buttons.append([InlineKeyboardButton(label, callback_data=f"sp:{absolute_idx}")])
+
+    # Pagination row
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"sp_page:{page - 1}"))
+    if end < len(tracks):
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"sp_page:{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
 
     buttons.append([InlineKeyboardButton("Cancel", callback_data="sp:cancel")])
     return InlineKeyboardMarkup(buttons)
