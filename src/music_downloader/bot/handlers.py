@@ -949,7 +949,7 @@ class MusicBot:
         for i in range(start, end):
             t = tracks[i]
             lines.append(
-                f"*#{i + 1}* {t.artist} - {t.title}\n"
+                f"*#{i + 1} {t.artist} - {t.title}*\n"
                 f"    Album: {t.album} ({t.year}) | {t.duration_display}\n"
                 f"    [Listen on Spotify]({t.spotify_url})"
             )
@@ -996,7 +996,7 @@ class MusicBot:
             lines.append(
                 f"*#{i + 1}* {slot_icon} `{r.duration_display}` | "
                 f"{r.quality_display}{format_tag} | {r.size_mb:.0f}MB\n"
-                f"    {safe_name}"
+                f"    *{safe_name}*"
             )
 
         return "\n".join(lines)
