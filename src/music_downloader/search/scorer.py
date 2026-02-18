@@ -38,6 +38,7 @@ class ResultScorer:
         self,
         results: list[SearchResult],
         track: TrackInfo,
+        max_duration_diff: int | None = None,
     ) -> list[SearchResult]:
         """
         Score and rank search results against the reference track.
@@ -46,6 +47,11 @@ class ResultScorer:
         Args:
             results: FLAC search results from slskd.
             track: Reference track info from Spotify.
+            max_duration_diff: Override the hard duration cutoff (seconds).
+                When set, results beyond the normal 30 s tolerance but
+                within this limit receive 0 duration points instead of
+                being excluded.  Useful for fallback searches where a
+                different version of the same song is acceptable.
 
         Returns:
             Filtered and sorted list of SearchResult with scores assigned.
@@ -53,7 +59,7 @@ class ResultScorer:
         scored = []
 
         for result in results:
-            score = self._calculate_score(result, track)
+            score = self._calculate_score(result, track, max_duration_diff)
             if score is not None:
                 result.score = score
                 scored.append(result)
@@ -73,7 +79,9 @@ class ResultScorer:
         logger.info(f"Scored {len(scored)} results, {len(deduplicated)} after dedup (from {len(results)} total)")
         return deduplicated
 
-    def _calculate_score(self, result: SearchResult, track: TrackInfo) -> float | None:
+    def _calculate_score(
+        self, result: SearchResult, track: TrackInfo, max_duration_diff: int | None = None
+    ) -> float | None:
         """
         Calculate a score for a single result.
 
@@ -83,15 +91,11 @@ class ResultScorer:
         score = 0.0
 
         # ===== EXCLUDE FILTER =====
-        # Check for unwanted keywords in the full filename path
         filename_lower = result.filename.lower()
         basename_lower = result.basename.lower()
 
         for keyword in self.exclude_keywords:
-            # Check specifically in the filename part, not the whole path
-            # (user's path might contain "live" as part of something else)
             if keyword in basename_lower:
-                # But allow it if the original track title also contains the keyword
                 if keyword.lower() not in track.title.lower():
                     logger.debug(f"Excluded (keyword '{keyword}'): {result.basename}")
                     return None
@@ -102,20 +106,17 @@ class ResultScorer:
             diff = abs(result.length - target_secs)
 
             if diff <= self.duration_tolerance:
-                # Perfect or near-perfect match
                 score += 40.0 - (diff * 2)
             elif diff <= 10:
-                # Acceptable range
                 score += 25.0 - (diff - self.duration_tolerance) * 3
             elif diff <= 30:
-                # Far but might be acceptable
-                score += 10.0 - (diff - 10) * 0.5
+                score += max(0.0, 10.0 - (diff - 10) * 0.5)
+            elif max_duration_diff is not None and diff <= max_duration_diff:
+                pass  # 0 duration points — different version, still acceptable
             else:
-                # Too far off — likely wrong version
                 logger.debug(f"Excluded (duration {result.length}s vs {target_secs}s): {result.basename}")
                 return None
         else:
-            # No duration info available — give a neutral score
             score += 15.0
 
         # ===== AUDIO QUALITY (0-25 points) =====
