@@ -127,6 +127,25 @@ def _build_reduced_queries(title: str, year: str) -> list[str]:
     return queries
 
 
+_NOISE_WORDS = frozenset({
+    "single", "version", "long", "short", "full", "edit", "mix",
+    "remastered", "remaster", "deluxe", "edition", "bonus", "track",
+    "album", "mono", "stereo", "original", "extended",
+    "feat", "featuring", "ft", "the", "an", "and", "or", "of",
+    "in", "on", "at", "to", "for", "with", "from", "by",
+})
+
+
+def _extract_latin_keywords(title: str) -> list[str]:
+    """Extract meaningful Latin keywords from a potentially mixed-script title.
+
+    Strips common noise words so only distinctive keywords remain,
+    e.g. ``["KURENAI"]`` from ``"紅 - KURENAI - シングル… - Single Long Version"``.
+    """
+    words = re.findall(r"[a-zA-Z]{2,}", title)
+    return [w for w in words if w.lower() not in _NOISE_WORDS]
+
+
 @dataclass
 class PendingSearch:
     """Holds state for an active search session."""
@@ -463,6 +482,56 @@ class MusicBot:
                             is_fallback = True
                             logger.info("Keyword-reduction fallback hit (non-FLAC): '%s'", fallback_query)
                             break
+
+            # Fallback 4: artist-only search with intelligent local filtering.
+            # When titles contain non-Latin characters (CJK, Cyrillic, etc.),
+            # Soulseek's all-keywords-must-match logic fails because those
+            # characters rarely appear in shared file paths.  Searching for
+            # just the artist returns their full catalog; we then filter
+            # locally by meaningful Latin keywords extracted from the title
+            # (e.g. "KURENAI" from "紅 - KURENAI - シングル…").
+            if not ranked:
+                latin_kw = _extract_latin_keywords(clean_title)
+                logger.info(
+                    "All fallbacks exhausted for '%s'. Trying artist-only "
+                    "search ('%s'), filter keywords: %s",
+                    search_query,
+                    track.artist,
+                    latin_kw or "(none — duration matching only)",
+                )
+                await _safe_edit(
+                    searching_msg,
+                    f"🎵 *{track.artist} - {track.title}*\n\n"
+                    f"Still no results — browsing artist catalog…",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                raw_responses = await self.slskd.search(
+                    track.artist, timeout_secs=self.config.search_timeout_secs
+                )
+                kw_lower = [k.lower() for k in latin_kw]
+
+                for flac_only in (True, False):
+                    parsed = self.slskd.parse_results(raw_responses, flac_only=flac_only)
+
+                    if kw_lower:
+                        filtered = [
+                            r for r in parsed
+                            if any(k in r.filename.lower() for k in kw_lower)
+                        ]
+                        ranked = self.scorer.score_results(filtered, track)
+
+                    if not ranked:
+                        ranked = self.scorer.score_results(parsed, track)
+
+                    if ranked:
+                        if not flac_only:
+                            is_fallback = True
+                        logger.info(
+                            "Artist-only fallback hit (flac_only=%s, keyword_filtered=%s)",
+                            flac_only,
+                            bool(kw_lower),
+                        )
+                        break
 
             if not ranked:
                 await _safe_edit(
