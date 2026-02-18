@@ -112,7 +112,7 @@ class SlskdClient:
         self.client = slskd_api.SlskdClient(host, api_key)
         logger.info(f"slskd client initialized for {host}")
 
-    async def search(self, query: str, timeout_secs: int = 30) -> list[dict]:
+    async def search(self, query: str, timeout_secs: int = 30, response_limit: int = 500) -> list[dict]:
         """
         Start a search on slskd and wait for results.
 
@@ -123,6 +123,7 @@ class SlskdClient:
         Args:
             query: Search query text.
             timeout_secs: Maximum time to wait for results.
+            response_limit: Max peer responses to collect (lower = faster + avoids payload bugs).
 
         Returns:
             List of raw search response dicts from slskd API.
@@ -131,7 +132,7 @@ class SlskdClient:
 
         try:
             return await asyncio.wait_for(
-                self._search_inner(query, timeout_secs),
+                self._search_inner(query, timeout_secs, response_limit),
                 timeout=timeout_secs + 10,  # hard safety net
             )
         except TimeoutError:
@@ -163,15 +164,15 @@ class SlskdClient:
         except Exception:
             logger.debug("Failed to clean stale searches", exc_info=True)
 
-    async def _search_inner(self, query: str, timeout_secs: int) -> list[dict]:
+    async def _search_inner(self, query: str, timeout_secs: int, response_limit: int) -> list[dict]:
         """Core search logic with polling, stop-on-timeout, and partial results."""
         await self._cleanup_stale_searches()
 
         search_state = await asyncio.to_thread(
             self.client.searches.search_text,
             searchText=query,
-            searchTimeout=timeout_secs * 1000,  # align server-side timeout (ms)
-            responseLimit=500,
+            searchTimeout=timeout_secs * 1000,
+            responseLimit=response_limit,
         )
         search_id = search_state["id"]
         logger.info(f"Search started: id={search_id}, query='{query}'")
@@ -218,12 +219,27 @@ class SlskdClient:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self.client.searches.stop, id=search_id)
 
-        # Fetch responses embedded in the state dict.  The separate
-        # /searches/{id}/responses endpoint sometimes returns an empty
-        # list even when files exist; using state(includeResponses=True)
-        # is the reliable alternative.
-        final_state = await asyncio.to_thread(self.client.searches.state, id=search_id, includeResponses=True)
+        # Try both retrieval methods — each silently returns empty under
+        # different conditions (large payloads vs. timing).
+        final_state = await asyncio.to_thread(
+            self.client.searches.state, id=search_id, includeResponses=True,
+        )
         responses: list[dict] = final_state.get("responses", [])
+
+        if not responses:
+            resp_count = final_state.get("responseCount", 0)
+            file_count = final_state.get("fileCount", 0)
+            if resp_count > 0 or file_count > 0:
+                logger.info(
+                    "state(includeResponses) empty despite %d peers / %d files — "
+                    "falling back to search_responses endpoint",
+                    resp_count, file_count,
+                )
+                with contextlib.suppress(Exception):
+                    responses = await asyncio.to_thread(
+                        self.client.searches.search_responses, id=search_id,
+                    )
+                logger.info("search_responses returned %d responses", len(responses))
 
         # Clean up
         with contextlib.suppress(Exception):
@@ -236,8 +252,15 @@ class SlskdClient:
         with contextlib.suppress(Exception):
             await asyncio.to_thread(self.client.searches.stop, id=search_id)
         try:
-            final_state = await asyncio.to_thread(self.client.searches.state, id=search_id, includeResponses=True)
+            final_state = await asyncio.to_thread(
+                self.client.searches.state, id=search_id, includeResponses=True,
+            )
             responses: list[dict] = final_state.get("responses", [])
+            if not responses and final_state.get("responseCount", 0) > 0:
+                with contextlib.suppress(Exception):
+                    responses = await asyncio.to_thread(
+                        self.client.searches.search_responses, id=search_id,
+                    )
         except Exception:
             logger.exception(f"Failed to collect partial results for {search_id}")
             responses = []

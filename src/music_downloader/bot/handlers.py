@@ -518,7 +518,9 @@ class MusicBot:
                     parse_mode=ParseMode.MARKDOWN,
                 )
                 raw_responses = await self.slskd.search(
-                    fb4_query, timeout_secs=self.config.search_timeout_secs
+                    fb4_query,
+                    timeout_secs=self.config.search_timeout_secs,
+                    response_limit=150,
                 )
 
                 for flac_only in (True, False):
