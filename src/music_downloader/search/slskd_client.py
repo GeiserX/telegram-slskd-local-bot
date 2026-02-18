@@ -171,10 +171,12 @@ class SlskdClient:
             self.client.searches.search_text,
             searchText=query,
             searchTimeout=timeout_secs * 1000,  # align server-side timeout (ms)
+            responseLimit=500,
         )
         search_id = search_state["id"]
         logger.info(f"Search started: id={search_id}, query='{query}'")
 
+        min_wait = 5
         timed_out = False
         try:
             start = time.time()
@@ -186,18 +188,20 @@ class SlskdClient:
                 state = await asyncio.to_thread(self.client.searches.state, id=search_id)
 
                 current_count = state.get("fileCount", 0)
+                resp_count = state.get("responseCount", 0)
                 is_complete = state.get("isComplete", False)
+                elapsed = time.time() - start
 
                 if current_count != last_count:
                     last_count = current_count
                     stable_since = time.time()
-                    logger.debug(f"Search progress: {current_count} files found")
+                    logger.debug(f"Search progress: {current_count} files from {resp_count} peers")
                 elif stable_since and (time.time() - stable_since > 8):
-                    logger.info(f"Search stabilized with {current_count} files")
+                    logger.info(f"Search stabilized with {current_count} files from {resp_count} peers")
                     break
 
-                if is_complete:
-                    logger.info(f"Search completed with {current_count} files")
+                if is_complete and elapsed >= min_wait:
+                    logger.info(f"Search completed with {current_count} files from {resp_count} peers")
                     break
             else:
                 timed_out = True
