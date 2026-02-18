@@ -28,6 +28,7 @@ from music_downloader.bot.keyboards import (
     build_spotify_keyboard,
 )
 from music_downloader.config import Config
+from music_downloader.tools.embed_artwork import embed_artwork_into_file, fetch_spotify_artwork
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.flac_analyzer import FlacVerdict, analyze_flac, create_preview_clip
@@ -945,6 +946,7 @@ class MusicBot:
             if pending_dl.source_path:
                 target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
                 if target_path:
+                    await self._embed_spotify_artwork(target_path, track)
                     target_name = os.path.basename(target_path)
                     await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
                     self._add_history(track, result, "success")
@@ -999,6 +1001,19 @@ class MusicBot:
         except Exception:
             logger.exception("Preview clip creation failed for %s", filepath)
             return None
+
+    async def _embed_spotify_artwork(self, filepath: str, track: TrackInfo) -> None:
+        """Fetch album artwork from Spotify and embed into the saved file."""
+        import asyncio
+
+        try:
+            art = await asyncio.to_thread(fetch_spotify_artwork, self.spotify.sp, track.artist, track.title)
+            if art:
+                ok = await asyncio.to_thread(embed_artwork_into_file, filepath, art)
+                if ok:
+                    logger.info("Embedded Spotify artwork into %s (%d KB)", filepath, len(art) // 1024)
+        except Exception:
+            logger.debug("Artwork embedding failed for %s", filepath, exc_info=True)
 
     # =========================================================================
     # HELPERS
