@@ -56,9 +56,7 @@ def embed_artwork_into_file(filepath: str, image_data: bytes) -> bool:
             f = mutagen.mp4.MP4(filepath)
             if f.tags and f.tags.get("covr"):
                 return False
-            f.tags["covr"] = [
-                mutagen.mp4.MP4Cover(image_data, imageformat=mutagen.mp4.MP4Cover.FORMAT_JPEG)
-            ]
+            f.tags["covr"] = [mutagen.mp4.MP4Cover(image_data, imageformat=mutagen.mp4.MP4Cover.FORMAT_JPEG)]
             f.save()
             return True
         else:

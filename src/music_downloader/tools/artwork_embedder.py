@@ -108,9 +108,7 @@ def _embed_flac(path: str, image_data: bytes) -> bool:
 def _embed_m4a(path: str, image_data: bytes) -> bool:
     try:
         f = mutagen.mp4.MP4(path)
-        f.tags["covr"] = [
-            mutagen.mp4.MP4Cover(image_data, imageformat=mutagen.mp4.MP4Cover.FORMAT_JPEG)
-        ]
+        f.tags["covr"] = [mutagen.mp4.MP4Cover(image_data, imageformat=mutagen.mp4.MP4Cover.FORMAT_JPEG)]
         f.save()
         return True
     except Exception:
@@ -142,9 +140,7 @@ def run(
         logger.error("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set")
         sys.exit(1)
 
-    sp = spotipy.Spotify(
-        auth_manager=SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
-    )
+    sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=client_id, client_secret=client_secret))
 
     flac_files = sorted(f for f in os.listdir(music_dir) if f.lower().endswith(".flac"))
     logger.info("Found %d FLAC files in %s", len(flac_files), music_dir)

@@ -14,6 +14,7 @@ Verdicts:
     FAKE       - cutoff <17 kHz (definitely transcoded from lossy)
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -172,46 +173,141 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
         return None
 
 
-def create_preview_clip(filepath: str, duration_secs: float = 30.0) -> str | None:
+def convert_to_ogg(filepath: str) -> str | None:
     """
-    Extract a short preview clip from an audio file in the same format.
+    Convert a full audio file to OGG Opus using ffmpeg.
 
-    Reads *duration_secs* starting at 20% into the track (to skip
-    intros/silence) and writes a temporary file in the same format
-    and encoding as the original.
+    Preserves the entire duration — no trimming.  Output is typically
+    much smaller than lossless sources (a 60 MB FLAC becomes ~5 MB OGG
+    at 128 kbps).
 
     Args:
         filepath: Path to the source audio file.
-        duration_secs: Length of the preview clip in seconds.
 
     Returns:
-        Path to the temporary preview file, or None on error.
+        Path to the temporary ``.ogg`` file, or None on error.
         Caller is responsible for deleting the file after use.
     """
+    import subprocess
+
+    ogg_path = None
     try:
-        info = sf.info(filepath)
-        sr = info.samplerate
-        total_frames = info.frames
-
-        # Start at 20% of the track (skip intros, find recognisable content)
-        start_frame = int(total_frames * 0.2)
-        frames_to_read = min(int(sr * duration_secs), total_frames - start_frame)
-
-        if frames_to_read <= 0:
-            # Track is shorter than the requested clip — just use the whole thing
-            # (caller shouldn't need a preview for a tiny file, but handle it)
-            start_frame = 0
-            frames_to_read = total_frames
-
-        data, _ = sf.read(filepath, start=start_frame, frames=frames_to_read, always_2d=True)
-
-        # Write to a temp file in the same format
-        ext = os.path.splitext(filepath)[1].lower() or ".flac"
-        fd, preview_path = tempfile.mkstemp(suffix=ext)
+        fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
         os.close(fd)
 
-        sf.write(preview_path, data, sr, subtype=info.subtype)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                filepath,
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "128k",
+                "-vn",
+                "-map_metadata",
+                "-1",
+                ogg_path,
+            ],
+            capture_output=True,
+            timeout=300,
+            check=True,
+        )
+
+        ogg_size = os.path.getsize(ogg_path)
+        if ogg_size == 0:
+            os.unlink(ogg_path)
+            return None
+
+        logger.info(
+            "Converted to OGG Opus: %s (%.1f MB)",
+            ogg_path,
+            ogg_size / (1024 * 1024),
+        )
+        return ogg_path
+
+    except Exception:
+        logger.exception("Failed to convert to OGG: %s", filepath)
+        if ogg_path:
+            with contextlib.suppress(OSError):
+                os.unlink(ogg_path)
+        return None
+
+
+def create_preview_clip(filepath: str, duration_secs: float = 60.0) -> str | None:
+    """
+    Extract a trimmed OGG Opus clip from any audio file using ffmpeg.
+
+    Starts at 20 % into the track (to skip intros/silence) and takes
+    *duration_secs* of audio.
+
+    Args:
+        filepath: Path to the source audio file.
+        duration_secs: Length of the clip in seconds (default 60).
+
+    Returns:
+        Path to the temporary ``.ogg`` preview file, or None on error.
+        Caller is responsible for deleting the file after use.
+    """
+    import json
+    import subprocess
+
+    preview_path = None
+    try:
+        total_duration = 0.0
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                filepath,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if probe.returncode == 0:
+            fmt = json.loads(probe.stdout).get("format", {})
+            total_duration = float(fmt.get("duration", 0))
+
+        start_secs = total_duration * 0.2 if total_duration > 0 else 0
+
+        fd, preview_path = tempfile.mkstemp(suffix=".ogg")
+        os.close(fd)
+
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                f"{start_secs:.2f}",
+                "-i",
+                filepath,
+                "-t",
+                f"{duration_secs:.2f}",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "128k",
+                "-vn",
+                "-map_metadata",
+                "-1",
+                preview_path,
+            ],
+            capture_output=True,
+            timeout=120,
+            check=True,
+        )
+
         preview_size = os.path.getsize(preview_path)
+        if preview_size == 0:
+            os.unlink(preview_path)
+            return None
+
         logger.info(
             "Created %ds preview clip: %s (%.1f MB)",
             duration_secs,
@@ -222,4 +318,7 @@ def create_preview_clip(filepath: str, duration_secs: float = 30.0) -> str | Non
 
     except Exception:
         logger.exception("Failed to create preview clip for: %s", filepath)
+        if preview_path:
+            with contextlib.suppress(OSError):
+                os.unlink(preview_path)
         return None
