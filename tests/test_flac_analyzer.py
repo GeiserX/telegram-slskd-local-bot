@@ -6,7 +6,7 @@ import tempfile
 import numpy as np
 import soundfile as sf
 
-from music_downloader.processor.flac_analyzer import FlacVerdict, analyze_flac, create_preview_clip
+from music_downloader.processor.flac_analyzer import FlacVerdict, analyze_flac, convert_to_ogg, create_preview_clip
 
 
 class TestFlacVerdict:
@@ -155,10 +155,10 @@ class TestCreatePreviewClip:
             preview_size = os.path.getsize(preview_path)
             assert preview_size < original_size * 0.5
 
-            # Verify the preview file is valid audio
+            # Verify the preview is valid OGG Opus audio (always 48 kHz)
             info = sf.info(preview_path)
-            assert info.samplerate == 44100
-            # Duration should be ~30s (allow small tolerance)
+            assert info.samplerate == 48000
+            assert preview_path.endswith(".ogg")
             preview_duration = info.frames / info.samplerate
             assert 29.0 <= preview_duration <= 31.0
 
@@ -189,18 +189,58 @@ class TestCreatePreviewClip:
         result = create_preview_clip("/tmp/nonexistent_preview_test.flac")
         assert result is None
 
-    def test_preview_preserves_sample_rate(self):
-        """Preview should keep the original sample rate."""
+    def test_preview_outputs_ogg_opus(self):
+        """Preview always outputs OGG Opus at 48 kHz regardless of source sample rate."""
         with tempfile.NamedTemporaryFile(suffix=".flac", delete=False) as f:
             path = f.name
         try:
             self._create_test_flac(path, sample_rate=96000, duration=60.0)
             preview_path = create_preview_clip(path, duration_secs=30.0)
             assert preview_path is not None
+            assert preview_path.endswith(".ogg")
 
             info = sf.info(preview_path)
-            assert info.samplerate == 96000
+            assert info.samplerate == 48000
 
             os.unlink(preview_path)
         finally:
             os.unlink(path)
+
+
+class TestConvertToOgg:
+    """Test convert_to_ogg function."""
+
+    @staticmethod
+    def _create_test_flac(filepath: str, duration: float = 60.0):
+        rng = np.random.default_rng(42)
+        n_samples = int(44100 * duration)
+        data = (rng.standard_normal(n_samples) * 0.3).astype(np.float32)
+        sf.write(filepath, data, 44100, subtype="PCM_16")
+
+    def test_converts_full_song(self):
+        """Full conversion preserves the entire duration."""
+        with tempfile.NamedTemporaryFile(suffix=".flac", delete=False) as f:
+            path = f.name
+        try:
+            self._create_test_flac(path, duration=120.0)
+            original_size = os.path.getsize(path)
+
+            ogg_path = convert_to_ogg(path)
+            assert ogg_path is not None
+            assert ogg_path.endswith(".ogg")
+            assert os.path.isfile(ogg_path)
+
+            ogg_size = os.path.getsize(ogg_path)
+            assert ogg_size < original_size
+
+            info = sf.info(ogg_path)
+            ogg_duration = info.frames / info.samplerate
+            assert 118.0 <= ogg_duration <= 122.0
+
+            os.unlink(ogg_path)
+        finally:
+            os.unlink(path)
+
+    def test_nonexistent_file_returns_none(self):
+        result = convert_to_ogg("/tmp/nonexistent_ogg_test.flac")
+        assert result is None

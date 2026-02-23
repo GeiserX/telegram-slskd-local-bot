@@ -222,7 +222,9 @@ class SlskdClient:
         # Try both retrieval methods — each silently returns empty under
         # different conditions (large payloads vs. timing).
         final_state = await asyncio.to_thread(
-            self.client.searches.state, id=search_id, includeResponses=True,
+            self.client.searches.state,
+            id=search_id,
+            includeResponses=True,
         )
         responses: list[dict] = final_state.get("responses", [])
 
@@ -233,11 +235,13 @@ class SlskdClient:
                 logger.info(
                     "state(includeResponses) empty despite %d peers / %d files — "
                     "falling back to search_responses endpoint",
-                    resp_count, file_count,
+                    resp_count,
+                    file_count,
                 )
                 with contextlib.suppress(Exception):
                     responses = await asyncio.to_thread(
-                        self.client.searches.search_responses, id=search_id,
+                        self.client.searches.search_responses,
+                        id=search_id,
                     )
                 logger.info("search_responses returned %d responses", len(responses))
 
@@ -253,13 +257,16 @@ class SlskdClient:
             await asyncio.to_thread(self.client.searches.stop, id=search_id)
         try:
             final_state = await asyncio.to_thread(
-                self.client.searches.state, id=search_id, includeResponses=True,
+                self.client.searches.state,
+                id=search_id,
+                includeResponses=True,
             )
             responses: list[dict] = final_state.get("responses", [])
             if not responses and final_state.get("responseCount", 0) > 0:
                 with contextlib.suppress(Exception):
                     responses = await asyncio.to_thread(
-                        self.client.searches.search_responses, id=search_id,
+                        self.client.searches.search_responses,
+                        id=search_id,
                     )
         except Exception:
             logger.exception(f"Failed to collect partial results for {search_id}")

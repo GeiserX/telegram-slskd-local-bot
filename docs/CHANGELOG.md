@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-02-23
+
+### Added
+
+- Cancel-on-new-message: sending a new query while mid-search or mid-download
+  cancels all in-flight operations for that chat instantly (generation counter
+  + asyncio task cancellation)
+- Large file OGG conversion: files >50 MB are converted to OGG Opus and sent
+  in full; only trimmed to ~1 min if the OGG still exceeds 50 MB
+- `convert_to_ogg()` utility (ffmpeg-based, handles any audio format)
+- ffmpeg added as Docker system dependency for reliable audio conversion
+- Dismiss-on-approve: saving one download to library automatically cancels all
+  other pending downloads for the same chat (buttons removed, messages updated)
+- `approval_message_id` tracking on `PendingDownload` for programmatic message edits
+
+### Changed
+
+- Results keyboard is now locked after selecting a download (no duplicate picks)
+- Preview clips use ffmpeg → OGG Opus instead of soundfile (handles all formats)
+- Default preview trim duration changed from 30 s to 60 s
+- Stale approve/reject buttons now show "⏹ Cancelled" instead of silently
+  disappearing
+
+### Fixed
+
+- "File too large for Telegram" text-only fallback no longer appears; files are
+  always sent as playable audio (OGG conversion or trimmed clip)
+
 ## [0.4.0] - 2026-02-09
 
 ### Added
