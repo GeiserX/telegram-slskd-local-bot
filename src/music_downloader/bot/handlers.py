@@ -835,14 +835,6 @@ class MusicBot:
         result = pending.results[index]
         track = pending.track
 
-        # Lock the results keyboard so no more selections can be made.
-        del self.pending[chat_id]
-        await _safe_edit(
-            query.message,
-            f"🎵 *{track.artist} - {track.title}*\nSelected #{index + 1}: `{_escape_md(result.basename)}`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
             text=(
@@ -1117,6 +1109,16 @@ class MusicBot:
 
     async def _dismiss_other_downloads(self, context, chat_id: int):
         """Cancel all remaining pending downloads for a chat after one is approved."""
+        # Remove the results keyboard so no more downloads can be started.
+        pending = self.pending.pop(chat_id, None)
+        if pending and pending.message_id:
+            with contextlib.suppress(Exception):
+                await context.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=pending.message_id,
+                )
+
+        # Dismiss other pending download approval messages.
         stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
