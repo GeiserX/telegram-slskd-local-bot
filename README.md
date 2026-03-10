@@ -1,6 +1,17 @@
-# telegram-slskd-local-bot
+<p align="center"><img src="docs/images/banner.svg" alt="telegram-slskd-local-bot banner" width="900"/></p>
 
-Automated music discovery and download via Telegram bot. Resolves track metadata from Spotify, searches and downloads FLAC files from Soulseek (via [slskd](https://github.com/slskd/slskd)), renames them to `Artist - Title.flac`, and places them in your music library. Docker-ready.
+<h1 align="center">telegram-slskd-local-bot</h1>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/GeiserX/telegram-slskd-local-bot" alt="License"/></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.x-3776AB?logo=python&logoColor=white" alt="Python"/></a>
+  <a href="https://hub.docker.com/r/drumsergio/telegram-slskd-local-bot"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-slskd-local-bot" alt="Docker Pulls"/></a>
+  <a href="https://hub.docker.com/r/drumsergio/telegram-slskd-local-bot"><img src="https://img.shields.io/docker/image-size/drumsergio/telegram-slskd-local-bot/latest" alt="Docker Image Size"/></a>
+</p>
+
+<p align="center"><strong>Automated music discovery and download via Telegram bot. Resolves track metadata from Spotify, searches and downloads FLAC files from Soulseek (via <a href="https://github.com/slskd/slskd">slskd</a>), renames them to <code>Artist - Title.flac</code>, and places them in your music library. Docker-ready.</strong></p>
+
+---
 
 ## How It Works
 
