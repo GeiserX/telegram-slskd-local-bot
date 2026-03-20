@@ -658,7 +658,8 @@ class MusicBot:
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard button presses."""
         query = update.callback_query
-        await query.answer()
+        with contextlib.suppress(BadRequest):
+            await query.answer()
 
         if not self._is_authorized(query.from_user.id):
             return
