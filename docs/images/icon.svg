@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FF8F00"/>
+      <stop offset="100%" style="stop-color:#1A1A2E"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="32" fill="url(#bg)"/>
+  
+  <!-- Proper beamed eighth notes (large, center) -->
+  <g transform="translate(56,120)" fill="white" opacity="0.92">
+    <!-- Left notehead - tilted oval -->
+    <ellipse cx="0" cy="30" rx="16" ry="11" transform="rotate(-25,0,30)"/>
+    <!-- Left stem -->
+    <rect x="14" y="-34" width="5" height="64" rx="1"/>
+    <!-- Right notehead - tilted oval -->
+    <ellipse cx="52" cy="22" rx="16" ry="11" transform="rotate(-25,52,22)"/>
+    <!-- Right stem -->
+    <rect x="66" y="-42" width="5" height="64" rx="1"/>
+    <!-- Beam -->
+    <polygon points="14,-34 71,-42 71,-34 14,-26"/>
+  </g>
+  
+  <!-- Telegram plane (upper-right) -->
+  <g transform="translate(192,72)">
+    <circle cx="0" cy="0" r="30" fill="rgba(0,136,204,0.6)"/>
+    <path d="M-16,2 L12,-12 L4,14 L-4,2 Z" fill="white"/>
+    <path d="M-4,2 L12,-12 L4,14 L0,8 Z" fill="white" opacity="0.55"/>
+  </g>
+  
+  <!-- Download arrow (bottom-right) -->
+  <g transform="translate(196,196)" stroke="white" stroke-width="4.5" stroke-linecap="round" fill="none" opacity="0.6">
+    <line x1="0" y1="-14" x2="0" y2="10"/>
+    <path d="M-10,2 L0,12 L10,2"/>
+    <line x1="-14" y1="18" x2="14" y2="18"/>
+  </g>
+</svg>
