@@ -205,10 +205,11 @@ class FileProcessor:
 
     @staticmethod
     def _dedup_flac_tags(filepath: str) -> None:
-        """Deduplicate Vorbis comment tags in a FLAC file.
+        """Remove exact duplicate Vorbis comment values in a FLAC file.
 
-        Many Soulseek sources have duplicate ARTIST/TITLE/ALBUM entries.
-        For each tag key, keep only the first value.
+        Many Soulseek sources have identical ARTIST/TITLE/ALBUM entries
+        repeated.  This removes only exact repeated values while preserving
+        legitimate multi-value tags (e.g. multiple artists or genres).
         """
         if not filepath.lower().endswith(".flac"):
             return
@@ -217,8 +218,14 @@ class FileProcessor:
             changed = False
             for key in list(audio.keys()):
                 values = audio.get(key, [])
-                if len(values) > 1:
-                    audio[key] = [values[0]]
+                if len(values) <= 1:
+                    continue
+                seen: list[str] = []
+                for v in values:
+                    if v not in seen:
+                        seen.append(v)
+                if len(seen) < len(values):
+                    audio[key] = seen
                     changed = True
             if changed:
                 audio.save()

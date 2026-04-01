@@ -2,6 +2,7 @@
 
 import os
 
+import mutagen.flac
 import pytest
 
 from music_downloader.processor.file_handler import FileProcessor
@@ -82,9 +83,81 @@ class TestFileProcessor:
         processor.cleanup_download(str(source))
         assert not os.path.exists(str(source))
 
+    def test_dedup_flac_tags_removes_exact_duplicates(self, tmp_path):
+        """Test that exact duplicate tag values are removed."""
+        flac_path = str(tmp_path / "test.flac")
+        _create_test_flac(flac_path, {"artist": ["Le Tigre", "Le Tigre"], "title": ["Deceptacon", "Deceptacon"]})
+
+        FileProcessor._dedup_flac_tags(flac_path)
+
+        audio = mutagen.flac.FLAC(flac_path)
+        assert audio["artist"] == ["Le Tigre"]
+        assert audio["title"] == ["Deceptacon"]
+
+    def test_dedup_flac_tags_preserves_legitimate_multi_values(self, tmp_path):
+        """Test that different multi-value tags are kept."""
+        flac_path = str(tmp_path / "test.flac")
+        _create_test_flac(flac_path, {"artist": ["Bad Computer", "Danyka Nadeau"], "genre": ["EDM", "Drum and Bass"]})
+
+        FileProcessor._dedup_flac_tags(flac_path)
+
+        audio = mutagen.flac.FLAC(flac_path)
+        assert audio["artist"] == ["Bad Computer", "Danyka Nadeau"]
+        assert audio["genre"] == ["EDM", "Drum and Bass"]
+
+    def test_dedup_flac_tags_mixed(self, tmp_path):
+        """Test mix of duplicates and legitimate multi-values."""
+        flac_path = str(tmp_path / "test.flac")
+        _create_test_flac(flac_path, {
+            "artist": ["Coldplay", "Coldplay"],
+            "genre": ["Rock", "Alternative", "Rock"],
+        })
+
+        FileProcessor._dedup_flac_tags(flac_path)
+
+        audio = mutagen.flac.FLAC(flac_path)
+        assert audio["artist"] == ["Coldplay"]
+        assert audio["genre"] == ["Rock", "Alternative"]
+
+    def test_dedup_flac_tags_skips_non_flac(self, tmp_path):
+        """Test that non-FLAC files are ignored."""
+        mp3_path = str(tmp_path / "test.mp3")
+        with open(mp3_path, "wb") as f:
+            f.write(b"\x00" * 100)
+        # Should not raise
+        FileProcessor._dedup_flac_tags(mp3_path)
+
     def test_sanitize_filename(self):
         """Test filename sanitization."""
         assert FileProcessor._sanitize_filename('Hello: "World"') == "Hello World"
         assert FileProcessor._sanitize_filename("a/b\\c") == "abc"
         assert FileProcessor._sanitize_filename("  spaces  ") == "spaces"
         assert FileProcessor._sanitize_filename("multiple   spaces") == "multiple spaces"
+
+
+def _create_test_flac(path: str, tags: dict[str, list[str]]) -> None:
+    """Create a minimal valid FLAC file with the given Vorbis comment tags."""
+    import struct
+
+    # Valid STREAMINFO: 44100 Hz, stereo, 16-bit, 0 samples
+    streaminfo = bytes([
+        0x10, 0x00, 0x10, 0x00,        # min/max blocksize = 4096
+        0x00, 0x00, 0x00,              # min framesize
+        0x00, 0x00, 0x00,              # max framesize
+        0x0A, 0xC4, 0x42, 0xF0,        # sample_rate=44100, channels=2, bps=16
+        0x00, 0x00, 0x00, 0x00,        # total samples
+    ] + [0x00] * 16)                    # MD5
+
+    streaminfo_header = struct.pack(">I", (0x00 << 24) | 34)
+    padding_header = struct.pack(">I", (0x81 << 24) | 0)
+
+    with open(path, "wb") as f:
+        f.write(b"fLaC")
+        f.write(streaminfo_header)
+        f.write(streaminfo)
+        f.write(padding_header)
+
+    audio = mutagen.flac.FLAC(path)
+    for key, values in tags.items():
+        audio[key] = values
+    audio.save()
