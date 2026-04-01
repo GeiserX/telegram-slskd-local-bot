@@ -3,6 +3,7 @@ File processor for renaming and placing downloaded files.
 Handles the final step: rename to 'Artist - Title.flac' and move to output directory.
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -162,14 +163,18 @@ class FileProcessor:
                     target_path = f"{base} ({counter}){ext_with_dot}"
                     counter += 1
 
-            # Copy to a temp file, clean tags, then atomically rename
-            # into the watched output dir so downstream watchers only
-            # see the file once, already clean.
-            tmp_dir = os.path.dirname(target_path)
-            tmp_path = os.path.join(tmp_dir, ".tmp__import_" + os.path.basename(target_path))
-            shutil.copy2(source_path, tmp_path)
-            self._dedup_flac_tags(tmp_path)
-            os.replace(tmp_path, target_path)
+            # Copy to a temp file with a non-audio extension so downstream
+            # watchers (audio-transcoder, Navidrome) ignore it entirely.
+            # Clean tags on the temp file, then atomically rename into place.
+            tmp_path = target_path + ".importing"
+            try:
+                shutil.copy2(source_path, tmp_path)
+                self._dedup_flac_tags(tmp_path)
+                os.replace(tmp_path, target_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_path)
+                raise
             logger.info(f"File placed: {target_path}")
 
             return target_path
@@ -213,9 +218,10 @@ class FileProcessor:
         Many Soulseek sources have identical ARTIST/TITLE/ALBUM entries
         repeated.  This removes only exact repeated values while preserving
         legitimate multi-value tags (e.g. multiple artists or genres).
+
+        Accepts any path; non-FLAC files are silently skipped via the
+        try/except (mutagen reads file headers, not extensions).
         """
-        if not filepath.lower().endswith(".flac"):
-            return
         try:
             audio = mutagen.flac.FLAC(filepath)
             changed = False

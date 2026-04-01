@@ -73,8 +73,7 @@ class TestFileProcessor:
         assert result is not None
         assert os.path.exists(result)
         # No temp file left behind
-        tmp_name = os.path.join(os.path.dirname(result), ".tmp__import_" + os.path.basename(result))
-        assert not os.path.exists(tmp_name)
+        assert not os.path.exists(result + ".importing")
 
         audio = mutagen.flac.FLAC(result)
         assert audio["artist"] == ["Le Tigre"]
@@ -142,11 +141,11 @@ class TestFileProcessor:
         assert audio["genre"] == ["Rock", "Alternative"]
 
     def test_dedup_flac_tags_skips_non_flac(self, tmp_path):
-        """Test that non-FLAC files are ignored."""
+        """Test that non-FLAC files are silently skipped."""
         mp3_path = str(tmp_path / "test.mp3")
         with open(mp3_path, "wb") as f:
             f.write(b"\x00" * 100)
-        # Should not raise
+        # Should not raise (mutagen will fail to parse, caught by try/except)
         FileProcessor._dedup_flac_tags(mp3_path)
 
     def test_sanitize_filename(self):
