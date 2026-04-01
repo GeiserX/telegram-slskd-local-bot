@@ -9,6 +9,8 @@ import re
 import shutil
 from difflib import SequenceMatcher
 
+import mutagen.flac
+
 logger = logging.getLogger(__name__)
 
 # Audio extensions to check for duplicates
@@ -165,6 +167,8 @@ class FileProcessor:
             shutil.copy2(source_path, target_path)
             logger.info(f"File placed: {target_path}")
 
+            self._dedup_flac_tags(target_path)
+
             return target_path
 
         except Exception:
@@ -198,6 +202,29 @@ class FileProcessor:
         except Exception:
             logger.exception(f"Failed to cleanup: {source_path}")
             return False
+
+    @staticmethod
+    def _dedup_flac_tags(filepath: str) -> None:
+        """Deduplicate Vorbis comment tags in a FLAC file.
+
+        Many Soulseek sources have duplicate ARTIST/TITLE/ALBUM entries.
+        For each tag key, keep only the first value.
+        """
+        if not filepath.lower().endswith(".flac"):
+            return
+        try:
+            audio = mutagen.flac.FLAC(filepath)
+            changed = False
+            for key in list(audio.keys()):
+                values = audio.get(key, [])
+                if len(values) > 1:
+                    audio[key] = [values[0]]
+                    changed = True
+            if changed:
+                audio.save()
+                logger.info("Deduplicated FLAC tags: %s", os.path.basename(filepath))
+        except Exception:
+            logger.debug("Tag dedup failed for %s", filepath, exc_info=True)
 
     @staticmethod
     def _sanitize_filename(name: str) -> str:
