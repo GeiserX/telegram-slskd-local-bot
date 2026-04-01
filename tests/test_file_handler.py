@@ -63,11 +63,14 @@ class TestFileProcessor:
     def test_process_file_deduplicates_flac_atomically(self, processor, tmp_path):
         """Test that process_file deduplicates tags before the file is visible in output."""
         source = tmp_path / "downloads" / "dup.flac"
-        _create_test_flac(str(source), {
-            "artist": ["Le Tigre", "Le Tigre"],
-            "title": ["Deceptacon", "Deceptacon"],
-            "genre": ["Punk", "Electronic"],
-        })
+        _create_test_flac(
+            str(source),
+            {
+                "artist": ["Le Tigre", "Le Tigre"],
+                "title": ["Deceptacon", "Deceptacon"],
+                "genre": ["Punk", "Electronic"],
+            },
+        )
 
         result = processor.process_file(str(source), "Le Tigre", "Deceptacon")
         assert result is not None
@@ -129,10 +132,13 @@ class TestFileProcessor:
     def test_dedup_flac_tags_mixed(self, tmp_path):
         """Test mix of duplicates and legitimate multi-values."""
         flac_path = str(tmp_path / "test.flac")
-        _create_test_flac(flac_path, {
-            "artist": ["Coldplay", "Coldplay"],
-            "genre": ["Rock", "Alternative", "Rock"],
-        })
+        _create_test_flac(
+            flac_path,
+            {
+                "artist": ["Coldplay", "Coldplay"],
+                "genre": ["Rock", "Alternative", "Rock"],
+            },
+        )
 
         FileProcessor._dedup_flac_tags(flac_path)
 
@@ -161,13 +167,29 @@ def _create_test_flac(path: str, tags: dict[str, list[str]]) -> None:
     import struct
 
     # Valid STREAMINFO: 44100 Hz, stereo, 16-bit, 0 samples
-    streaminfo = bytes([
-        0x10, 0x00, 0x10, 0x00,        # min/max blocksize = 4096
-        0x00, 0x00, 0x00,              # min framesize
-        0x00, 0x00, 0x00,              # max framesize
-        0x0A, 0xC4, 0x42, 0xF0,        # sample_rate=44100, channels=2, bps=16
-        0x00, 0x00, 0x00, 0x00,        # total samples
-    ] + [0x00] * 16)                    # MD5
+    streaminfo = bytes(
+        [
+            0x10,
+            0x00,
+            0x10,
+            0x00,  # min/max blocksize = 4096
+            0x00,
+            0x00,
+            0x00,  # min framesize
+            0x00,
+            0x00,
+            0x00,  # max framesize
+            0x0A,
+            0xC4,
+            0x42,
+            0xF0,  # sample_rate=44100, channels=2, bps=16
+            0x00,
+            0x00,
+            0x00,
+            0x00,  # total samples
+        ]
+        + [0x00] * 16
+    )  # MD5
 
     streaminfo_header = struct.pack(">I", (0x00 << 24) | 34)
     padding_header = struct.pack(">I", (0x81 << 24) | 0)
