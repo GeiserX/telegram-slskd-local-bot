@@ -60,6 +60,28 @@ class TestFileProcessor:
         assert os.path.exists(result)
         assert "Nancy Sinatra - Bang Bang.flac" in result
 
+    def test_process_file_deduplicates_flac_atomically(self, processor, tmp_path):
+        """Test that process_file deduplicates tags before the file is visible in output."""
+        source = tmp_path / "downloads" / "dup.flac"
+        _create_test_flac(str(source), {
+            "artist": ["Le Tigre", "Le Tigre"],
+            "title": ["Deceptacon", "Deceptacon"],
+            "genre": ["Punk", "Electronic"],
+        })
+
+        result = processor.process_file(str(source), "Le Tigre", "Deceptacon")
+        assert result is not None
+        assert os.path.exists(result)
+        # No temp file left behind
+        tmp_name = os.path.join(os.path.dirname(result), ".tmp__import_" + os.path.basename(result))
+        assert not os.path.exists(tmp_name)
+
+        audio = mutagen.flac.FLAC(result)
+        assert audio["artist"] == ["Le Tigre"]
+        assert audio["title"] == ["Deceptacon"]
+        # Legitimate multi-value preserved
+        assert audio["genre"] == ["Punk", "Electronic"]
+
     def test_process_file_avoids_overwrite(self, processor, tmp_path):
         """Test that existing files are not overwritten."""
         source1 = tmp_path / "source1.flac"

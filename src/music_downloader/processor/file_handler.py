@@ -162,12 +162,15 @@ class FileProcessor:
                     target_path = f"{base} ({counter}){ext_with_dot}"
                     counter += 1
 
-            # Copy (not move) to preserve the original in downloads
-            # until user confirms. Then we can clean up.
-            shutil.copy2(source_path, target_path)
+            # Copy to a temp file, clean tags, then atomically rename
+            # into the watched output dir so downstream watchers only
+            # see the file once, already clean.
+            tmp_dir = os.path.dirname(target_path)
+            tmp_path = os.path.join(tmp_dir, ".tmp__import_" + os.path.basename(target_path))
+            shutil.copy2(source_path, tmp_path)
+            self._dedup_flac_tags(tmp_path)
+            os.replace(tmp_path, target_path)
             logger.info(f"File placed: {target_path}")
-
-            self._dedup_flac_tags(target_path)
 
             return target_path
 
