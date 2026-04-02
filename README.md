@@ -159,6 +159,22 @@ Results containing excluded keywords (live, remix, etc.) are automatically filte
                                               └──────────────┘
 ```
 
+## Related Projects
+
+**Music Pipeline:**
+
+- [slskd-transform](https://github.com/GeiserX/slskd-transform) — Bulk upgrade lossy to lossless FLAC via Soulseek
+- [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) — Automated multi-format audio transcoding
+- [jellyfin-encoder](https://github.com/GeiserX/jellyfin-encoder) — Automatic 720p HEVC/AV1 transcoding for Jellyfin
+
+**Telegram Bots:**
+
+- [paperless-telegram-bot](https://github.com/GeiserX/paperless-telegram-bot) — Manage Paperless-NGX documents through Telegram
+- [AskePub](https://github.com/GeiserX/AskePub) — Telegram bot for ePub annotation with GPT-4
+- [telegram-delay-channel-cloner](https://github.com/GeiserX/telegram-delay-channel-cloner) — Relay messages between channels with delay
+- [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) — Sync Jellyfin access with Telegram membership
+- [Telegram-Archive](https://github.com/GeiserX/Telegram-Archive) — Automated Telegram backup with local web viewer
+
 ## License
 
 [GPL-3.0](LICENSE)
