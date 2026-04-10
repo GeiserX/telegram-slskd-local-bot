@@ -113,14 +113,14 @@ class TestResultScorer:
         busy_score = next(r for r in scored if "B.flac" in r.filename).score
         assert free_score > busy_score
 
-    def test_cd_quality_preferred(self, scorer, track):
-        """16-bit/44.1kHz should be preferred over hi-res for consistency."""
+    def test_hires_preferred_over_cd(self, scorer, track):
+        """24-bit/96kHz should be preferred over CD quality."""
         cd = make_result(bit_depth=16, sample_rate=44100, filename="Nancy Sinatra - Bang CD.flac")
         hires = make_result(bit_depth=24, sample_rate=96000, filename="Nancy Sinatra - Bang HiRes.flac")
         scored = scorer.score_results([cd, hires], track)
         cd_score = next(r for r in scored if "CD.flac" in r.filename).score
         hires_score = next(r for r in scored if "HiRes.flac" in r.filename).score
-        assert cd_score > hires_score
+        assert hires_score > cd_score
 
     def test_deduplication(self, scorer, track):
         """Duplicate basenames should be deduplicated (keep highest score)."""

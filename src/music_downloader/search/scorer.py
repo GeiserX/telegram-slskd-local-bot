@@ -120,20 +120,22 @@ class ResultScorer:
             score += 15.0
 
         # ===== AUDIO QUALITY (0-25 points) =====
-        # Prefer 16-bit/44.1kHz (CD quality) for consistency
+        # Prefer hi-res: higher bit depth and sample rate score better
         if result.bit_depth:
-            if result.bit_depth == 16:
-                score += 15.0  # Standard CD quality — preferred
-            elif result.bit_depth == 24:
-                score += 12.0  # Hi-res — good but larger files
+            if result.bit_depth >= 24:
+                score += 15.0  # Hi-res — preferred
+            elif result.bit_depth == 16:
+                score += 10.0  # CD quality — good
             else:
                 score += 5.0
 
         if result.sample_rate:
-            if result.sample_rate == 44100:
-                score += 10.0
-            elif result.sample_rate in (48000, 96000, 88200):
+            if result.sample_rate >= 88200:
+                score += 10.0  # 88.2kHz / 96kHz+ — preferred
+            elif result.sample_rate == 48000:
                 score += 7.0
+            elif result.sample_rate == 44100:
+                score += 6.0  # CD standard — still good
             else:
                 score += 3.0
 
