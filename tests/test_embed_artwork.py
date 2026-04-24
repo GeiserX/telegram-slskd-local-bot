@@ -13,11 +13,24 @@ def _create_test_flac(path: str, with_art: bool = False) -> None:
     """Create a minimal valid FLAC file."""
     streaminfo = bytes(
         [
-            0x10, 0x00, 0x10, 0x00,
-            0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00,
-            0x0A, 0xC4, 0x42, 0xF0,
-            0x00, 0x00, 0x00, 0x00,
+            0x10,
+            0x00,
+            0x10,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x0A,
+            0xC4,
+            0x42,
+            0xF0,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
         ]
         + [0x00] * 16
     )
@@ -44,15 +57,7 @@ class TestFetchSpotifyArtwork:
     def test_returns_bytes_on_success(self):
         mock_sp = MagicMock()
         mock_sp.search.return_value = {
-            "tracks": {
-                "items": [
-                    {
-                        "album": {
-                            "images": [{"url": "https://example.com/art.jpg"}]
-                        }
-                    }
-                ]
-            }
+            "tracks": {"items": [{"album": {"images": [{"url": "https://example.com/art.jpg"}]}}]}
         }
         with patch("music_downloader.tools.embed_artwork.httpx") as mock_httpx:
             mock_resp = MagicMock()
@@ -70,9 +75,7 @@ class TestFetchSpotifyArtwork:
 
     def test_returns_none_no_images(self):
         mock_sp = MagicMock()
-        mock_sp.search.return_value = {
-            "tracks": {"items": [{"album": {"images": []}}]}
-        }
+        mock_sp.search.return_value = {"tracks": {"items": [{"album": {"images": []}}]}}
         result = fetch_spotify_artwork(mock_sp, "Artist", "Title")
         assert result is None
 

@@ -30,7 +30,10 @@ class TestMain:
             mock_run.assert_called_once()
 
     def test_run_subcommand(self):
-        with patch.object(sys, "argv", ["slskd-importer", "run"]), patch("music_downloader.__main__.cmd_run") as mock_run:
+        with (
+            patch.object(sys, "argv", ["slskd-importer", "run"]),
+            patch("music_downloader.__main__.cmd_run") as mock_run,
+        ):
             main()
             mock_run.assert_called_once()
 

@@ -46,9 +46,12 @@ def _make_config():
 
 def _make_track():
     return TrackInfo(
-        artist="Nancy Sinatra", title="Bang Bang",
-        album="How Does That Grab You?", duration_ms=162_000,
-        spotify_url="https://open.spotify.com/track/xxx", year="1966",
+        artist="Nancy Sinatra",
+        title="Bang Bang",
+        album="How Does That Grab You?",
+        duration_ms=162_000,
+        spotify_url="https://open.spotify.com/track/xxx",
+        year="1966",
     )
 
 
@@ -56,8 +59,14 @@ def _make_result(idx=0, ext="flac"):
     return SearchResult(
         username=f"user{idx}",
         filename=f"\\Music\\Nancy Sinatra - Bang Bang {idx}.{ext}",
-        size=30_000_000, bit_rate=900, bit_depth=16, sample_rate=44100,
-        length=162, has_free_slot=True, upload_speed=1_000_000, queue_length=0,
+        size=30_000_000,
+        bit_rate=900,
+        bit_depth=16,
+        sample_rate=44100,
+        length=162,
+        has_free_slot=True,
+        upload_speed=1_000_000,
+        queue_length=0,
     )
 
 
@@ -279,10 +288,15 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.flac")
-            bot._analyze_flac = AsyncMock(return_value=FlacVerdict(
-                verdict="AUTHENTIC", cutoff_khz=22.05, nyquist_khz=22.05,
-                sample_rate=44100, bit_depth=16,
-            ))
+            bot._analyze_flac = AsyncMock(
+                return_value=FlacVerdict(
+                    verdict="AUTHENTIC",
+                    cutoff_khz=22.05,
+                    nyquist_khz=22.05,
+                    sample_rate=44100,
+                    bit_depth=16,
+                )
+            )
 
             status_msg = AsyncMock()
             status_msg.edit_text = AsyncMock()
@@ -411,8 +425,15 @@ class TestSendLargeFile:
             context.bot.send_audio = AsyncMock(return_value=sent_msg)
 
             await bot._send_large_file(
-                context, 123, _make_track(), _make_result(),
-                "/fake/source.flac", 60_000_000, "Quality line", "#1", "dl1",
+                context,
+                123,
+                _make_track(),
+                _make_result(),
+                "/fake/source.flac",
+                60_000_000,
+                "Quality line",
+                "#1",
+                "dl1",
             )
             context.bot.send_audio.assert_called_once()
         finally:
@@ -447,6 +468,7 @@ class TestSendLargeFile:
 
             # Patch os.path.getsize to return large size for OGG
             orig_getsize = os.path.getsize
+
             def mock_getsize(path):
                 if path == ogg_path:
                     return 60_000_000  # > 50MB limit
@@ -454,8 +476,15 @@ class TestSendLargeFile:
 
             with patch("music_downloader.bot.handlers.os.path.getsize", side_effect=mock_getsize):
                 await bot._send_large_file(
-                    context, 123, _make_track(), _make_result(),
-                    "/fake/source.flac", 70_000_000, "Quality", "#1", "dl1",
+                    context,
+                    123,
+                    _make_track(),
+                    _make_result(),
+                    "/fake/source.flac",
+                    70_000_000,
+                    "Quality",
+                    "#1",
+                    "dl1",
                 )
         finally:
             for p in (ogg_path, preview_path):
@@ -484,8 +513,15 @@ class TestSendLargeFile:
             context.bot.send_audio = AsyncMock(return_value=sent_msg)
 
             await bot._send_large_file(
-                context, 123, _make_track(), _make_result(),
-                "/fake/source.flac", 60_000_000, "Quality", "#1", "dl1",
+                context,
+                123,
+                _make_track(),
+                _make_result(),
+                "/fake/source.flac",
+                60_000_000,
+                "Quality",
+                "#1",
+                "dl1",
             )
         finally:
             if os.path.exists(preview_path):
@@ -505,8 +541,15 @@ class TestSendLargeFile:
         context.bot.send_message = AsyncMock(return_value=sent_msg)
 
         await bot._send_large_file(
-            context, 123, _make_track(), _make_result(),
-            "/fake/source.flac", 60_000_000, "Quality", "#1", "dl1",
+            context,
+            123,
+            _make_track(),
+            _make_result(),
+            "/fake/source.flac",
+            60_000_000,
+            "Quality",
+            "#1",
+            "dl1",
         )
         context.bot.send_message.assert_called_once()
 
@@ -518,8 +561,11 @@ class TestAsyncHelpers:
     async def test_analyze_flac_runs(self, mock_slskd_cls, mock_spotify):
         with patch("music_downloader.bot.handlers.analyze_flac") as mock_analyze:
             mock_analyze.return_value = FlacVerdict(
-                verdict="AUTHENTIC", cutoff_khz=22.05, nyquist_khz=22.05,
-                sample_rate=44100, bit_depth=16,
+                verdict="AUTHENTIC",
+                cutoff_khz=22.05,
+                nyquist_khz=22.05,
+                sample_rate=44100,
+                bit_depth=16,
             )
             result = await MusicBot._analyze_flac("/fake/path.flac")
             assert result is not None

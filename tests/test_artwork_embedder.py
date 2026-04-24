@@ -24,11 +24,24 @@ def _create_test_flac(path: str, tags: dict | None = None, with_art: bool = Fals
     """Create a minimal valid FLAC file."""
     streaminfo = bytes(
         [
-            0x10, 0x00, 0x10, 0x00,
-            0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00,
-            0x0A, 0xC4, 0x42, 0xF0,
-            0x00, 0x00, 0x00, 0x00,
+            0x10,
+            0x00,
+            0x10,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x0A,
+            0xC4,
+            0x42,
+            0xF0,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
         ]
         + [0x00] * 16
     )
@@ -121,11 +134,7 @@ class TestFetchSpotifyArtworkUrl:
     def test_returns_url(self):
         mock_sp = MagicMock()
         mock_sp.search.return_value = {
-            "tracks": {
-                "items": [
-                    {"album": {"images": [{"url": "https://i.scdn.co/image/abc"}]}}
-                ]
-            }
+            "tracks": {"items": [{"album": {"images": [{"url": "https://i.scdn.co/image/abc"}]}}]}
         }
         result = _fetch_spotify_artwork_url(mock_sp, "Artist", "Title")
         assert result == "https://i.scdn.co/image/abc"
@@ -137,9 +146,7 @@ class TestFetchSpotifyArtworkUrl:
 
     def test_no_images(self):
         mock_sp = MagicMock()
-        mock_sp.search.return_value = {
-            "tracks": {"items": [{"album": {"images": []}}]}
-        }
+        mock_sp.search.return_value = {"tracks": {"items": [{"album": {"images": []}}]}}
         assert _fetch_spotify_artwork_url(mock_sp, "A", "T") is None
 
     def test_exception(self):
@@ -230,7 +237,10 @@ class TestRun:
     def test_run_no_credentials_exits(self, tmp_path):
         music_dir = tmp_path / "music"
         music_dir.mkdir()
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "", "SPOTIFY_CLIENT_SECRET": ""}, clear=False), pytest.raises(SystemExit):
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "", "SPOTIFY_CLIENT_SECRET": ""}, clear=False),
+            pytest.raises(SystemExit),
+        ):
             run(str(music_dir))
 
     def test_run_embeds_artwork(self, tmp_path):

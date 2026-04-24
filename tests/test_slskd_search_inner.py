@@ -80,9 +80,12 @@ class TestSearchInner:
     @pytest.mark.asyncio
     async def test_cleanup_stale_searches(self, client):
         """Stale searches are cleaned up before new search."""
-        client.client.searches.get_all = MagicMock(return_value=[
-            {"id": "old-1"}, {"id": "old-2"},
-        ])
+        client.client.searches.get_all = MagicMock(
+            return_value=[
+                {"id": "old-1"},
+                {"id": "old-2"},
+            ]
+        )
         client.client.searches.delete = MagicMock()
         client.client.searches.search_text = MagicMock(return_value={"id": "new-1"})
 
@@ -126,10 +129,12 @@ class TestStopAndCollect:
     @pytest.mark.asyncio
     async def test_stop_and_collect_with_responses(self, client):
         client.client.searches.stop = MagicMock()
-        client.client.searches.state = MagicMock(return_value={
-            "responses": [{"username": "u1"}, {"username": "u2"}],
-            "responseCount": 2,
-        })
+        client.client.searches.state = MagicMock(
+            return_value={
+                "responses": [{"username": "u1"}, {"username": "u2"}],
+                "responseCount": 2,
+            }
+        )
         client.client.searches.delete = MagicMock()
 
         results = await client._stop_and_collect("search-1")
@@ -138,10 +143,12 @@ class TestStopAndCollect:
     @pytest.mark.asyncio
     async def test_stop_and_collect_fallback(self, client):
         client.client.searches.stop = MagicMock()
-        client.client.searches.state = MagicMock(return_value={
-            "responses": [],
-            "responseCount": 3,
-        })
+        client.client.searches.state = MagicMock(
+            return_value={
+                "responses": [],
+                "responseCount": 3,
+            }
+        )
         client.client.searches.search_responses = MagicMock(return_value=[{"username": "u"}])
         client.client.searches.delete = MagicMock()
 

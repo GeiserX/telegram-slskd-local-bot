@@ -324,10 +324,14 @@ class TestMusicBotCancellation:
     def test_cancel_removes_downloads_for_chat(self, mock_slskd, mock_spotify):
         bot = MusicBot(_make_config())
         bot.downloads["1"] = PendingDownload(
-            track=_make_track(), result=_make_search_result(), chat_id=12345,
+            track=_make_track(),
+            result=_make_search_result(),
+            chat_id=12345,
         )
         bot.downloads["2"] = PendingDownload(
-            track=_make_track(), result=_make_search_result(), chat_id=99999,
+            track=_make_track(),
+            result=_make_search_result(),
+            chat_id=99999,
         )
         bot._cancel_chat_operations(12345)
         assert "1" not in bot.downloads
@@ -441,7 +445,9 @@ class TestMusicBotCommands:
     async def test_cmd_status_with_downloads(self, mock_slskd, mock_spotify):
         bot = MusicBot(_make_config())
         bot.downloads["1"] = PendingDownload(
-            track=_make_track(), result=_make_search_result(), chat_id=67890,
+            track=_make_track(),
+            result=_make_search_result(),
+            chat_id=67890,
         )
         update = _make_update()
         context = _make_context()
@@ -687,7 +693,9 @@ class TestMusicBotCallbackHandler:
         track = _make_track()
         result = _make_search_result()
         bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=67890,
+            track=track,
+            result=result,
+            chat_id=67890,
             source_path="/downloads/song.flac",
         )
         update = _make_callback_update(data="approve:1")
@@ -706,7 +714,9 @@ class TestMusicBotCallbackHandler:
         track = _make_track()
         result = _make_search_result()
         bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=67890,
+            track=track,
+            result=result,
+            chat_id=67890,
             source_path="/downloads/song.flac",
         )
         update = _make_callback_update(data="approve:1")
@@ -721,7 +731,9 @@ class TestMusicBotCallbackHandler:
         track = _make_track()
         result = _make_search_result()
         bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=67890,
+            track=track,
+            result=result,
+            chat_id=67890,
             source_path=None,
         )
         update = _make_callback_update(data="approve:1")
@@ -736,7 +748,9 @@ class TestMusicBotCallbackHandler:
         track = _make_track()
         result = _make_search_result()
         bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=67890,
+            track=track,
+            result=result,
+            chat_id=67890,
         )
         update = _make_callback_update(data="reject:1")
         context = _make_context()
@@ -975,7 +989,9 @@ class TestMusicBotDoSearch:
         """When query has 'Artist - Title', filter by artist."""
         bot = MusicBot(_make_config())
         t1 = _make_track()
-        t2 = TrackInfo(artist="Other Artist", title="Bang Bang", album="X", duration_ms=162000, spotify_url="", year="2024")
+        t2 = TrackInfo(
+            artist="Other Artist", title="Bang Bang", album="X", duration_ms=162000, spotify_url="", year="2024"
+        )
         bot.spotify = MagicMock()
         bot.spotify.search_multiple = MagicMock(return_value=[t1, t2])
         bot._do_slskd_search = AsyncMock()
@@ -998,7 +1014,9 @@ class TestMusicBotDismissOtherDownloads:
         bot = MusicBot(_make_config())
         bot.pending[67890] = PendingSearch(query="test", track=_make_track(), message_id=100)
         bot.downloads["2"] = PendingDownload(
-            track=_make_track(), result=_make_search_result(), chat_id=67890,
+            track=_make_track(),
+            result=_make_search_result(),
+            chat_id=67890,
             approval_message_id=200,
         )
         context = _make_context()

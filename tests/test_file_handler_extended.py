@@ -1,6 +1,5 @@
 """Extended tests for file_handler - covering find_similar and edge cases."""
 
-
 import pytest
 
 from music_downloader.processor.file_handler import FileProcessor

@@ -53,8 +53,12 @@ class TestSearchResult:
 
     def test_quality_display_full(self):
         r = SearchResult(
-            username="u", filename="f.flac", size=100,
-            bit_depth=24, sample_rate=96000, bit_rate=2000,
+            username="u",
+            filename="f.flac",
+            size=100,
+            bit_depth=24,
+            sample_rate=96000,
+            bit_rate=2000,
         )
         assert "24bit" in r.quality_display
         assert "96.0kHz" in r.quality_display
@@ -62,7 +66,9 @@ class TestSearchResult:
 
     def test_quality_display_bitrate_only(self):
         r = SearchResult(
-            username="u", filename="f.flac", size=100,
+            username="u",
+            filename="f.flac",
+            size=100,
             bit_rate=320,
         )
         assert r.quality_display == "320kbps"
@@ -73,8 +79,12 @@ class TestSearchResult:
 
     def test_str(self):
         r = SearchResult(
-            username="u", filename="\\Music\\Song.flac", size=30_000_000,
-            length=180, bit_depth=16, sample_rate=44100,
+            username="u",
+            filename="\\Music\\Song.flac",
+            size=30_000_000,
+            length=180,
+            bit_depth=16,
+            sample_rate=44100,
         )
         s = str(r)
         assert "Song.flac" in s
@@ -82,8 +92,11 @@ class TestSearchResult:
 
     def test_quality_display_bit_depth_sample_rate_only(self):
         r = SearchResult(
-            username="u", filename="f.flac", size=100,
-            bit_depth=16, sample_rate=44100,
+            username="u",
+            filename="f.flac",
+            size=100,
+            bit_depth=16,
+            sample_rate=44100,
         )
         assert "16bit/44.1kHz" in r.quality_display
         assert "kbps" not in r.quality_display
@@ -163,7 +176,13 @@ class TestSlskdClientParseResults:
                 "uploadSpeed": 5_000_000,
                 "queueLength": 0,
                 "files": [
-                    {"filename": "\\Music\\Song.flac", "size": 30_000_000, "length": 180, "bitDepth": 16, "sampleRate": 44100},
+                    {
+                        "filename": "\\Music\\Song.flac",
+                        "size": 30_000_000,
+                        "length": 180,
+                        "bitDepth": 16,
+                        "sampleRate": 44100,
+                    },
                     {"filename": "\\Music\\Song.mp3", "size": 10_000_000, "length": 180, "bitRate": 320},
                 ],
             }
@@ -238,7 +257,9 @@ class TestSlskdClientEnqueue:
 
     def test_enqueue_success(self, client):
         result = SearchResult(
-            username="user1", filename="\\Music\\Song.flac", size=30_000_000,
+            username="user1",
+            filename="\\Music\\Song.flac",
+            size=30_000_000,
         )
         client.client.transfers.enqueue = MagicMock()
         assert client.enqueue_download(result) is True
@@ -246,7 +267,9 @@ class TestSlskdClientEnqueue:
 
     def test_enqueue_failure(self, client):
         result = SearchResult(
-            username="user1", filename="\\Music\\Song.flac", size=30_000_000,
+            username="user1",
+            filename="\\Music\\Song.flac",
+            size=30_000_000,
         )
         client.client.transfers.enqueue = MagicMock(side_effect=Exception("Connection error"))
         assert client.enqueue_download(result) is False
@@ -263,31 +286,31 @@ class TestSlskdClientGetDownloadStatus:
             return c
 
     def test_status_found(self, client):
-        client.client.transfers.get_downloads = MagicMock(return_value={
-            "directories": [
-                {
-                    "files": [
-                        {
-                            "filename": "\\Music\\Song.flac",
-                            "state": "Completed, Succeeded",
-                            "percentComplete": 100,
-                            "bytesTransferred": 30_000_000,
-                            "size": 30_000_000,
-                            "averageSpeed": 5_000_000,
-                        }
-                    ]
-                }
-            ]
-        })
+        client.client.transfers.get_downloads = MagicMock(
+            return_value={
+                "directories": [
+                    {
+                        "files": [
+                            {
+                                "filename": "\\Music\\Song.flac",
+                                "state": "Completed, Succeeded",
+                                "percentComplete": 100,
+                                "bytesTransferred": 30_000_000,
+                                "size": 30_000_000,
+                                "averageSpeed": 5_000_000,
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
         status = client.get_download_status("user1", "\\Music\\Song.flac")
         assert status is not None
         assert status.is_complete is True
         assert status.percent_complete == 100
 
     def test_status_not_found(self, client):
-        client.client.transfers.get_downloads = MagicMock(return_value={
-            "directories": [{"files": []}]
-        })
+        client.client.transfers.get_downloads = MagicMock(return_value={"directories": [{"files": []}]})
         status = client.get_download_status("user1", "\\Music\\Song.flac")
         assert status is None
 
@@ -356,8 +379,12 @@ class TestSlskdClientWaitForDownload:
     async def test_wait_completes(self, client):
         """wait_for_download returns completed status."""
         completed = DownloadStatus(
-            username="u", filename="f.flac", state="Completed, Succeeded",
-            percent_complete=100, bytes_transferred=100, size=100,
+            username="u",
+            filename="f.flac",
+            state="Completed, Succeeded",
+            percent_complete=100,
+            bytes_transferred=100,
+            size=100,
         )
         call_count = 0
 

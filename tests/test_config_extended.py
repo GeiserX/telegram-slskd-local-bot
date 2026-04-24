@@ -9,14 +9,18 @@ from music_downloader.config import Config, setup_logging
 
 class TestSetupLogging:
     def test_configures_logging(self):
-        with patch.dict(os.environ, {
-            "TELEGRAM_BOT_TOKEN": "t",
-            "SPOTIFY_CLIENT_ID": "s",
-            "SPOTIFY_CLIENT_SECRET": "ss",
-            "SLSKD_HOST": "h",
-            "SLSKD_API_KEY": "k",
-            "LOG_LEVEL": "DEBUG",
-        }, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_BOT_TOKEN": "t",
+                "SPOTIFY_CLIENT_ID": "s",
+                "SPOTIFY_CLIENT_SECRET": "ss",
+                "SLSKD_HOST": "h",
+                "SLSKD_API_KEY": "k",
+                "LOG_LEVEL": "DEBUG",
+            },
+            clear=False,
+        ):
             config = Config()
             setup_logging(config)
             assert logging.getLogger("httpx").level == logging.WARNING
@@ -27,14 +31,18 @@ class TestSetupLogging:
 
 class TestConfigWarnLevel:
     def test_warn_maps_to_warning(self):
-        with patch.dict(os.environ, {
-            "TELEGRAM_BOT_TOKEN": "t",
-            "SPOTIFY_CLIENT_ID": "s",
-            "SPOTIFY_CLIENT_SECRET": "ss",
-            "SLSKD_HOST": "h",
-            "SLSKD_API_KEY": "k",
-            "LOG_LEVEL": "WARN",
-        }, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_BOT_TOKEN": "t",
+                "SPOTIFY_CLIENT_ID": "s",
+                "SPOTIFY_CLIENT_SECRET": "ss",
+                "SLSKD_HOST": "h",
+                "SLSKD_API_KEY": "k",
+                "LOG_LEVEL": "WARN",
+            },
+            clear=False,
+        ):
             config = Config()
             assert config.log_level == logging.WARNING
 
