@@ -3,7 +3,7 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from music_downloader.__main__ import cmd_run, create_health_app, run_health_server
+from music_downloader.__main__ import cmd_run, run_health_server
 
 
 class TestRunHealthServer:
@@ -25,14 +25,16 @@ class TestCmdRun:
             "SLSKD_HOST": "h",
             "SLSKD_API_KEY": "k",
         }
-        with patch.dict(os.environ, env, clear=False):
-            with patch("music_downloader.__main__.create_bot") as mock_create:
-                mock_app = MagicMock()
-                mock_create.return_value = mock_app
-                with patch("music_downloader.__main__.threading.Thread") as mock_thread:
-                    mock_thread_instance = MagicMock()
-                    mock_thread.return_value = mock_thread_instance
-                    args = MagicMock()
-                    cmd_run(args)
-                    mock_thread_instance.start.assert_called_once()
-                    mock_app.run_polling.assert_called_once()
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("music_downloader.__main__.create_bot") as mock_create,
+            patch("music_downloader.__main__.threading.Thread") as mock_thread,
+        ):
+            mock_app = MagicMock()
+            mock_create.return_value = mock_app
+            mock_thread_instance = MagicMock()
+            mock_thread.return_value = mock_thread_instance
+            args = MagicMock()
+            cmd_run(args)
+            mock_thread_instance.start.assert_called_once()
+            mock_app.run_polling.assert_called_once()

@@ -1,20 +1,22 @@
 """Extended tests for Spotify metadata resolver - covering SpotifyResolver class."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
+from music_downloader.metadata.spotify import SpotifyResolver
 
 
 class TestSpotifyResolver:
     @pytest.fixture
     def resolver(self):
-        with patch("music_downloader.metadata.spotify.SpotifyClientCredentials"):
-            with patch("music_downloader.metadata.spotify.spotipy.Spotify") as mock_sp:
-                r = SpotifyResolver("test-id", "test-secret")
-                r.sp = mock_sp.return_value
-                return r
+        with (
+            patch("music_downloader.metadata.spotify.SpotifyClientCredentials"),
+            patch("music_downloader.metadata.spotify.spotipy.Spotify") as mock_sp,
+        ):
+            r = SpotifyResolver("test-id", "test-secret")
+            r.sp = mock_sp.return_value
+            return r
 
     def test_search_returns_track(self, resolver):
         resolver.sp.search.return_value = {

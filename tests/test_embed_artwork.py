@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import mutagen.flac
 import mutagen.mp4
-import pytest
 
 from music_downloader.tools.embed_artwork import embed_artwork_into_file, fetch_spotify_artwork
 

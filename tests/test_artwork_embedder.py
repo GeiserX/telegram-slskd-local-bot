@@ -218,19 +218,20 @@ class TestRun:
         flac_path = str(music_dir / "Artist - Title.flac")
         _create_test_flac(flac_path)
 
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}):
-            with patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"):
-                stats = run(str(music_dir), dry_run=True)
-                assert stats["total"] == 1
-                assert stats["missing"] == 1
-                assert len(stats["skipped"]) == 1
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}),
+            patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"),
+        ):
+            stats = run(str(music_dir), dry_run=True)
+            assert stats["total"] == 1
+            assert stats["missing"] == 1
+            assert len(stats["skipped"]) == 1
 
     def test_run_no_credentials_exits(self, tmp_path):
         music_dir = tmp_path / "music"
         music_dir.mkdir()
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "", "SPOTIFY_CLIENT_SECRET": ""}, clear=False):
-            with pytest.raises(SystemExit):
-                run(str(music_dir))
+        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "", "SPOTIFY_CLIENT_SECRET": ""}, clear=False), pytest.raises(SystemExit):
+            run(str(music_dir))
 
     def test_run_embeds_artwork(self, tmp_path):
         music_dir = tmp_path / "music"
@@ -238,17 +239,19 @@ class TestRun:
         flac_path = str(music_dir / "Artist - Title.flac")
         _create_test_flac(flac_path)
 
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}):
-            with patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"):
-                with patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url:
-                    mock_url.return_value = "https://example.com/art.jpg"
-                    with patch("music_downloader.tools.artwork_embedder._download_image") as mock_dl:
-                        mock_dl.return_value = b"\xff\xd8\xff\xe0" + b"\x00" * 100
-                        with patch("music_downloader.tools.artwork_embedder._embed_flac") as mock_embed:
-                            mock_embed.return_value = True
-                            with patch("music_downloader.tools.artwork_embedder.time.sleep"):
-                                stats = run(str(music_dir))
-                                assert stats["embedded"] == 1
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}),
+            patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"),
+            patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url,
+            patch("music_downloader.tools.artwork_embedder._download_image") as mock_dl,
+            patch("music_downloader.tools.artwork_embedder._embed_flac") as mock_embed,
+            patch("music_downloader.tools.artwork_embedder.time.sleep"),
+        ):
+            mock_url.return_value = "https://example.com/art.jpg"
+            mock_dl.return_value = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+            mock_embed.return_value = True
+            stats = run(str(music_dir))
+            assert stats["embedded"] == 1
 
     def test_run_unparseable_filename(self, tmp_path):
         music_dir = tmp_path / "music"
@@ -256,10 +259,12 @@ class TestRun:
         flac_path = str(music_dir / "JustAFilename.flac")
         _create_test_flac(flac_path)
 
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}):
-            with patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"):
-                stats = run(str(music_dir))
-                assert len(stats["failed"]) == 1
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}),
+            patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"),
+        ):
+            stats = run(str(music_dir))
+            assert len(stats["failed"]) == 1
 
     def test_run_no_spotify_artwork(self, tmp_path):
         music_dir = tmp_path / "music"
@@ -267,13 +272,15 @@ class TestRun:
         flac_path = str(music_dir / "Artist - Title.flac")
         _create_test_flac(flac_path)
 
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}):
-            with patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"):
-                with patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url:
-                    mock_url.return_value = None
-                    with patch("music_downloader.tools.artwork_embedder.time.sleep"):
-                        stats = run(str(music_dir))
-                        assert len(stats["failed"]) == 1
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}),
+            patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"),
+            patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url,
+            patch("music_downloader.tools.artwork_embedder.time.sleep"),
+        ):
+            mock_url.return_value = None
+            stats = run(str(music_dir))
+            assert len(stats["failed"]) == 1
 
     def test_run_download_image_fails(self, tmp_path):
         music_dir = tmp_path / "music"
@@ -281,14 +288,16 @@ class TestRun:
         flac_path = str(music_dir / "Artist - Title.flac")
         _create_test_flac(flac_path)
 
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}):
-            with patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"):
-                with patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url:
-                    mock_url.return_value = "https://example.com/art.jpg"
-                    with patch("music_downloader.tools.artwork_embedder._download_image") as mock_dl:
-                        mock_dl.return_value = None
-                        stats = run(str(music_dir))
-                        assert len(stats["failed"]) == 1
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}),
+            patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"),
+            patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url,
+            patch("music_downloader.tools.artwork_embedder._download_image") as mock_dl,
+        ):
+            mock_url.return_value = "https://example.com/art.jpg"
+            mock_dl.return_value = None
+            stats = run(str(music_dir))
+            assert len(stats["failed"]) == 1
 
     def test_run_writes_report(self, tmp_path):
         music_dir = tmp_path / "music"
@@ -297,10 +306,12 @@ class TestRun:
         _create_test_flac(flac_path)
         report_path = str(tmp_path / "report.txt")
 
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}):
-            with patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"):
-                run(str(music_dir), report_path=report_path)
-                assert os.path.isfile(report_path)
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}),
+            patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"),
+        ):
+            run(str(music_dir), report_path=report_path)
+            assert os.path.isfile(report_path)
 
     def test_run_with_aac_and_alac_dirs(self, tmp_path):
         music_dir = tmp_path / "music"
@@ -315,23 +326,25 @@ class TestRun:
         # Create sibling M4A in AAC dir
         (aac_dir / "Artist - Title.m4a").write_bytes(b"\x00" * 100)
 
-        with patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}):
-            with patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"):
-                with patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url:
-                    mock_url.return_value = "https://example.com/art.jpg"
-                    with patch("music_downloader.tools.artwork_embedder._download_image") as mock_dl:
-                        mock_dl.return_value = b"\xff\xd8\xff\xe0" + b"\x00" * 100
-                        with patch("music_downloader.tools.artwork_embedder._embed_flac") as mock_ef:
-                            mock_ef.return_value = True
-                            with patch("music_downloader.tools.artwork_embedder._m4a_has_art") as mock_has:
-                                mock_has.return_value = False
-                                with patch("music_downloader.tools.artwork_embedder._embed_m4a") as mock_em:
-                                    mock_em.return_value = True
-                                    with patch("music_downloader.tools.artwork_embedder.time.sleep"):
-                                        stats = run(
-                                            str(music_dir),
-                                            aac_dir=str(aac_dir),
-                                            alac_dir=str(alac_dir),
-                                        )
-                                        assert stats["embedded"] == 1
-                                        mock_em.assert_called_once()
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "secret"}),
+            patch("music_downloader.tools.artwork_embedder.spotipy.Spotify"),
+            patch("music_downloader.tools.artwork_embedder._fetch_spotify_artwork_url") as mock_url,
+            patch("music_downloader.tools.artwork_embedder._download_image") as mock_dl,
+            patch("music_downloader.tools.artwork_embedder._embed_flac") as mock_ef,
+            patch("music_downloader.tools.artwork_embedder._m4a_has_art") as mock_has,
+            patch("music_downloader.tools.artwork_embedder._embed_m4a") as mock_em,
+            patch("music_downloader.tools.artwork_embedder.time.sleep"),
+        ):
+            mock_url.return_value = "https://example.com/art.jpg"
+            mock_dl.return_value = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+            mock_ef.return_value = True
+            mock_has.return_value = False
+            mock_em.return_value = True
+            stats = run(
+                str(music_dir),
+                aac_dir=str(aac_dir),
+                alac_dir=str(alac_dir),
+            )
+            assert stats["embedded"] == 1
+            mock_em.assert_called_once()

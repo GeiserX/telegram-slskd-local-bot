@@ -1,6 +1,6 @@
 """Tests for SlskdClient._search_inner and _stop_and_collect."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

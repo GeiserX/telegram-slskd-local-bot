@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,7 +17,6 @@ from music_downloader.bot.handlers import (
     MusicBot,
     PendingDownload,
     PendingSearch,
-    _build_reduced_queries,
     _clean_search_title,
     _escape_md,
     _extract_latin_keywords,
@@ -21,14 +25,6 @@ from music_downloader.bot.handlers import (
 )
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.search.slskd_client import SearchResult
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-import tempfile
 
 _tmp_dir = None
 

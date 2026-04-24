@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from music_downloader.bot.handlers import MusicBot, PendingDownload, PendingSearch, create_bot
+from music_downloader.bot.handlers import MusicBot, create_bot
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.processor.flac_analyzer import FlacVerdict
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
-
 
 _tmp_dir = None
 
