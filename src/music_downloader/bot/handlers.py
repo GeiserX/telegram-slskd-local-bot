@@ -27,6 +27,7 @@ from music_downloader.bot.keyboards import (
     build_direct_search_keyboard,
     build_duplicate_keyboard,
     build_import_confirm_keyboard,
+    build_import_skip_keyboard,
     build_import_track_keyboard,
     build_results_keyboard,
     build_retry_keyboard,
@@ -86,6 +87,22 @@ async def _safe_edit(msg: Message, text: str, **kwargs) -> bool:
         return False
 
 
+async def _safe_query_edit(query, text: str, **kwargs) -> bool:
+    """Edit a callback query message, swallowing transient Telegram errors."""
+    try:
+        await query.edit_message_text(text, **kwargs)
+        return True
+    except BadRequest as exc:
+        logger.warning(f"Telegram query edit failed (BadRequest): {exc}")
+        return False
+    except TimedOut:
+        logger.warning("Telegram query edit timed out")
+        return False
+    except NetworkError as exc:
+        logger.warning(f"Telegram query edit network error: {exc}")
+        return False
+
+
 # Noise keywords that Spotify appends to track titles but Soulseek users never use.
 # Named remixes (e.g. "Butch Vig Remix") are intentionally excluded — they
 # represent distinct versions the user specifically selected.
@@ -114,14 +131,16 @@ _VERSION_PAREN_RE = re.compile(
 )
 
 
-_SURROUNDING_QUOTES_RE = re.compile("^[\\s'\"\\u2018\\u2019\\u201c\\u201d]+|[\\s'\"\\u2018\\u2019\\u201c\\u201d]+$")
+_QUOTE_CHARS = "'\"‘’“”"
 
 
 def _clean_search_title(title: str) -> str:
     """Strip Spotify version suffixes that add noise to Soulseek keyword search."""
     title = _VERSION_SUFFIX_RE.sub("", title)
     title = _VERSION_PAREN_RE.sub("", title)
-    title = _SURROUNDING_QUOTES_RE.sub("", title)
+    title = title.strip()
+    if len(title) >= 2 and title[0] in _QUOTE_CHARS and title[-1] in _QUOTE_CHARS:
+        title = title[1:-1].strip()
     return title
 
 
@@ -230,6 +249,7 @@ class PendingDownload:
     source_path: str | None = None  # Path in /downloads
     status_message_id: int | None = None
     approval_message_id: int | None = None  # Message with approve/reject buttons
+    result_index: int = 0  # Position in ranked results list
 
 
 class MusicBot:
@@ -280,6 +300,8 @@ class MusicBot:
 
         # Active import tracking (chat_id -> job_id)
         self._active_import: dict[int, int] = {}
+        # Separate pending search state for import flows (avoids clobbering self.pending)
+        self._import_pending: dict[int, PendingSearch] = {}
 
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot."""
@@ -316,6 +338,7 @@ class MusicBot:
             task.cancel()
 
         self.pending.pop(chat_id, None)
+        self._import_pending.pop(chat_id, None)
         self._spotify_candidates.pop(chat_id, None)
         self._spotify_page.pop(chat_id, None)
 
@@ -332,7 +355,15 @@ class MusicBot:
     def _track_task(self, chat_id: int, task: asyncio.Task):
         """Register a background task for cancellation tracking."""
         self._active_tasks.setdefault(chat_id, set()).add(task)
-        task.add_done_callback(lambda t: self._active_tasks.get(chat_id, set()).discard(t))
+
+        def _on_done(t: asyncio.Task) -> None:
+            tasks = self._active_tasks.get(chat_id)
+            if tasks is not None:
+                tasks.discard(t)
+                if not tasks:
+                    del self._active_tasks[chat_id]
+
+        task.add_done_callback(_on_done)
 
     # =========================================================================
     # COMMAND HANDLERS
@@ -410,7 +441,7 @@ class MusicBot:
         lines = ["*Recent downloads:*\n"]
         for entry in records:
             icon = {"success": "✅", "rejected": "🚫"}.get(entry.status, "❌")
-            lines.append(f"{icon} {entry.filename}")
+            lines.append(f"{icon} `{entry.filename}`")
 
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
@@ -540,14 +571,7 @@ class MusicBot:
             if self._is_stale(chat_id, generation):
                 return
 
-            flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
-            ranked = self.scorer.score_results(flac_results, track)
-            is_fallback = False
-
-            if not ranked:
-                all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-                ranked = self.scorer.score_results(all_audio, track)
-                is_fallback = bool(ranked)
+            ranked, is_fallback = self._rank_responses(raw_responses, track)
 
             # Fallback 2: title-only search
             if not ranked:
@@ -568,12 +592,7 @@ class MusicBot:
                 if self._is_stale(chat_id, generation):
                     return
 
-                flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
-                ranked = self.scorer.score_results(flac_results, track)
-                if not ranked:
-                    all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-                    ranked = self.scorer.score_results(all_audio, track)
-                    is_fallback = bool(ranked)
+                ranked, is_fallback = self._rank_responses(raw_responses, track)
 
             # Fallback 3: keyword reduction + album year
             if not ranked and not _has_non_latin_script(clean_title):
@@ -597,16 +616,9 @@ class MusicBot:
                         raw_responses = await self.slskd.search(
                             fallback_query, timeout_secs=self.config.search_timeout_secs
                         )
-                        flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
-                        ranked = self.scorer.score_results(flac_results, track)
+                        ranked, is_fallback = self._rank_responses(raw_responses, track)
                         if ranked:
                             logger.info("Keyword-reduction fallback hit: '%s'", fallback_query)
-                            break
-                        all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-                        ranked = self.scorer.score_results(all_audio, track)
-                        if ranked:
-                            is_fallback = True
-                            logger.info("Keyword-reduction fallback hit (non-FLAC): '%s'", fallback_query)
                             break
 
             # Fallback 4: artist + Latin keywords
@@ -635,22 +647,9 @@ class MusicBot:
                 if self._is_stale(chat_id, generation):
                     return
 
-                for flac_only in (True, False):
-                    parsed = self.slskd.parse_results(raw_responses, flac_only=flac_only)
-                    ranked = self.scorer.score_results(
-                        parsed,
-                        track,
-                        max_duration_diff=120,
-                    )
-                    if ranked:
-                        if not flac_only:
-                            is_fallback = True
-                        logger.info(
-                            "Artist-keyword fallback hit (query='%s', flac_only=%s)",
-                            fb4_query,
-                            flac_only,
-                        )
-                        break
+                ranked, is_fallback = self._rank_responses(raw_responses, track, max_duration_diff=120)
+                if ranked:
+                    logger.info("Artist-keyword fallback hit: '%s'", fb4_query)
 
             if self._is_stale(chat_id, generation):
                 return
@@ -705,27 +704,31 @@ class MusicBot:
         chat_id = update.effective_chat.id
         data = query.data
 
-        # Direct Soulseek search
-        if data.startswith("direct:"):
-            await self._handle_direct_search(update, context, chat_id, data)
+        # Dispatch callbacks by prefix
+        prefix = data.split(":", 1)[0]
+        handler = {
+            "direct": self._handle_direct_search,
+            "ic": self._handle_import_callback,
+            "ix": self._handle_import_callback,
+            "ia": self._handle_import_callback,
+            "ir": self._handle_import_callback,
+            "is": self._handle_import_callback,
+            "retry": self._handle_retry,
+            "next": self._handle_next_result,
+            "dup": self._handle_duplicate_response,
+            "sp_page": self._handle_spotify_page,
+            "sp": self._handle_spotify_selection,
+            "dl_page": self._handle_results_page,
+            "dl": self._handle_download_selection,
+            "approve": self._handle_approval,
+            "reject": self._handle_approval,
+        }.get(prefix)
+
+        if handler:
+            await handler(update, context, chat_id, data)
             return
 
-        # Import-related callbacks
-        if data.startswith("imp:"):
-            await self._handle_import_callback(update, context, chat_id, data)
-            return
-
-        # Retry failed download
-        if data.startswith("retry:"):
-            await self._handle_retry(update, context, chat_id, data)
-            return
-
-        # Try next result after failure
-        if data.startswith("next:"):
-            await self._handle_next_result(update, context, chat_id, data)
-            return
-
-        # Auto-mode toggle
+        # Auto-mode toggle (inline, no separate handler needed)
         if data.startswith("auto:"):
             self.auto_mode = data == "auto:on"
             mode_str = "ON" if self.auto_mode else "OFF"
@@ -733,36 +736,6 @@ class MusicBot:
                 f"Auto-download mode: *{mode_str}*",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            return
-
-        # Duplicate check response
-        if data.startswith("dup:"):
-            await self._handle_duplicate_response(update, context, chat_id, data)
-            return
-
-        # Spotify page navigation
-        if data.startswith("sp_page:"):
-            await self._handle_spotify_page(update, context, chat_id, data)
-            return
-
-        # Spotify track selection
-        if data.startswith("sp:"):
-            await self._handle_spotify_selection(update, context, chat_id, data)
-            return
-
-        # slskd results page navigation
-        if data.startswith("dl_page:"):
-            await self._handle_results_page(update, context, chat_id, data)
-            return
-
-        # Download selection from results
-        if data.startswith("dl:"):
-            await self._handle_download_selection(update, context, chat_id, data)
-            return
-
-        # Approve/reject downloaded file
-        if data.startswith("approve:") or data.startswith("reject:"):
-            await self._handle_approval(update, context, chat_id, data)
             return
 
     async def _handle_duplicate_response(self, update, context, chat_id: int, data: str):
@@ -911,6 +884,19 @@ class MusicBot:
         )
         self._track_task(chat_id, task)
 
+    def _rank_responses(
+        self, raw_responses, track: TrackInfo, max_duration_diff: int | None = None
+    ) -> tuple[list[SearchResult], bool]:
+        """Parse raw slskd responses and rank: try FLAC first, fall back to all audio."""
+        score_kwargs = {"max_duration_diff": max_duration_diff} if max_duration_diff else {}
+        flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
+        ranked = self.scorer.score_results(flac_results, track, **score_kwargs)
+        if ranked:
+            return ranked, False
+        all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+        ranked = self.scorer.score_results(all_audio, track, **score_kwargs)
+        return ranked, bool(ranked)
+
     # =========================================================================
     # DOWNLOAD + PREVIEW + APPROVAL
     # =========================================================================
@@ -935,7 +921,8 @@ class MusicBot:
             success = self.slskd.enqueue_download(result)
             if not success:
                 pending_dl = PendingDownload(
-                    track=track, result=result, chat_id=chat_id, status_message_id=status_msg.message_id
+                    track=track, result=result, chat_id=chat_id,
+                    status_message_id=status_msg.message_id, result_index=result_index,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -955,7 +942,8 @@ class MusicBot:
             if status is None or status.is_failed:
                 state = status.state if status else "Timeout"
                 pending_dl = PendingDownload(
-                    track=track, result=result, chat_id=chat_id, status_message_id=status_msg.message_id
+                    track=track, result=result, chat_id=chat_id,
+                    status_message_id=status_msg.message_id, result_index=result_index,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -964,7 +952,7 @@ class MusicBot:
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
                 )
-                self._add_history(track, result, "failed")
+                await self._add_history(track, result, "failed")
                 return
 
             source_path = self.processor.find_downloaded_file(result.username, result.filename)
@@ -972,7 +960,7 @@ class MusicBot:
                 await status_msg.edit_text(
                     "❌ Downloaded file not found on disk.\nCheck DOWNLOAD_DIR configuration.",
                 )
-                self._add_history(track, result, "file_not_found")
+                await self._add_history(track, result, "file_not_found")
                 return
 
             flac_verdict = await self._analyze_flac(source_path) if result.extension == "flac" else None
@@ -983,6 +971,7 @@ class MusicBot:
                 chat_id=chat_id,
                 source_path=source_path,
                 status_message_id=status_msg.message_id,
+                result_index=result_index,
             )
             self.downloads[dl_id] = pending_dl
 
@@ -1155,6 +1144,10 @@ class MusicBot:
             await self._edit_approval_message(query, "⏹ Cancelled")
             return
 
+        if pending_dl.chat_id != chat_id:
+            self.downloads[dl_id] = pending_dl
+            return
+
         track = pending_dl.track
         result = pending_dl.result
 
@@ -1165,21 +1158,21 @@ class MusicBot:
                     await self._embed_spotify_artwork(target_path, track)
                     target_name = os.path.basename(target_path)
                     await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
-                    self._add_history(track, result, "success")
+                    await self._add_history(track, result, "success")
                     logger.info(f"Approved and saved: {target_name}")
 
                     # Dismiss every other pending download for this chat.
                     await self._dismiss_other_downloads(context, chat_id)
                 else:
                     await self._edit_approval_message(query, "❌ Failed to save file. Check logs.")
-                    self._add_history(track, result, "process_failed")
+                    await self._add_history(track, result, "process_failed")
             else:
                 await self._edit_approval_message(query, "❌ Source file not found.")
-                self._add_history(track, result, "file_not_found")
+                await self._add_history(track, result, "file_not_found")
 
         elif action == "reject":
             await self._edit_approval_message(query, f"🚫 Rejected: {track.artist} - {track.title}")
-            self._add_history(track, result, "rejected")
+            await self._add_history(track, result, "rejected")
             logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
 
     async def _dismiss_other_downloads(self, context, chat_id: int):
@@ -1259,8 +1252,6 @@ class MusicBot:
             if self._is_stale(chat_id, generation):
                 return
 
-            flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
-
             # Synthetic TrackInfo with 0 duration — scorer gives flat 15pts for duration
             synthetic_track = TrackInfo(
                 artist="",
@@ -1271,13 +1262,7 @@ class MusicBot:
                 year="",
             )
 
-            ranked = self.scorer.score_results(flac_results, synthetic_track)
-            is_fallback = False
-
-            if not ranked:
-                all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-                ranked = self.scorer.score_results(all_audio, synthetic_track)
-                is_fallback = bool(ranked)
+            ranked, is_fallback = self._rank_responses(raw_responses, synthetic_track)
 
             if self._is_stale(chat_id, generation):
                 return
@@ -1343,7 +1328,7 @@ class MusicBot:
         active = await asyncio.to_thread(self.import_repo.get_active_job, chat_id)
         if active:
             await update.message.reply_text(
-                f"You already have an active import: *{active.name}* ({active.completed_tracks}/{active.total_tracks})\n"
+                f"You already have an active import: *{_escape_md(active.name)}* ({active.completed_tracks}/{active.total_tracks})\n"
                 f"Use /cancel to stop it first.",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -1384,8 +1369,8 @@ class MusicBot:
         type_label = "album" if playlist_info.is_album else "playlist"
         await _safe_edit(
             status_msg,
-            f"\U0001f4cb Found {type_label}: *{playlist_info.name}*\n"
-            f"By: {playlist_info.owner}\n"
+            f"\U0001f4cb Found {type_label}: *{_escape_md(playlist_info.name)}*\n"
+            f"By: {_escape_md(playlist_info.owner)}\n"
             f"Tracks: {playlist_info.total_tracks}\n\n"
             f"Import all tracks one by one?",
             parse_mode=ParseMode.MARKDOWN,
@@ -1402,7 +1387,7 @@ class MusicBot:
         # Cancel import if active
         job_id = self._active_import.pop(chat_id, None)
         if job_id:
-            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.CANCELLED)
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.cancelled)
             self._cancel_chat_operations(chat_id)
             await update.message.reply_text("❌ Import cancelled.")
             return
@@ -1417,16 +1402,25 @@ class MusicBot:
     async def _handle_import_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, data: str
     ):
-        """Route import-related callbacks."""
+        """Route import-related callbacks (ic/ix/ia/ir/is prefixes)."""
         query = update.callback_query
-        parts = data.split(":")
+        prefix, _, payload = data.partition(":")
+        parts = payload.split(":")
 
-        action = parts[1] if len(parts) > 1 else ""
+        try:
+            job_id = int(parts[0])
+        except (IndexError, ValueError):
+            return
 
-        if action == "confirm":
-            job_id = int(parts[2])
-            await query.edit_message_text("✅ Import started! Processing tracks one by one...")
-            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.ACTIVE)
+        # IDOR: verify job belongs to this chat
+        job = await asyncio.to_thread(self.import_repo.get_job_for_chat, job_id, chat_id)
+        if not job:
+            await _safe_query_edit(query, "⏹ Import not found.")
+            return
+
+        if prefix == "ic":
+            await _safe_query_edit(query, "✅ Import started! Processing tracks one by one...")
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.active)
             self._active_import[chat_id] = job_id
             generation = self._chat_generation.get(chat_id, 0)
             task = context.application.create_task(
@@ -1435,39 +1429,31 @@ class MusicBot:
             )
             self._track_task(chat_id, task)
 
-        elif action == "cancel":
-            job_id = int(parts[2])
-            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.CANCELLED)
+        elif prefix == "ix":
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.cancelled)
             self._active_import.pop(chat_id, None)
-            await query.edit_message_text("❌ Import cancelled.")
+            await _safe_query_edit(query, "❌ Import cancelled.")
 
-        elif action == "approve":
-            # imp:approve:<job_id>:<track_id>:<dl_id>
-            job_id = int(parts[2])
-            track_id = int(parts[3])
-            dl_id = parts[4]
+        elif prefix == "ia":
+            track_id = int(parts[1])
+            dl_id = parts[2]
             await self._handle_import_approve(update, context, chat_id, job_id, track_id, dl_id)
 
-        elif action == "reject":
-            # imp:reject:<job_id>:<track_id>
-            job_id = int(parts[2])
-            track_id = int(parts[3])
+        elif prefix == "ir":
+            track_id = int(parts[1])
             await asyncio.to_thread(
-                self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Rejected by user"
+                self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, "Rejected by user"
             )
-            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
-            await query.edit_message_text("\U0001f6ab Track rejected.")
-            # Continue to next track
+            await _safe_query_edit(query, "\U0001f6ab Track rejected.")
             generation = self._chat_generation.get(chat_id, 0)
             await self._process_next_import_track(context, chat_id, job_id, generation)
 
-        elif action == "skip":
-            # imp:skip:<job_id>:<track_id>
-            job_id = int(parts[2])
-            track_id = int(parts[3])
-            await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.SKIPPED)
-            await asyncio.to_thread(self.import_repo.increment_skipped, job_id)
-            await query.edit_message_text("⏭ Track skipped.")
+        elif prefix == "is":
+            track_id = int(parts[1])
+            await asyncio.to_thread(
+                self.import_repo.complete_track, job_id, track_id, TrackStatus.skipped
+            )
+            await _safe_query_edit(query, "⏭ Track skipped.")
             generation = self._chat_generation.get(chat_id, 0)
             await self._process_next_import_track(context, chat_id, job_id, generation)
 
@@ -1480,30 +1466,28 @@ class MusicBot:
             await self._edit_approval_message(query, "⏹ Download expired")
             return
 
+        if not pending_dl.source_path:
+            await self._edit_approval_message(query, "❌ Source file not ready. Download may still be in progress.")
+            self.downloads[dl_id] = pending_dl
+            return
+
         track = pending_dl.track
         result = pending_dl.result
 
-        if pending_dl.source_path:
-            target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
-            if target_path:
-                await self._embed_spotify_artwork(target_path, track)
-                target_name = os.path.basename(target_path)
-                await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
-                self._add_history(track, result, "success")
-                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.COMPLETED)
-                await asyncio.to_thread(self.import_repo.increment_completed, job_id)
-            else:
-                await self._edit_approval_message(query, "❌ Failed to save file.")
-                await asyncio.to_thread(
-                    self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "File processing failed"
-                )
-                await asyncio.to_thread(self.import_repo.increment_failed, job_id)
-        else:
-            await self._edit_approval_message(query, "❌ Source file not found.")
+        target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
+        if target_path:
+            await self._embed_spotify_artwork(target_path, track)
+            target_name = os.path.basename(target_path)
+            await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
+            await self._add_history(track, result, "success")
             await asyncio.to_thread(
-                self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Source not found"
+                self.import_repo.complete_track, job_id, track_id, TrackStatus.completed
             )
-            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
+        else:
+            await self._edit_approval_message(query, "❌ Failed to save file.")
+            await asyncio.to_thread(
+                self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, "File processing failed"
+            )
 
         # Continue to next track
         generation = self._chat_generation.get(chat_id, 0)
@@ -1520,7 +1504,7 @@ class MusicBot:
             # All tracks processed
             progress = await asyncio.to_thread(self.import_repo.get_job_progress, job_id)
             completed, failed, skipped, total = progress
-            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.COMPLETED)
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.completed)
             self._active_import.pop(chat_id, None)
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -1547,7 +1531,7 @@ class MusicBot:
         completed, failed, skipped, total = progress
         position = completed + failed + skipped + 1
 
-        await asyncio.to_thread(self.import_repo.update_track_status, next_track.id, TrackStatus.SEARCHING)
+        await asyncio.to_thread(self.import_repo.update_track_status, next_track.id, TrackStatus.searching)
 
         searching_msg = await context.bot.send_message(
             chat_id=chat_id,
@@ -1573,14 +1557,7 @@ class MusicBot:
             if self._is_stale(chat_id, generation):
                 return
 
-            flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
-            ranked = self.scorer.score_results(flac_results, track)
-            is_fallback = False
-
-            if not ranked:
-                all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-                ranked = self.scorer.score_results(all_audio, track)
-                is_fallback = bool(ranked)
+            ranked, is_fallback = self._rank_responses(raw_responses, track)
 
             # Title-only fallback
             if not ranked:
@@ -1589,12 +1566,7 @@ class MusicBot:
                 raw_responses = await self.slskd.search(clean_title, timeout_secs=self.config.search_timeout_secs)
                 if self._is_stale(chat_id, generation):
                     return
-                flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
-                ranked = self.scorer.score_results(flac_results, track)
-                if not ranked:
-                    all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-                    ranked = self.scorer.score_results(all_audio, track)
-                    is_fallback = bool(ranked)
+                ranked, is_fallback = self._rank_responses(raw_responses, track)
 
             if self._is_stale(chat_id, generation):
                 return
@@ -1604,16 +1576,16 @@ class MusicBot:
                     searching_msg,
                     f"\U0001f4cb *Import track:* {track.artist} - {track.title}\n\nNo results found on Soulseek.",
                     parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=build_import_track_keyboard(job_id, track_id, "0"),
+                    reply_markup=build_import_skip_keyboard(job_id, track_id),
                 )
-                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
 
             # Auto-pick best result and start download
             best = ranked[0]
 
-            # Store results for potential "next result" retry
-            self.pending[chat_id] = PendingSearch(
+            # Store results for potential "next result" retry (separate from regular search)
+            self._import_pending[chat_id] = PendingSearch(
                 query=search_query,
                 track=track,
                 results=ranked,
@@ -1651,8 +1623,9 @@ class MusicBot:
         except Exception:
             logger.exception(f"Import search failed for: {track.artist} - {track.title}")
             await _safe_edit(searching_msg, f"❌ Search failed for {track.artist} - {track.title}")
-            await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Search error")
-            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
+            await asyncio.to_thread(
+                self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, "Search error"
+            )
             await self._process_next_import_track(context, chat_id, job_id, generation)
 
     async def _do_import_download(
@@ -1677,7 +1650,7 @@ class MusicBot:
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
                 )
-                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
 
             status = await self.slskd.wait_for_download(
@@ -1694,7 +1667,7 @@ class MusicBot:
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=build_retry_keyboard(dl_id),
                 )
-                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
 
             source_path = self.processor.find_downloaded_file(result.username, result.filename)
@@ -1704,7 +1677,7 @@ class MusicBot:
                     "❌ Downloaded file not found on disk.",
                     reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
                 )
-                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
 
             # Update PendingDownload with source path
@@ -1712,7 +1685,7 @@ class MusicBot:
                 self.downloads[dl_id].source_path = source_path
 
             # Send file for approval
-            await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+            await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
 
             file_size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
             quality_line = f"{result.quality_display} | {result.duration_display}"
@@ -1758,9 +1731,8 @@ class MusicBot:
             logger.exception(f"Import download failed for {result.basename}")
             await _safe_edit(status_msg, f"❌ Error downloading `{result.basename}`", parse_mode=ParseMode.MARKDOWN)
             await asyncio.to_thread(
-                self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Download error"
+                self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, "Download error"
             )
-            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
             await self._process_next_import_track(context, chat_id, job_id, generation)
 
     # =========================================================================
@@ -1772,20 +1744,25 @@ class MusicBot:
         query = update.callback_query
         dl_id = data.split(":", 1)[1]
 
-        pending_dl = self.downloads.get(dl_id)
+        pending_dl = self.downloads.pop(dl_id, None)
         if not pending_dl:
-            await query.edit_message_text("⏹ Download expired. Send a new search.")
+            await _safe_query_edit(query, "⏹ Download expired. Send a new search.")
+            return
+
+        if pending_dl.chat_id != chat_id:
+            self.downloads[dl_id] = pending_dl
             return
 
         result = pending_dl.result
         track = pending_dl.track
+        result_index = pending_dl.result_index
 
-        await query.edit_message_text(
+        await _safe_query_edit(
+            query,
             f"\U0001f504 Retrying: `{result.basename}`...",
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Re-run download
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
             text=f"⬇️ Re-downloading from `{result.username}`...",
@@ -1793,7 +1770,7 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, result, status_msg, 0),
+            self._do_download(context, chat_id, track, result, status_msg, result_index),
             update=update,
         )
         self._track_task(chat_id, task)
@@ -1803,30 +1780,27 @@ class MusicBot:
         query = update.callback_query
         dl_id = data.split(":", 1)[1]
 
-        pending = self.pending.get(chat_id)
+        pending = self.pending.get(chat_id) or self._import_pending.get(chat_id)
         pending_dl = self.downloads.pop(dl_id, None)
 
         if not pending or not pending.results or not pending_dl:
-            await query.edit_message_text("⏹ No more results available. Try a new search.")
+            await _safe_query_edit(query, "⏹ No more results available. Try a new search.")
             return
 
-        # Find next result
-        current_result = pending_dl.result
-        current_idx = -1
-        for i, r in enumerate(pending.results):
-            if r.filename == current_result.filename and r.username == current_result.username:
-                current_idx = i
-                break
+        if pending_dl.chat_id != chat_id:
+            self.downloads[dl_id] = pending_dl
+            return
 
-        next_idx = current_idx + 1
+        next_idx = pending_dl.result_index + 1
         if next_idx >= len(pending.results):
-            await query.edit_message_text("⏹ No more results to try.")
+            await _safe_query_edit(query, "⏹ No more results to try.")
             return
 
         next_result = pending.results[next_idx]
         track = pending_dl.track
 
-        await query.edit_message_text(
+        await _safe_query_edit(
+            query,
             f"⏭ Trying next result: `{next_result.basename}`",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -1960,9 +1934,10 @@ class MusicBot:
 
         return "\n".join(lines)
 
-    def _add_history(self, track: TrackInfo, result: SearchResult, status: str):
+    async def _add_history(self, track: TrackInfo, result: SearchResult, status: str):
         """Add an entry to download history (persisted in SQLite)."""
-        self.history_repo.add(
+        await asyncio.to_thread(
+            self.history_repo.add,
             artist=track.artist,
             title=track.title,
             album=track.album,

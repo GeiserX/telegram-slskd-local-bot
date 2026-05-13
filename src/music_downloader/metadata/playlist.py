@@ -1,7 +1,4 @@
-"""
-Spotify playlist and album resolver.
-Extracts track lists from Spotify URLs.
-"""
+"""Spotify playlist and album resolver."""
 
 from __future__ import annotations
 
@@ -15,7 +12,8 @@ from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 
 logger = logging.getLogger(__name__)
 
-# URL/URI patterns
+MAX_IMPORT_TRACKS = 500
+
 _PLAYLIST_RE = re.compile(r"spotify\.com/playlist/([a-zA-Z0-9]+)")
 _ALBUM_RE = re.compile(r"spotify\.com/album/([a-zA-Z0-9]+)")
 _PLAYLIST_URI_RE = re.compile(r"spotify:playlist:([a-zA-Z0-9]+)")
@@ -41,12 +39,7 @@ class PlaylistResolver:
         self.spotify = spotify
 
     def resolve(self, url: str) -> PlaylistInfo | None:
-        """Resolve a Spotify playlist or album URL to full track list.
-
-        Handles pagination for playlists >100 tracks.
-        Returns None if URL is invalid or not found.
-        Raises ValueError if URL is not a recognized Spotify playlist/album URL.
-        """
+        """Resolve a Spotify playlist or album URL to full track list."""
         url_type = self.extract_url_type(url)
         if url_type is None:
             raise ValueError(f"Not a recognized Spotify playlist/album URL: {url}")
@@ -65,7 +58,6 @@ class PlaylistResolver:
             owner = playlist["owner"]["display_name"]
             spotify_url = playlist["external_urls"].get("spotify", "")
 
-            # Paginate through all tracks
             results = self.spotify.sp.playlist_tracks(playlist_id)
             items: list[dict] = []
             while results:
@@ -77,16 +69,25 @@ class PlaylistResolver:
                 track = item.get("track")
                 if track is None:
                     continue
+                artists = track.get("artists")
+                if not artists:
+                    continue
                 tracks.append(
                     TrackInfo(
-                        artist=track["artists"][0]["name"],
+                        artist=artists[0]["name"],
                         title=track["name"],
-                        album=track["album"]["name"],
-                        duration_ms=track["duration_ms"],
-                        spotify_url=track["external_urls"].get("spotify", ""),
-                        year=track["album"].get("release_date", "")[:4],
+                        album=track.get("album", {}).get("name", ""),
+                        duration_ms=track.get("duration_ms", 0),
+                        spotify_url=track.get("external_urls", {}).get("spotify", ""),
+                        year=track.get("album", {}).get("release_date", "")[:4],
                     )
                 )
+
+            if len(tracks) > MAX_IMPORT_TRACKS:
+                logger.warning(
+                    "Playlist '%s' has %d tracks, capping at %d", name, len(tracks), MAX_IMPORT_TRACKS
+                )
+                tracks = tracks[:MAX_IMPORT_TRACKS]
 
             return PlaylistInfo(
                 name=name,
@@ -104,11 +105,11 @@ class PlaylistResolver:
         try:
             album = self.spotify.sp.album(album_id)
             name = album["name"]
-            artist = album["artists"][0]["name"]
+            artists = album.get("artists")
+            artist = artists[0]["name"] if artists else "Unknown Artist"
             year = album.get("release_date", "")[:4]
             spotify_url = album["external_urls"].get("spotify", "")
 
-            # Paginate through all tracks
             results = self.spotify.sp.album_tracks(album_id)
             raw_tracks: list[dict] = []
             while results:
@@ -117,16 +118,25 @@ class PlaylistResolver:
 
             tracks: list[TrackInfo] = []
             for t in raw_tracks:
+                t_artists = t.get("artists")
+                if not t_artists:
+                    continue
                 tracks.append(
                     TrackInfo(
-                        artist=t["artists"][0]["name"],
+                        artist=t_artists[0]["name"],
                         title=t["name"],
                         album=name,
-                        duration_ms=t["duration_ms"],
-                        spotify_url=t["external_urls"].get("spotify", ""),
+                        duration_ms=t.get("duration_ms", 0),
+                        spotify_url=t.get("external_urls", {}).get("spotify", ""),
                         year=year,
                     )
                 )
+
+            if len(tracks) > MAX_IMPORT_TRACKS:
+                logger.warning(
+                    "Album '%s' has %d tracks, capping at %d", name, len(tracks), MAX_IMPORT_TRACKS
+                )
+                tracks = tracks[:MAX_IMPORT_TRACKS]
 
             return PlaylistInfo(
                 name=name,
@@ -162,5 +172,6 @@ class PlaylistResolver:
     @staticmethod
     def _extract_id(url: str, url_re: re.Pattern[str], uri_re: re.Pattern[str]) -> str:
         match = url_re.search(url) or uri_re.search(url)
-        assert match is not None
+        if not match:
+            raise ValueError(f"Could not extract ID from URL: {url}")
         return match.group(1)

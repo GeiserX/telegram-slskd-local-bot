@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import atexit
+import contextlib
+import logging
+import os
 import sqlite3
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_SCHEMA_VERSION = 1
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS download_history (
@@ -58,18 +66,33 @@ CREATE INDEX IF NOT EXISTS idx_download_history_created ON download_history(crea
 class Database:
     def __init__(self, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._init_schema()
+        try:
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._init_schema()
+        except sqlite3.DatabaseError:
+            logger.warning("Database corrupt or unreadable at %s — recreating", db_path)
+            if os.path.exists(db_path):
+                os.remove(db_path)
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._init_schema()
+        atexit.register(self.close)
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @property
+    def connection(self) -> sqlite3.Connection:
         return self._conn
 
     def _init_schema(self) -> None:
         self._conn.executescript(_SCHEMA)
+        self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     def close(self) -> None:
-        self._conn.close()
+        with contextlib.suppress(Exception):
+            self._conn.close()

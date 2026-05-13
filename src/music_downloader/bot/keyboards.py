@@ -123,8 +123,8 @@ def build_import_confirm_keyboard(job_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ Start import", callback_data=f"imp:confirm:{job_id}"),
-                InlineKeyboardButton("❌ Cancel", callback_data=f"imp:cancel:{job_id}"),
+                InlineKeyboardButton("✅ Start import", callback_data=f"ic:{job_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"ix:{job_id}"),
             ]
         ]
     )
@@ -135,11 +135,23 @@ def build_import_track_keyboard(job_id: int, track_id: int, dl_id: str) -> Inlin
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ Save", callback_data=f"imp:approve:{job_id}:{track_id}:{dl_id}"),
-                InlineKeyboardButton("\U0001f6ab Reject", callback_data=f"imp:reject:{job_id}:{track_id}"),
+                InlineKeyboardButton("✅ Save", callback_data=f"ia:{job_id}:{track_id}:{dl_id}"),
+                InlineKeyboardButton("\U0001f6ab Reject", callback_data=f"ir:{job_id}:{track_id}"),
             ],
             [
-                InlineKeyboardButton("⏭ Skip track", callback_data=f"imp:skip:{job_id}:{track_id}"),
+                InlineKeyboardButton("⏭ Skip track", callback_data=f"is:{job_id}:{track_id}"),
+            ],
+        ]
+    )
+
+
+def build_import_skip_keyboard(job_id: int, track_id: int) -> InlineKeyboardMarkup:
+    """Reject/skip keyboard for import tracks with no download available."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("\U0001f6ab Mark failed", callback_data=f"ir:{job_id}:{track_id}"),
+                InlineKeyboardButton("⏭ Skip track", callback_data=f"is:{job_id}:{track_id}"),
             ],
         ]
     )

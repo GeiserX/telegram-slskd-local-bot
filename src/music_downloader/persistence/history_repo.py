@@ -22,7 +22,7 @@ class HistoryRecord:
 
 class HistoryRepository:
     def __init__(self, db: Database) -> None:
-        self._conn = db._get_connection()
+        self._conn = db.connection
 
     def add(
         self,
@@ -48,13 +48,6 @@ class HistoryRepository:
         cursor = self._conn.execute(
             "SELECT * FROM download_history ORDER BY created_at DESC LIMIT ?",
             (limit,),
-        )
-        return [HistoryRecord(**dict(row)) for row in cursor.fetchall()]
-
-    def find_by_artist_title(self, artist: str, title: str) -> list[HistoryRecord]:
-        cursor = self._conn.execute(
-            "SELECT * FROM download_history WHERE artist = ? AND title = ?",
-            (artist, title),
         )
         return [HistoryRecord(**dict(row)) for row in cursor.fetchall()]
 
