@@ -37,3 +37,4 @@ ignore:
   - "setup.py"
   - "setup.cfg"
   - "**/*.config.*"
+  - "src/music_downloader/__main__.py"
