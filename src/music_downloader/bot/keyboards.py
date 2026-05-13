@@ -109,3 +109,66 @@ def build_auto_mode_keyboard(current_mode: bool) -> InlineKeyboardMarkup:
     if current_mode:
         return InlineKeyboardMarkup([[InlineKeyboardButton("Disable auto-mode", callback_data="auto:off")]])
     return InlineKeyboardMarkup([[InlineKeyboardButton("Enable auto-mode", callback_data="auto:on")]])
+
+
+def build_direct_search_keyboard() -> InlineKeyboardMarkup:
+    """Button to search Soulseek directly without Spotify resolution."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\U0001f50e Search Soulseek directly", callback_data="direct:search")]]
+    )
+
+
+def build_import_confirm_keyboard(job_id: int) -> InlineKeyboardMarkup:
+    """Confirm/cancel keyboard for playlist import."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Start import", callback_data=f"ic:{job_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"ix:{job_id}"),
+            ]
+        ]
+    )
+
+
+def build_import_track_keyboard(job_id: int, track_id: int, dl_id: str) -> InlineKeyboardMarkup:
+    """Approve/reject/skip keyboard for individual import track downloads."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Save", callback_data=f"ia:{job_id}:{track_id}:{dl_id}"),
+                InlineKeyboardButton("\U0001f6ab Reject", callback_data=f"ir:{job_id}:{track_id}"),
+            ],
+            [
+                InlineKeyboardButton("⏭ Skip track", callback_data=f"is:{job_id}:{track_id}"),
+            ],
+        ]
+    )
+
+
+def build_import_skip_keyboard(job_id: int, track_id: int) -> InlineKeyboardMarkup:
+    """Reject/skip keyboard for import tracks with no download available."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("\U0001f6ab Mark failed", callback_data=f"ir:{job_id}:{track_id}"),
+                InlineKeyboardButton("⏭ Skip track", callback_data=f"is:{job_id}:{track_id}"),
+            ],
+        ]
+    )
+
+
+def build_retry_keyboard(dl_id: str) -> InlineKeyboardMarkup:
+    """Retry button shown on download failure."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f504 Retry", callback_data=f"retry:{dl_id}")]])
+
+
+def build_retry_next_keyboard(dl_id: str) -> InlineKeyboardMarkup:
+    """Retry + next result buttons shown after repeated failure."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("\U0001f504 Retry", callback_data=f"retry:{dl_id}"),
+                InlineKeyboardButton("⏭ Try next result", callback_data=f"next:{dl_id}"),
+            ]
+        ]
+    )

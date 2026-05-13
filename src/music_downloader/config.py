@@ -49,6 +49,9 @@ class Config:
         # Where to place the final renamed files (e.g., WCYR-FLAC directory)
         self.output_dir = os.getenv("OUTPUT_DIR", "/music")
 
+        # Where to store SQLite database (persistent volume)
+        self.data_dir = os.getenv("DATA_DIR", "/data")
+
         # =====================================================================
         # DOWNLOAD BEHAVIOR
         # =====================================================================

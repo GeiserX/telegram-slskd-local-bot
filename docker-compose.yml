@@ -20,6 +20,7 @@ services:
       # Paths (container paths)
       DOWNLOAD_DIR: /downloads
       OUTPUT_DIR: /music
+      DATA_DIR: /data
 
       # Download Behavior
       AUTO_MODE: ${AUTO_MODE:-false}
@@ -41,6 +42,9 @@ services:
       # Mount output music directory (read-write)
       # This is where renamed FLAC files are placed
       - ${MUSIC_OUTPUT_PATH:-./music}:/music
+
+      # Persistent data (SQLite database for history + imports)
+      - ${DATA_PATH:-./data}:/data
 
     # Security hardening
     read_only: true

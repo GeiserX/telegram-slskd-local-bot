@@ -22,8 +22,8 @@ COPY scripts/ ./scripts/
 
 # Create non-root user for security
 RUN useradd -m -u 1000 slskdimporter && \
-    mkdir -p /downloads /music && \
-    chown -R slskdimporter:slskdimporter /app /downloads /music && \
+    mkdir -p /downloads /music /data && \
+    chown -R slskdimporter:slskdimporter /app /downloads /music /data && \
     chmod +x /app/scripts/entrypoint.sh
 
 # Switch to non-root user
@@ -39,7 +39,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
 # Volumes for downloads and output music
-VOLUME ["/downloads", "/music"]
+VOLUME ["/downloads", "/music", "/data"]
 
 # Expose health check port
 EXPOSE 8080
