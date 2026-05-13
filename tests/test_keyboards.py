@@ -116,25 +116,26 @@ class TestBuildSpotifyKeyboard:
         tracks = [_make_track(i) for i in range(3)]
         kb = build_spotify_keyboard(tracks)
         rows = kb.inline_keyboard
-        # 3 track buttons + cancel row
-        assert len(rows) == 4
+        # 3 track buttons + direct search row + cancel row
+        assert len(rows) == 5
         assert rows[0][0].callback_data == "sp:0"
+        assert rows[-2][0].callback_data == "direct:search"
         assert rows[-1][0].callback_data == "sp:cancel"
 
     def test_pagination_multiple_pages(self):
         tracks = [_make_track(i) for i in range(12)]
         kb = build_spotify_keyboard(tracks, page=0, page_size=5)
         rows = kb.inline_keyboard
-        # 5 track rows + nav row + cancel row
-        nav_row = rows[-2]
+        # 5 track rows + nav row + direct search row + cancel row
+        nav_row = rows[-3]
         assert any("Next" in btn.text for btn in nav_row)
 
     def test_pagination_last_page(self):
         tracks = [_make_track(i) for i in range(12)]
         kb = build_spotify_keyboard(tracks, page=2, page_size=5)
         rows = kb.inline_keyboard
-        # 2 track rows + nav row + cancel row
-        nav_row = rows[-2]
+        # 2 track rows + nav row + direct search row + cancel row
+        nav_row = rows[-3]
         assert any("Prev" in btn.text for btn in nav_row)
         assert not any("Next" in btn.text for btn in nav_row)
 

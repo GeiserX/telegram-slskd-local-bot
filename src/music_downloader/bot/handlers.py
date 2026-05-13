@@ -540,12 +540,6 @@ class MusicBot:
                 disable_web_page_preview=True,
                 reply_markup=build_spotify_keyboard(unique_tracks, page=0),
             )
-            # Offer direct Soulseek search as alternative
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="Or search Soulseek directly with your query:",
-                reply_markup=build_direct_search_keyboard(),
-            )
 
         except Exception:
             logger.exception(f"Unexpected error in _do_search for: {query}")

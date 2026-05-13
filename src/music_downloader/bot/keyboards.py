@@ -100,6 +100,7 @@ def build_spotify_keyboard(
     if nav_row:
         buttons.append(nav_row)
 
+    buttons.append([InlineKeyboardButton("\U0001f50e Search Soulseek directly", callback_data="direct:search")])
     buttons.append([InlineKeyboardButton("Cancel", callback_data="sp:cancel")])
     return InlineKeyboardMarkup(buttons)
 
