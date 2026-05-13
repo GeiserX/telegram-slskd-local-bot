@@ -26,19 +26,10 @@ from music_downloader.bot.handlers import (
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.search.slskd_client import SearchResult
 
-_tmp_dir = None
-
-
-def _get_tmp_dir():
-    global _tmp_dir
-    if _tmp_dir is None:
-        _tmp_dir = tempfile.mkdtemp()
-    return _tmp_dir
-
 
 def _make_config():
-    """Create a mock Config object."""
-    td = _get_tmp_dir()
+    """Create a mock Config object with isolated DB per instance."""
+    td = tempfile.mkdtemp()
     config = MagicMock()
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
@@ -52,6 +43,7 @@ def _make_config():
     config.exclude_keywords = ["live", "remix"]
     config.download_dir = os.path.join(td, "downloads")
     config.output_dir = os.path.join(td, "music")
+    config.data_dir = os.path.join(td, "data")
     config.filename_template = "{artist} - {title}"
     config.search_timeout_secs = 30
     config.download_timeout_secs = 600
@@ -257,7 +249,7 @@ class TestMusicBotInit:
         assert bot.auto_mode is False
         assert bot.pending == {}
         assert bot.downloads == {}
-        assert bot.history == []
+        assert bot.history_repo is not None
 
 
 class TestMusicBotAuthorization:
@@ -470,11 +462,16 @@ class TestMusicBotCommands:
     @pytest.mark.asyncio
     async def test_cmd_history_with_entries(self, mock_slskd, mock_spotify):
         bot = MusicBot(_make_config())
-        bot.history = [
-            {"filename": "Artist - Song.flac", "status": "success"},
-            {"filename": "Artist - Song2.flac", "status": "rejected"},
-            {"filename": "Artist - Song3.flac", "status": "failed"},
-        ]
+        # Add entries via the DB-backed history repo
+        bot.history_repo.add(
+            artist="Artist", title="Song", filename="Artist - Song.flac", source_user="user1", status="success"
+        )
+        bot.history_repo.add(
+            artist="Artist", title="Song2", filename="Artist - Song2.flac", source_user="user1", status="rejected"
+        )
+        bot.history_repo.add(
+            artist="Artist", title="Song3", filename="Artist - Song3.flac", source_user="user1", status="failed"
+        )
         update = _make_update()
         context = _make_context()
         await bot.cmd_history(update, context)
@@ -702,7 +699,7 @@ class TestMusicBotCallbackHandler:
         context = _make_context()
         await bot.handle_callback(update, context)
         assert "1" not in bot.downloads
-        assert len(bot.history) == 1
+        assert bot.history_repo.count() == 1
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -756,8 +753,9 @@ class TestMusicBotCallbackHandler:
         context = _make_context()
         await bot.handle_callback(update, context)
         assert "1" not in bot.downloads
-        assert len(bot.history) == 1
-        assert bot.history[0]["status"] == "rejected"
+        assert bot.history_repo.count() == 1
+        records = bot.history_repo.get_recent(1)
+        assert records[0].status == "rejected"
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -835,18 +833,19 @@ class TestMusicBotHelpers:
         track = _make_track()
         result = _make_search_result()
         bot._add_history(track, result, "success")
-        assert len(bot.history) == 1
-        assert bot.history[0]["status"] == "success"
+        assert bot.history_repo.count() == 1
+        records = bot.history_repo.get_recent(1)
+        assert records[0].status == "success"
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
-    def test_add_history_caps_at_50(self, mock_slskd, mock_spotify):
+    def test_add_history_persists_multiple(self, mock_slskd, mock_spotify):
         bot = MusicBot(_make_config())
         track = _make_track()
         result = _make_search_result()
         for _ in range(55):
             bot._add_history(track, result, "success")
-        assert len(bot.history) == 50
+        assert bot.history_repo.count() == 55
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")

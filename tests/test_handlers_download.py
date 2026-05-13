@@ -13,18 +13,9 @@ from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.processor.flac_analyzer import FlacVerdict
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
-_tmp_dir = None
-
-
-def _get_tmp_dir():
-    global _tmp_dir
-    if _tmp_dir is None:
-        _tmp_dir = tempfile.mkdtemp()
-    return _tmp_dir
-
 
 def _make_config():
-    td = _get_tmp_dir()
+    td = tempfile.mkdtemp()
     config = MagicMock()
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
@@ -36,8 +27,9 @@ def _make_config():
     config.max_results = 5
     config.duration_tolerance_secs = 5
     config.exclude_keywords = ["live", "remix"]
-    config.download_dir = os.path.join(td, "downloads2")
-    config.output_dir = os.path.join(td, "music2")
+    config.download_dir = os.path.join(td, "downloads")
+    config.output_dir = os.path.join(td, "music")
+    config.data_dir = os.path.join(td, "data")
     config.filename_template = "{artist} - {title}"
     config.search_timeout_secs = 30
     config.download_timeout_secs = 600
@@ -231,7 +223,8 @@ class TestDoDownload:
 
         context = _make_context()
         await bot._do_download(context, 123, _make_track(), _make_result(), status_msg)
-        assert any(h["status"] == "failed" for h in bot.history)
+        records = bot.history_repo.get_recent(1)
+        assert any(r.status == "failed" for r in records)
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -267,7 +260,8 @@ class TestDoDownload:
 
         context = _make_context()
         await bot._do_download(context, 123, _make_track(), _make_result(), status_msg)
-        assert any(h["status"] == "file_not_found" for h in bot.history)
+        records = bot.history_repo.get_recent(1)
+        assert any(r.status == "file_not_found" for r in records)
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -660,5 +654,5 @@ class TestCreateBot:
             app = create_bot(config)
             assert app is mock_app
             mock_app.add_handler.assert_called()
-            # Should have 5 command handlers + 1 callback + 1 message = 7
-            assert mock_app.add_handler.call_count == 7
+            # Should have 7 command handlers + 1 callback + 1 message = 9
+            assert mock_app.add_handler.call_count == 9

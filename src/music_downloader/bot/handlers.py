@@ -24,12 +24,25 @@ from telegram.ext import (
 from music_downloader.bot.keyboards import (
     build_approve_keyboard,
     build_auto_mode_keyboard,
+    build_direct_search_keyboard,
     build_duplicate_keyboard,
+    build_import_confirm_keyboard,
+    build_import_track_keyboard,
     build_results_keyboard,
+    build_retry_keyboard,
+    build_retry_next_keyboard,
     build_spotify_keyboard,
 )
 from music_downloader.config import Config
+from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
+from music_downloader.persistence.database import Database
+from music_downloader.persistence.history_repo import HistoryRepository
+from music_downloader.persistence.import_repo import (
+    ImportRepository,
+    JobStatus,
+    TrackStatus,
+)
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.flac_analyzer import (
     FlacVerdict,
@@ -250,15 +263,23 @@ class MusicBot:
         # Current page for Spotify browsing (chat_id -> page)
         self._spotify_page: dict[int, int] = {}
 
-        # Download history (last N downloads)
-        self.history: list[dict] = []
-
         # Per-chat cancellation: generation counter bumped on each new text message.
         # Running search/download flows check their generation against the current
         # value and abort silently when superseded by a newer request.
         self._chat_generation: dict[int, int] = {}
         # Background tasks (downloads) tracked per chat for cancellation.
         self._active_tasks: dict[int, set[asyncio.Task]] = {}
+
+        # Persistence
+        self.db = Database(f"{config.data_dir}/importer.db")
+        self.history_repo = HistoryRepository(self.db)
+        self.import_repo = ImportRepository(self.db)
+
+        # Playlist resolver
+        self.playlist_resolver = PlaylistResolver(self.spotify)
+
+        # Active import tracking (chat_id -> job_id)
+        self._active_import: dict[int, int] = {}
 
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot."""
@@ -380,15 +401,16 @@ class MusicBot:
         if not await self._check_auth(update):
             return
 
-        if not self.history:
+        records = await asyncio.to_thread(self.history_repo.get_recent, 10)
+
+        if not records:
             await update.message.reply_text("No downloads yet.")
             return
 
         lines = ["*Recent downloads:*\n"]
-        for entry in self.history[-10:]:
-            status = entry.get("status", "unknown")
-            icon = {"success": "✅", "rejected": "🚫"}.get(status, "❌")
-            lines.append(f"{icon} {entry.get('filename', 'unknown')}")
+        for entry in records:
+            icon = {"success": "✅", "rejected": "🚫"}.get(entry.status, "❌")
+            lines.append(f"{icon} {entry.filename}")
 
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
@@ -443,9 +465,12 @@ class MusicBot:
             if not tracks:
                 await _safe_edit(
                     searching_msg,
-                    f"Could not find `{query}` on Spotify. Try a more specific query.",
+                    f"Could not find `{query}` on Spotify.\nYou can search Soulseek directly instead.",
                     parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_direct_search_keyboard(),
                 )
+                # Store query for direct search callback
+                self.pending[chat_id] = PendingSearch(query=query, track=None)
                 return
 
             query_artist = ""
@@ -476,12 +501,19 @@ class MusicBot:
 
             self._spotify_candidates[chat_id] = unique_tracks
             self._spotify_page[chat_id] = 0
+            self.pending[chat_id] = PendingSearch(query=query, track=None)
             await _safe_edit(
                 searching_msg,
                 self._format_spotify_results(unique_tracks, page=0),
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=True,
                 reply_markup=build_spotify_keyboard(unique_tracks, page=0),
+            )
+            # Offer direct Soulseek search as alternative
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Or search Soulseek directly with your query:",
+                reply_markup=build_direct_search_keyboard(),
             )
 
         except Exception:
@@ -672,6 +704,26 @@ class MusicBot:
 
         chat_id = update.effective_chat.id
         data = query.data
+
+        # Direct Soulseek search
+        if data.startswith("direct:"):
+            await self._handle_direct_search(update, context, chat_id, data)
+            return
+
+        # Import-related callbacks
+        if data.startswith("imp:"):
+            await self._handle_import_callback(update, context, chat_id, data)
+            return
+
+        # Retry failed download
+        if data.startswith("retry:"):
+            await self._handle_retry(update, context, chat_id, data)
+            return
+
+        # Try next result after failure
+        if data.startswith("next:"):
+            await self._handle_next_result(update, context, chat_id, data)
+            return
 
         # Auto-mode toggle
         if data.startswith("auto:"):
@@ -868,6 +920,10 @@ class MusicBot:
         self._dl_counter += 1
         return str(self._dl_counter)
 
+    def _has_next_result(self, chat_id: int, current_index: int) -> bool:
+        pending = self.pending.get(chat_id)
+        return pending is not None and current_index + 1 < len(pending.results)
+
     async def _do_download(
         self, context, chat_id: int, track: TrackInfo, result: SearchResult, status_msg, result_index: int = 0
     ):
@@ -878,9 +934,15 @@ class MusicBot:
         try:
             success = self.slskd.enqueue_download(result)
             if not success:
+                pending_dl = PendingDownload(
+                    track=track, result=result, chat_id=chat_id, status_message_id=status_msg.message_id
+                )
+                self.downloads[dl_id] = pending_dl
+                has_next = self._has_next_result(chat_id, result_index)
                 await status_msg.edit_text(
                     f"❌ Failed to enqueue download from `{result.username}`.\nThe user might be offline.",
                     parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
                 )
                 return
 
@@ -892,9 +954,15 @@ class MusicBot:
 
             if status is None or status.is_failed:
                 state = status.state if status else "Timeout"
+                pending_dl = PendingDownload(
+                    track=track, result=result, chat_id=chat_id, status_message_id=status_msg.message_id
+                )
+                self.downloads[dl_id] = pending_dl
+                has_next = self._has_next_result(chat_id, result_index)
                 await status_msg.edit_text(
                     f"❌ Download failed: {state}\nFile: `{result.basename}`",
                     parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
                 )
                 self._add_history(track, result, "failed")
                 return
@@ -1157,6 +1225,625 @@ class MusicBot:
                 await query.edit_message_text(text=text, parse_mode=ParseMode.MARKDOWN)
 
     # =========================================================================
+    # DIRECT SEARCH (skip Spotify)
+    # =========================================================================
+
+    async def _handle_direct_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, data: str):
+        """Handle 'Search Soulseek directly' button — searches slskd without Spotify metadata."""
+        query = update.callback_query
+
+        pending = self.pending.get(chat_id)
+        if not pending:
+            await query.edit_message_text("Search expired. Send a new query.")
+            return
+
+        search_query = pending.query
+        generation = self._chat_generation.get(chat_id, 0)
+
+        await query.edit_message_text(
+            f"\U0001f50e Searching Soulseek directly: `{search_query}`", parse_mode=ParseMode.MARKDOWN
+        )
+
+        searching_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"\U0001f50d Searching slskd for: `{search_query}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        await self._do_direct_slskd_search(context, chat_id, search_query, searching_msg, generation)
+
+    async def _do_direct_slskd_search(self, context, chat_id: int, query: str, searching_msg, generation: int):
+        """Search slskd without Spotify metadata. Duration scoring gives flat 15 points."""
+        try:
+            raw_responses = await self.slskd.search(query, timeout_secs=self.config.search_timeout_secs)
+            if self._is_stale(chat_id, generation):
+                return
+
+            flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
+
+            # Synthetic TrackInfo with 0 duration — scorer gives flat 15pts for duration
+            synthetic_track = TrackInfo(
+                artist="",
+                title=query,
+                album="",
+                duration_ms=0,
+                spotify_url="",
+                year="",
+            )
+
+            ranked = self.scorer.score_results(flac_results, synthetic_track)
+            is_fallback = False
+
+            if not ranked:
+                all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+                ranked = self.scorer.score_results(all_audio, synthetic_track)
+                is_fallback = bool(ranked)
+
+            if self._is_stale(chat_id, generation):
+                return
+
+            if not ranked:
+                await _safe_edit(
+                    searching_msg,
+                    f"\U0001f50e Direct search: `{query}`\n\nNo results found on Soulseek.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+
+            self.pending[chat_id] = PendingSearch(
+                query=query,
+                track=synthetic_track,
+                results=ranked,
+                message_id=searching_msg.message_id,
+                is_fallback=is_fallback,
+            )
+
+            results_text = self._format_results(
+                synthetic_track, ranked, is_fallback, page=0, page_size=self.config.max_results
+            )
+            await _safe_edit(
+                searching_msg,
+                results_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_results_keyboard(ranked, page=0, page_size=self.config.max_results),
+            )
+
+        except Exception:
+            logger.exception(f"Direct search failed for: {query}")
+            await _safe_edit(searching_msg, "Something went wrong. Please try again.")
+
+    # =========================================================================
+    # IMPORT COMMANDS
+    # =========================================================================
+
+    async def cmd_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /import <spotify_url> — import playlist or album."""
+        if not await self._check_auth(update):
+            return
+
+        chat_id = update.effective_chat.id
+        args = update.message.text.split(maxsplit=1)
+
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Usage: `/import <spotify_playlist_or_album_url>`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        url = args[1].strip()
+
+        if not PlaylistResolver.is_spotify_url(url):
+            await update.message.reply_text(
+                "Please provide a valid Spotify playlist or album URL.",
+            )
+            return
+
+        # Check for existing active import
+        active = await asyncio.to_thread(self.import_repo.get_active_job, chat_id)
+        if active:
+            await update.message.reply_text(
+                f"You already have an active import: *{active.name}* ({active.completed_tracks}/{active.total_tracks})\n"
+                f"Use /cancel to stop it first.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        status_msg = await update.message.reply_text("\U0001f50d Resolving playlist...")
+
+        playlist_info = await asyncio.to_thread(self.playlist_resolver.resolve, url)
+        if not playlist_info:
+            await _safe_edit(status_msg, "Failed to resolve playlist. Check the URL and try again.")
+            return
+
+        # Create job in DB
+        job_id = await asyncio.to_thread(
+            self.import_repo.create_job,
+            chat_id=chat_id,
+            spotify_url=url,
+            name=playlist_info.name,
+            total_tracks=playlist_info.total_tracks,
+        )
+
+        # Add tracks to DB
+        track_dicts = [
+            {
+                "position": i + 1,
+                "artist": t.artist,
+                "title": t.title,
+                "album": t.album,
+                "duration_ms": t.duration_ms,
+                "spotify_url": t.spotify_url,
+                "year": t.year,
+            }
+            for i, t in enumerate(playlist_info.tracks)
+        ]
+        await asyncio.to_thread(self.import_repo.add_tracks, job_id, track_dicts)
+
+        # Show summary
+        type_label = "album" if playlist_info.is_album else "playlist"
+        await _safe_edit(
+            status_msg,
+            f"\U0001f4cb Found {type_label}: *{playlist_info.name}*\n"
+            f"By: {playlist_info.owner}\n"
+            f"Tracks: {playlist_info.total_tracks}\n\n"
+            f"Import all tracks one by one?",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_import_confirm_keyboard(job_id),
+        )
+
+    async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /cancel — cancel active import or search."""
+        if not await self._check_auth(update):
+            return
+
+        chat_id = update.effective_chat.id
+
+        # Cancel import if active
+        job_id = self._active_import.pop(chat_id, None)
+        if job_id:
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.CANCELLED)
+            self._cancel_chat_operations(chat_id)
+            await update.message.reply_text("❌ Import cancelled.")
+            return
+
+        # Otherwise cancel regular operations
+        had_work = self._cancel_chat_operations(chat_id)
+        if had_work:
+            await update.message.reply_text("❌ Cancelled.")
+        else:
+            await update.message.reply_text("Nothing to cancel.")
+
+    async def _handle_import_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, data: str
+    ):
+        """Route import-related callbacks."""
+        query = update.callback_query
+        parts = data.split(":")
+
+        action = parts[1] if len(parts) > 1 else ""
+
+        if action == "confirm":
+            job_id = int(parts[2])
+            await query.edit_message_text("✅ Import started! Processing tracks one by one...")
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.ACTIVE)
+            self._active_import[chat_id] = job_id
+            generation = self._chat_generation.get(chat_id, 0)
+            task = context.application.create_task(
+                self._process_next_import_track(context, chat_id, job_id, generation),
+                update=update,
+            )
+            self._track_task(chat_id, task)
+
+        elif action == "cancel":
+            job_id = int(parts[2])
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.CANCELLED)
+            self._active_import.pop(chat_id, None)
+            await query.edit_message_text("❌ Import cancelled.")
+
+        elif action == "approve":
+            # imp:approve:<job_id>:<track_id>:<dl_id>
+            job_id = int(parts[2])
+            track_id = int(parts[3])
+            dl_id = parts[4]
+            await self._handle_import_approve(update, context, chat_id, job_id, track_id, dl_id)
+
+        elif action == "reject":
+            # imp:reject:<job_id>:<track_id>
+            job_id = int(parts[2])
+            track_id = int(parts[3])
+            await asyncio.to_thread(
+                self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Rejected by user"
+            )
+            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
+            await query.edit_message_text("\U0001f6ab Track rejected.")
+            # Continue to next track
+            generation = self._chat_generation.get(chat_id, 0)
+            await self._process_next_import_track(context, chat_id, job_id, generation)
+
+        elif action == "skip":
+            # imp:skip:<job_id>:<track_id>
+            job_id = int(parts[2])
+            track_id = int(parts[3])
+            await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.SKIPPED)
+            await asyncio.to_thread(self.import_repo.increment_skipped, job_id)
+            await query.edit_message_text("⏭ Track skipped.")
+            generation = self._chat_generation.get(chat_id, 0)
+            await self._process_next_import_track(context, chat_id, job_id, generation)
+
+    async def _handle_import_approve(self, update, context, chat_id: int, job_id: int, track_id: int, dl_id: str):
+        """Approve a download within an import flow."""
+        query = update.callback_query
+        pending_dl = self.downloads.pop(dl_id, None)
+
+        if not pending_dl:
+            await self._edit_approval_message(query, "⏹ Download expired")
+            return
+
+        track = pending_dl.track
+        result = pending_dl.result
+
+        if pending_dl.source_path:
+            target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
+            if target_path:
+                await self._embed_spotify_artwork(target_path, track)
+                target_name = os.path.basename(target_path)
+                await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
+                self._add_history(track, result, "success")
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.COMPLETED)
+                await asyncio.to_thread(self.import_repo.increment_completed, job_id)
+            else:
+                await self._edit_approval_message(query, "❌ Failed to save file.")
+                await asyncio.to_thread(
+                    self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "File processing failed"
+                )
+                await asyncio.to_thread(self.import_repo.increment_failed, job_id)
+        else:
+            await self._edit_approval_message(query, "❌ Source file not found.")
+            await asyncio.to_thread(
+                self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Source not found"
+            )
+            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
+
+        # Continue to next track
+        generation = self._chat_generation.get(chat_id, 0)
+        await self._process_next_import_track(context, chat_id, job_id, generation)
+
+    async def _process_next_import_track(self, context, chat_id: int, job_id: int, generation: int):
+        """Process the next pending track in an import job."""
+        if self._is_stale(chat_id, generation):
+            return
+
+        next_track = await asyncio.to_thread(self.import_repo.get_next_pending_track, job_id)
+
+        if not next_track:
+            # All tracks processed
+            progress = await asyncio.to_thread(self.import_repo.get_job_progress, job_id)
+            completed, failed, skipped, total = progress
+            await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.COMPLETED)
+            self._active_import.pop(chat_id, None)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"\U0001f3c1 *Import complete!*\n\n"
+                f"✅ Saved: {completed}\n"
+                f"❌ Failed: {failed}\n"
+                f"⏭ Skipped: {skipped}\n"
+                f"\U0001f4ca Total: {total}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        # Build TrackInfo from import track
+        track_info = TrackInfo(
+            artist=next_track.artist,
+            title=next_track.title,
+            album=next_track.album,
+            duration_ms=next_track.duration_ms,
+            spotify_url=next_track.spotify_url,
+            year=next_track.year,
+        )
+
+        progress = await asyncio.to_thread(self.import_repo.get_job_progress, job_id)
+        completed, failed, skipped, total = progress
+        position = completed + failed + skipped + 1
+
+        await asyncio.to_thread(self.import_repo.update_track_status, next_track.id, TrackStatus.SEARCHING)
+
+        searching_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"\U0001f4cb *Import [{position}/{total}]*\n"
+            f"\U0001f50d Searching: *{track_info.artist} - {track_info.title}*\n"
+            f"Album: {track_info.album} ({track_info.year})",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        # Use the existing search logic but with import-aware download handling
+        await self._do_import_slskd_search(
+            context, chat_id, track_info, searching_msg, generation, job_id, next_track.id
+        )
+
+    async def _do_import_slskd_search(
+        self, context, chat_id: int, track: TrackInfo, searching_msg, generation: int, job_id: int, track_id: int
+    ):
+        """Search slskd for an import track. Similar to _do_slskd_search but with import keyboards."""
+        try:
+            clean_title = _clean_search_title(track.title)
+            search_query = f"{track.artist} {clean_title}"
+            raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
+            if self._is_stale(chat_id, generation):
+                return
+
+            flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
+            ranked = self.scorer.score_results(flac_results, track)
+            is_fallback = False
+
+            if not ranked:
+                all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+                ranked = self.scorer.score_results(all_audio, track)
+                is_fallback = bool(ranked)
+
+            # Title-only fallback
+            if not ranked:
+                if self._is_stale(chat_id, generation):
+                    return
+                raw_responses = await self.slskd.search(clean_title, timeout_secs=self.config.search_timeout_secs)
+                if self._is_stale(chat_id, generation):
+                    return
+                flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
+                ranked = self.scorer.score_results(flac_results, track)
+                if not ranked:
+                    all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+                    ranked = self.scorer.score_results(all_audio, track)
+                    is_fallback = bool(ranked)
+
+            if self._is_stale(chat_id, generation):
+                return
+
+            if not ranked:
+                await _safe_edit(
+                    searching_msg,
+                    f"\U0001f4cb *Import track:* {track.artist} - {track.title}\n\nNo results found on Soulseek.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_import_track_keyboard(job_id, track_id, "0"),
+                )
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                return
+
+            # Auto-pick best result and start download
+            best = ranked[0]
+
+            # Store results for potential "next result" retry
+            self.pending[chat_id] = PendingSearch(
+                query=search_query,
+                track=track,
+                results=ranked,
+                message_id=searching_msg.message_id,
+                is_fallback=is_fallback,
+            )
+
+            dl_id = self._next_dl_id()
+            pending_dl = PendingDownload(
+                track=track,
+                result=best,
+                chat_id=chat_id,
+                source_path=None,
+                status_message_id=searching_msg.message_id,
+            )
+            self.downloads[dl_id] = pending_dl
+
+            await _safe_edit(
+                searching_msg,
+                f"\U0001f4cb *Import track:* {track.artist} - {track.title}\n"
+                f"⬇️ Downloading: `{best.basename}`\n"
+                f"From: `{best.username}` | {best.quality_display}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+            # Start download
+            task = context.application.create_task(
+                self._do_import_download(
+                    context, chat_id, track, best, searching_msg, generation, job_id, track_id, dl_id
+                ),
+                update=None,
+            )
+            self._track_task(chat_id, task)
+
+        except Exception:
+            logger.exception(f"Import search failed for: {track.artist} - {track.title}")
+            await _safe_edit(searching_msg, f"❌ Search failed for {track.artist} - {track.title}")
+            await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Search error")
+            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
+            await self._process_next_import_track(context, chat_id, job_id, generation)
+
+    async def _do_import_download(
+        self,
+        context,
+        chat_id: int,
+        track: TrackInfo,
+        result: SearchResult,
+        status_msg,
+        generation: int,
+        job_id: int,
+        track_id: int,
+        dl_id: str,
+    ):
+        """Download a file within an import flow."""
+        try:
+            success = self.slskd.enqueue_download(result)
+            if not success:
+                await _safe_edit(
+                    status_msg,
+                    f"❌ Failed to enqueue from `{result.username}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+                )
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                return
+
+            status = await self.slskd.wait_for_download(
+                username=result.username,
+                filename=result.filename,
+                timeout_secs=self.config.download_timeout_secs,
+            )
+
+            if status is None or status.is_failed:
+                state = status.state if status else "Timeout"
+                await _safe_edit(
+                    status_msg,
+                    f"❌ Download failed: {state}\n`{result.basename}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_retry_keyboard(dl_id),
+                )
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                return
+
+            source_path = self.processor.find_downloaded_file(result.username, result.filename)
+            if not source_path:
+                await _safe_edit(
+                    status_msg,
+                    "❌ Downloaded file not found on disk.",
+                    reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+                )
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+                return
+
+            # Update PendingDownload with source path
+            if dl_id in self.downloads:
+                self.downloads[dl_id].source_path = source_path
+
+            # Send file for approval
+            await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.AWAITING_APPROVAL)
+
+            file_size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
+            quality_line = f"{result.quality_display} | {result.duration_display}"
+            caption = f"\U0001f4cb Import: {track.artist} - {track.title}\n{quality_line}"
+
+            if file_size > TELEGRAM_FILE_LIMIT:
+                # For large files, just show approve button without sending file
+                await _safe_edit(
+                    status_msg,
+                    f"✅ Downloaded: `{result.basename}` ({file_size / (1024 * 1024):.0f}MB)\n"
+                    f"{quality_line}\n\nFile too large to preview. Save to library?",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+                )
+            else:
+                target_name = self.processor.build_filename(track.artist, track.title, result.extension)
+                try:
+                    with open(source_path, "rb") as f:
+                        await context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=f,
+                            filename=target_name,
+                            title=track.title,
+                            performer=track.artist,
+                            duration=track.duration_secs,
+                            caption=caption,
+                            reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+                        )
+                except BadRequest:
+                    with open(source_path, "rb") as f:
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=f,
+                            filename=target_name,
+                            caption=caption,
+                            reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+                        )
+
+        except asyncio.CancelledError:
+            self.downloads.pop(dl_id, None)
+            raise
+        except Exception:
+            logger.exception(f"Import download failed for {result.basename}")
+            await _safe_edit(status_msg, f"❌ Error downloading `{result.basename}`", parse_mode=ParseMode.MARKDOWN)
+            await asyncio.to_thread(
+                self.import_repo.update_track_status, track_id, TrackStatus.FAILED, "Download error"
+            )
+            await asyncio.to_thread(self.import_repo.increment_failed, job_id)
+            await self._process_next_import_track(context, chat_id, job_id, generation)
+
+    # =========================================================================
+    # RETRY HANDLERS
+    # =========================================================================
+
+    async def _handle_retry(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, data: str):
+        """Retry a failed download."""
+        query = update.callback_query
+        dl_id = data.split(":", 1)[1]
+
+        pending_dl = self.downloads.get(dl_id)
+        if not pending_dl:
+            await query.edit_message_text("⏹ Download expired. Send a new search.")
+            return
+
+        result = pending_dl.result
+        track = pending_dl.track
+
+        await query.edit_message_text(
+            f"\U0001f504 Retrying: `{result.basename}`...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        # Re-run download
+        status_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⬇️ Re-downloading from `{result.username}`...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        task = context.application.create_task(
+            self._do_download(context, chat_id, track, result, status_msg, 0),
+            update=update,
+        )
+        self._track_task(chat_id, task)
+
+    async def _handle_next_result(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, data: str):
+        """Try the next-best search result after a failed download."""
+        query = update.callback_query
+        dl_id = data.split(":", 1)[1]
+
+        pending = self.pending.get(chat_id)
+        pending_dl = self.downloads.pop(dl_id, None)
+
+        if not pending or not pending.results or not pending_dl:
+            await query.edit_message_text("⏹ No more results available. Try a new search.")
+            return
+
+        # Find next result
+        current_result = pending_dl.result
+        current_idx = -1
+        for i, r in enumerate(pending.results):
+            if r.filename == current_result.filename and r.username == current_result.username:
+                current_idx = i
+                break
+
+        next_idx = current_idx + 1
+        if next_idx >= len(pending.results):
+            await query.edit_message_text("⏹ No more results to try.")
+            return
+
+        next_result = pending.results[next_idx]
+        track = pending_dl.track
+
+        await query.edit_message_text(
+            f"⏭ Trying next result: `{next_result.basename}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        status_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⬇️ Downloading from `{next_result.username}`...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        task = context.application.create_task(
+            self._do_download(context, chat_id, track, next_result, status_msg, next_idx),
+            update=update,
+        )
+        self._track_task(chat_id, task)
+
+    # =========================================================================
     # FLAC ANALYSIS
     # =========================================================================
 
@@ -1274,19 +1961,18 @@ class MusicBot:
         return "\n".join(lines)
 
     def _add_history(self, track: TrackInfo, result: SearchResult, status: str):
-        """Add an entry to download history."""
-        self.history.append(
-            {
-                "artist": track.artist,
-                "title": track.title,
-                "filename": f"{track.artist} - {track.title}.{result.extension}",
-                "source_user": result.username,
-                "status": status,
-            }
+        """Add an entry to download history (persisted in SQLite)."""
+        self.history_repo.add(
+            artist=track.artist,
+            title=track.title,
+            album=track.album,
+            filename=f"{track.artist} - {track.title}.{result.extension}",
+            source_user=result.username,
+            remote_path=result.filename,
+            status=status,
+            duration_secs=track.duration_secs,
+            file_size=result.size,
         )
-        # Keep last 50 entries
-        if len(self.history) > 50:
-            self.history = self.history[-50:]
 
 
 def create_bot(config: Config) -> Application:
@@ -1309,6 +1995,8 @@ def create_bot(config: Config) -> Application:
     app.add_handler(CommandHandler("auto", bot.cmd_auto))
     app.add_handler(CommandHandler("status", bot.cmd_status))
     app.add_handler(CommandHandler("history", bot.cmd_history))
+    app.add_handler(CommandHandler("import", bot.cmd_import))
+    app.add_handler(CommandHandler("cancel", bot.cmd_cancel))
 
     # Callback query handler (inline keyboard buttons)
     app.add_handler(CallbackQueryHandler(bot.handle_callback))
