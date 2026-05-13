@@ -921,8 +921,11 @@ class MusicBot:
             success = self.slskd.enqueue_download(result)
             if not success:
                 pending_dl = PendingDownload(
-                    track=track, result=result, chat_id=chat_id,
-                    status_message_id=status_msg.message_id, result_index=result_index,
+                    track=track,
+                    result=result,
+                    chat_id=chat_id,
+                    status_message_id=status_msg.message_id,
+                    result_index=result_index,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -942,8 +945,11 @@ class MusicBot:
             if status is None or status.is_failed:
                 state = status.state if status else "Timeout"
                 pending_dl = PendingDownload(
-                    track=track, result=result, chat_id=chat_id,
-                    status_message_id=status_msg.message_id, result_index=result_index,
+                    track=track,
+                    result=result,
+                    chat_id=chat_id,
+                    status_message_id=status_msg.message_id,
+                    result_index=result_index,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -1450,9 +1456,7 @@ class MusicBot:
 
         elif prefix == "is":
             track_id = int(parts[1])
-            await asyncio.to_thread(
-                self.import_repo.complete_track, job_id, track_id, TrackStatus.skipped
-            )
+            await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.skipped)
             await _safe_query_edit(query, "⏭ Track skipped.")
             generation = self._chat_generation.get(chat_id, 0)
             await self._process_next_import_track(context, chat_id, job_id, generation)
@@ -1480,9 +1484,7 @@ class MusicBot:
             target_name = os.path.basename(target_path)
             await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
             await self._add_history(track, result, "success")
-            await asyncio.to_thread(
-                self.import_repo.complete_track, job_id, track_id, TrackStatus.completed
-            )
+            await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.completed)
         else:
             await self._edit_approval_message(query, "❌ Failed to save file.")
             await asyncio.to_thread(

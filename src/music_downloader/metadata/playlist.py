@@ -84,9 +84,7 @@ class PlaylistResolver:
                 )
 
             if len(tracks) > MAX_IMPORT_TRACKS:
-                logger.warning(
-                    "Playlist '%s' has %d tracks, capping at %d", name, len(tracks), MAX_IMPORT_TRACKS
-                )
+                logger.warning("Playlist '%s' has %d tracks, capping at %d", name, len(tracks), MAX_IMPORT_TRACKS)
                 tracks = tracks[:MAX_IMPORT_TRACKS]
 
             return PlaylistInfo(
@@ -133,9 +131,7 @@ class PlaylistResolver:
                 )
 
             if len(tracks) > MAX_IMPORT_TRACKS:
-                logger.warning(
-                    "Album '%s' has %d tracks, capping at %d", name, len(tracks), MAX_IMPORT_TRACKS
-                )
+                logger.warning("Album '%s' has %d tracks, capping at %d", name, len(tracks), MAX_IMPORT_TRACKS)
                 tracks = tracks[:MAX_IMPORT_TRACKS]
 
             return PlaylistInfo(

@@ -1057,9 +1057,7 @@ class TestIDORProtection:
         bot = MusicBot(_make_config())
         track = _make_track()
         result = _make_search_result()
-        bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=111, source_path="/tmp/f.flac"
-        )
+        bot.downloads["1"] = PendingDownload(track=track, result=result, chat_id=111, source_path="/tmp/f.flac")
         update = _make_callback_update(chat_id=999, data="approve:1")
         context = _make_context()
         await bot.handle_callback(update, context)
@@ -1074,9 +1072,7 @@ class TestIDORProtection:
         bot = MusicBot(_make_config())
         track = _make_track()
         result = _make_search_result()
-        bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=111
-        )
+        bot.downloads["1"] = PendingDownload(track=track, result=result, chat_id=111)
         update = _make_callback_update(chat_id=999, data="retry:1")
         context = _make_context()
         await bot.handle_callback(update, context)
@@ -1090,12 +1086,8 @@ class TestIDORProtection:
         bot = MusicBot(_make_config())
         track = _make_track()
         result = _make_search_result()
-        bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=111, result_index=0
-        )
-        bot.pending[999] = PendingSearch(
-            query="test", track=track, results=[result, _make_search_result(1)]
-        )
+        bot.downloads["1"] = PendingDownload(track=track, result=result, chat_id=111, result_index=0)
+        bot.pending[999] = PendingSearch(query="test", track=track, results=[result, _make_search_result(1)])
         update = _make_callback_update(chat_id=999, data="next:1")
         context = _make_context()
         await bot.handle_callback(update, context)
@@ -1116,9 +1108,7 @@ class TestRetryResultIndex:
         bot = MusicBot(_make_config())
         track = _make_track()
         result = _make_search_result(3)
-        bot.downloads["5"] = PendingDownload(
-            track=track, result=result, chat_id=67890, result_index=3
-        )
+        bot.downloads["5"] = PendingDownload(track=track, result=result, chat_id=67890, result_index=3)
         update = _make_callback_update(chat_id=67890, data="retry:5")
         context = _make_context()
 
@@ -1136,9 +1126,7 @@ class TestRetryResultIndex:
         bot = MusicBot(_make_config())
         track = _make_track()
         result = _make_search_result()
-        bot.downloads["1"] = PendingDownload(
-            track=track, result=result, chat_id=67890
-        )
+        bot.downloads["1"] = PendingDownload(track=track, result=result, chat_id=67890)
         update = _make_callback_update(chat_id=67890, data="retry:1")
         context = _make_context()
 
@@ -1154,12 +1142,8 @@ class TestRetryResultIndex:
         bot = MusicBot(_make_config())
         track = _make_track()
         results = [_make_search_result(i) for i in range(5)]
-        bot.pending[67890] = PendingSearch(
-            query="test", track=track, results=results
-        )
-        bot.downloads["2"] = PendingDownload(
-            track=track, result=results[2], chat_id=67890, result_index=2
-        )
+        bot.pending[67890] = PendingSearch(query="test", track=track, results=results)
+        bot.downloads["2"] = PendingDownload(track=track, result=results[2], chat_id=67890, result_index=2)
         update = _make_callback_update(chat_id=67890, data="next:2")
         context = _make_context()
 
@@ -1179,12 +1163,8 @@ class TestRetryResultIndex:
         bot = MusicBot(_make_config())
         track = _make_track()
         results = [_make_search_result(0)]
-        bot.pending[67890] = PendingSearch(
-            query="test", track=track, results=results
-        )
-        bot.downloads["1"] = PendingDownload(
-            track=track, result=results[0], chat_id=67890, result_index=0
-        )
+        bot.pending[67890] = PendingSearch(query="test", track=track, results=results)
+        bot.downloads["1"] = PendingDownload(track=track, result=results[0], chat_id=67890, result_index=0)
         update = _make_callback_update(chat_id=67890, data="next:1")
         context = _make_context()
         await bot.handle_callback(update, context)
@@ -1324,9 +1304,20 @@ class TestImportCallbackRouting:
         """is: prefix should atomically complete the track as skipped."""
         bot = MusicBot(_make_config())
         job_id = bot.import_repo.create_job(67890, "https://spotify.com/playlist/x", "Test", 2)
-        bot.import_repo.add_tracks(job_id, [
-            {"position": 1, "artist": "A", "title": "T", "album": "Al", "duration_ms": 1000, "spotify_url": "", "year": "2020"},
-        ])
+        bot.import_repo.add_tracks(
+            job_id,
+            [
+                {
+                    "position": 1,
+                    "artist": "A",
+                    "title": "T",
+                    "album": "Al",
+                    "duration_ms": 1000,
+                    "spotify_url": "",
+                    "year": "2020",
+                },
+            ],
+        )
         tracks = bot.import_repo.get_tracks_by_job(job_id)
         track_id = tracks[0].id
         bot._active_import[67890] = job_id
