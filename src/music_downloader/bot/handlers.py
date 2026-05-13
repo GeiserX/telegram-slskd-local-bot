@@ -73,37 +73,43 @@ async def _safe_edit(msg: Message, text: str, **kwargs) -> bool:
         return False
 
 
-# Regex to strip Spotify version suffixes that pollute Soulseek keyword search.
-# Matches trailing " - Remastered 2009", " - Mono", " - Deluxe", etc.
-_VERSION_SUFFIX_RE = re.compile(
-    r"\s*[-–]\s*("
+# Noise keywords that Spotify appends to track titles but Soulseek users never use.
+# Named remixes (e.g. "Butch Vig Remix") are intentionally excluded — they
+# represent distinct versions the user specifically selected.
+_NOISE_PATTERN = (
     r"Mono|Stereo|Remaster(?:ed)?(?:\s+\d{4})?"
     r"|Deluxe(?:\s+Edition)?"
     r"|Ultimate\s+Mix|Single\s+Version|Album\s+Version"
     r"|Radio\s+Edit|Bonus\s+Track|Anniversary(?:\s+Edition)?"
-    r"|Super\s+Deluxe|Special\s+Edition|\d{4}\s+Mix"
-    r").*$",
+    r"|Super\s+Deluxe|Special\s+Edition"
+    r"|\d{4}\s+(?:Mix|Remix|Remaster(?:ed)?|Version)"
+    r"|(?:German|French|Spanish|Italian|Japanese|Portuguese|English)\s+Version"
+    r"|Remix"
+)
+
+# Matches trailing " - Remastered 2009", " - German Version 1989 Remix; ...", etc.
+# Once a noise keyword is detected after a dash, everything to EOL is stripped.
+_VERSION_SUFFIX_RE = re.compile(
+    r"\s*[-–]\s*(?:" + _NOISE_PATTERN + r").*$",
     re.IGNORECASE,
 )
 
-# Same patterns but inside parentheses: "(Remastered 2009)", "(Mono)", etc.
+# Same patterns inside parentheses: "(Remastered 2009)", "(German Version)", etc.
 _VERSION_PAREN_RE = re.compile(
-    r"\s*\("
-    r"(?:Mono|Stereo|Remaster(?:ed)?(?:\s+\d{4})?"
-    r"|Deluxe(?:\s+Edition)?"
-    r"|Ultimate\s+Mix|Single\s+Version|Album\s+Version"
-    r"|Radio\s+Edit|Bonus\s+Track|Anniversary(?:\s+Edition)?"
-    r"|Super\s+Deluxe|Special\s+Edition|\d{4}\s+Mix)"
-    r"\)",
+    r"\s*\((?:" + _NOISE_PATTERN + r")[^)]*\)",
     re.IGNORECASE,
 )
+
+
+_SURROUNDING_QUOTES_RE = re.compile("^[\\s'\"\\u2018\\u2019\\u201c\\u201d]+|[\\s'\"\\u2018\\u2019\\u201c\\u201d]+$")
 
 
 def _clean_search_title(title: str) -> str:
     """Strip Spotify version suffixes that add noise to Soulseek keyword search."""
     title = _VERSION_SUFFIX_RE.sub("", title)
     title = _VERSION_PAREN_RE.sub("", title)
-    return title.strip()
+    title = _SURROUNDING_QUOTES_RE.sub("", title)
+    return title
 
 
 def _build_reduced_queries(title: str, year: str) -> list[str]:

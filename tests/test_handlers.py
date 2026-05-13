@@ -57,3 +57,30 @@ class TestCleanSearchTitle:
 
     def test_leaves_normal_title_alone(self):
         assert _clean_search_title("Bohemian Rhapsody") == "Bohemian Rhapsody"
+
+    def test_strips_german_version_with_remix_and_remaster(self):
+        assert _clean_search_title("'Helden' - German Version 1989 Remix; 2002 Remaster") == "Helden"
+
+    def test_strips_quoted_title_with_remaster(self):
+        assert _clean_search_title('"Heroes" - 2017 Remaster') == "Heroes"
+
+    def test_strips_language_version_suffix(self):
+        assert _clean_search_title("99 Luftballons - German Version") == "99 Luftballons"
+
+    def test_strips_language_version_parenthesised(self):
+        assert _clean_search_title("La Isla Bonita (Spanish Version)") == "La Isla Bonita"
+
+    def test_strips_year_remix_with_semicolon(self):
+        assert _clean_search_title("Blue Monday - 1988 Remix; 2024 Remaster") == "Blue Monday"
+
+    def test_strips_bare_remix_suffix(self):
+        assert _clean_search_title("Something - Remix") == "Something"
+
+    def test_preserves_named_remix_in_parens(self):
+        assert (
+            _clean_search_title("Smells Like Teen Spirit (Butch Vig Remix)")
+            == "Smells Like Teen Spirit (Butch Vig Remix)"
+        )
+
+    def test_preserves_live_and_let_die(self):
+        assert _clean_search_title("Live and Let Die") == "Live and Let Die"
