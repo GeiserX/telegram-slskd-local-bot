@@ -1155,6 +1155,7 @@ class MusicBot:
             if pending_dl.source_path:
                 target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
                 if target_path:
+                    self.processor.cleanup_download(pending_dl.source_path)
                     await self._embed_spotify_artwork(target_path, track)
                     target_name = os.path.basename(target_path)
                     await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
@@ -1171,6 +1172,9 @@ class MusicBot:
                 await self._add_history(track, result, "file_not_found")
 
         elif action == "reject":
+            if pending_dl.source_path and os.path.isfile(pending_dl.source_path):
+                os.remove(pending_dl.source_path)
+                logger.info(f"Deleted rejected file: {pending_dl.source_path}")
             await self._edit_approval_message(query, f"🚫 Rejected: {track.artist} - {track.title}")
             await self._add_history(track, result, "rejected")
             logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
@@ -1186,10 +1190,12 @@ class MusicBot:
                     message_id=pending.message_id,
                 )
 
-        # Dismiss other pending download approval messages.
+        # Dismiss other pending download approval messages and clean up files.
         stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
+            if dl.source_path and os.path.isfile(dl.source_path):
+                os.remove(dl.source_path)
             if dl.approval_message_id:
                 try:
                     await context.bot.edit_message_caption(
@@ -1493,6 +1499,7 @@ class MusicBot:
 
         target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
         if target_path:
+            self.processor.cleanup_download(pending_dl.source_path)
             await self._embed_spotify_artwork(target_path, track)
             target_name = os.path.basename(target_path)
             await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
