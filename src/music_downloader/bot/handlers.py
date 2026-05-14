@@ -1899,7 +1899,13 @@ class MusicBot:
         end = min(start + page_size, total)
         total_pages = (total + page_size - 1) // page_size
 
-        if is_fallback:
+        is_direct = not track.artist and track.duration_ms == 0
+        if is_direct:
+            header = [
+                f"\U0001f50e *Direct search:* `{track.title}`\n",
+                f"Found {total} FLAC matches:\n",
+            ]
+        elif is_fallback:
             header = [
                 f"🎵 *{track.artist} - {track.title}*",
                 f"Duration: {track.duration_display} | Album: {track.album}\n",
@@ -1921,11 +1927,10 @@ class MusicBot:
             slot_icon = "🟢" if r.has_free_slot else "🔴"
             fmt = r.extension.upper()
             format_tag = f" [{fmt}]" if is_fallback else ""
-            safe_name = _escape_md(r.basename)
             lines.append(
                 f"*#{i + 1}* {slot_icon} `{r.duration_display}` | "
                 f"{r.quality_display}{format_tag} | {r.size_mb:.0f}MB\n"
-                f"    *{safe_name}*"
+                f"    `{r.basename}`"
             )
 
         return "\n".join(lines)
