@@ -1233,6 +1233,12 @@ class MusicBot:
         search_query = pending.query
         generation = self._chat_generation.get(chat_id, 0)
 
+        # Use Spotify candidate for display if available
+        display_track = None
+        candidates = self._spotify_candidates.get(chat_id)
+        if candidates:
+            display_track = candidates[0]
+
         await query.edit_message_text(
             f"\U0001f50e Searching Soulseek directly: `{search_query}`", parse_mode=ParseMode.MARKDOWN
         )
@@ -1243,24 +1249,37 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        await self._do_direct_slskd_search(context, chat_id, search_query, searching_msg, generation)
+        await self._do_direct_slskd_search(context, chat_id, search_query, searching_msg, generation, display_track)
 
-    async def _do_direct_slskd_search(self, context, chat_id: int, query: str, searching_msg, generation: int):
+    async def _do_direct_slskd_search(
+        self, context, chat_id: int, query: str, searching_msg, generation: int, display_track: TrackInfo | None = None
+    ):
         """Search slskd without Spotify metadata. Duration scoring gives flat 15 points."""
         try:
             raw_responses = await self.slskd.search(query, timeout_secs=self.config.search_timeout_secs)
             if self._is_stale(chat_id, generation):
                 return
 
-            # Synthetic TrackInfo with 0 duration — scorer gives flat 15pts for duration
-            synthetic_track = TrackInfo(
-                artist="",
-                title=query,
-                album="",
-                duration_ms=0,
-                spotify_url="",
-                year="",
-            )
+            # Use display_track from Spotify candidates if available, otherwise parse query
+            if display_track:
+                synthetic_track = TrackInfo(
+                    artist=display_track.artist,
+                    title=display_track.title,
+                    album=display_track.album,
+                    duration_ms=0,
+                    spotify_url="",
+                    year=display_track.year,
+                )
+            else:
+                artist, title = self._parse_query_artist_title(query)
+                synthetic_track = TrackInfo(
+                    artist=artist,
+                    title=title,
+                    album="",
+                    duration_ms=0,
+                    spotify_url="",
+                    year="",
+                )
 
             ranked, is_fallback = self._rank_responses(raw_responses, synthetic_track)
 
@@ -1899,12 +1918,18 @@ class MusicBot:
         end = min(start + page_size, total)
         total_pages = (total + page_size - 1) // page_size
 
-        is_direct = not track.artist and track.duration_ms == 0
+        is_direct = track.duration_ms == 0
         if is_direct:
-            header = [
-                f"\U0001f50e *Direct search:* `{track.title}`\n",
-                f"Found {total} FLAC matches:\n",
-            ]
+            if track.artist:
+                header = [
+                    f"🎵 *{track.artist} - {track.title}*\n",
+                    f"Found {total} FLAC matches:\n",
+                ]
+            else:
+                header = [
+                    f"\U0001f50e *Direct search:* `{track.title}`\n",
+                    f"Found {total} FLAC matches:\n",
+                ]
         elif is_fallback:
             header = [
                 f"🎵 *{track.artist} - {track.title}*",
@@ -1934,6 +1959,23 @@ class MusicBot:
             )
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _parse_query_artist_title(query: str) -> tuple[str, str]:
+        """Parse a free-text query into (artist, title) with title-casing.
+
+        Tries " - " separator first. Otherwise assumes last word is title,
+        rest is artist (e.g. "david bowie helden" → "David Bowie", "Helden").
+        """
+        if " - " in query:
+            parts = query.split(" - ", 1)
+            return parts[0].strip().title(), parts[1].strip().title()
+        words = query.strip().split()
+        if len(words) >= 3:
+            return " ".join(words[:-1]).title(), words[-1].title()
+        if len(words) == 2:
+            return words[0].title(), words[1].title()
+        return "", query.title()
 
     async def _add_history(self, track: TrackInfo, result: SearchResult, status: str):
         """Add an entry to download history (persisted in SQLite)."""
