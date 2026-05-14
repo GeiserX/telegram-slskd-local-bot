@@ -101,8 +101,10 @@ class ResultScorer:
                     return None
 
         # ===== DURATION MATCH (0-40 points) =====
-        if result.length is not None and result.length > 0:
-            target_secs = track.duration_secs
+        target_secs = track.duration_secs
+        if target_secs == 0:
+            score += 15.0
+        elif result.length is not None and result.length > 0:
             diff = abs(result.length - target_secs)
 
             if diff <= self.duration_tolerance:

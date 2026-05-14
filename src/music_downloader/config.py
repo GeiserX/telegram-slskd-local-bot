@@ -58,8 +58,8 @@ class Config:
         # Auto-download best match without user confirmation
         self.auto_mode = os.getenv("AUTO_MODE", "false").lower() == "true"
 
-        # Maximum number of search results to show the user
-        self.max_results = int(os.getenv("MAX_RESULTS", "5"))
+        # Maximum number of search results to show per page
+        self.max_results = int(os.getenv("MAX_RESULTS", "10"))
 
         # Duration tolerance in seconds when matching Spotify duration
         self.duration_tolerance_secs = int(os.getenv("DURATION_TOLERANCE_SECS", "5"))

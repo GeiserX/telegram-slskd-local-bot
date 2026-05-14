@@ -39,7 +39,7 @@ class TestConfig:
 
             config = Config()
             assert config.auto_mode is False
-            assert config.max_results == 5
+            assert config.max_results == 10
             assert config.duration_tolerance_secs == 5
             assert config.search_timeout_secs == 30
             assert config.download_timeout_secs == 600
