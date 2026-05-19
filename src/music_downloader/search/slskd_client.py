@@ -214,13 +214,12 @@ class SlskdClient:
             logger.exception(f"Error during search polling for: {query}")
             timed_out = True
 
-        # Stop the search if it timed out (graceful cancel)
-        if timed_out:
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(self.client.searches.stop, id=search_id)
+        # Always stop the search before retrieving responses — slskd returns
+        # empty responses array while a search is still in-progress (when
+        # responseLimit hasn't been reached but the search hasn't timed out).
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self.client.searches.stop, id=search_id)
 
-        # Try both retrieval methods — each silently returns empty under
-        # different conditions (large payloads vs. timing).
         final_state = await asyncio.to_thread(
             self.client.searches.state,
             id=search_id,
