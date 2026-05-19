@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-slskd-local-bot"
-version = "0.10.1"
+version = "0.10.2"
 description = "Automated music discovery and download via Telegram bot. Resolves metadata from Spotify, searches and downloads FLAC from Soulseek (slskd), and organizes your library."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -56,9 +56,8 @@ Changelog = "https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/
 [project.scripts]
 slskd-importer = "music_downloader.__main__:main"
 
-[tool.setuptools]
-packages = ["music_downloader"]
-package-dir = {"music_downloader" = "src/music_downloader"}
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 target-version = "py311"
