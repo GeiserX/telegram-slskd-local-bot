@@ -11,7 +11,7 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY requirements.txt pyproject.toml ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -19,6 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+
+# Install package for metadata (version)
+RUN pip install --no-cache-dir --no-deps .
 
 # Create non-root user for security
 RUN useradd -m -u 1000 slskdimporter && \
@@ -31,7 +34,6 @@ USER slskdimporter
 
 # Set default environment variables
 ENV LOG_LEVEL=INFO \
-    PYTHONPATH=/app/src \
     HEALTH_PORT=8080
 
 # Health check
