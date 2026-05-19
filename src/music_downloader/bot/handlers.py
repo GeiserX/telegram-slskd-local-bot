@@ -304,9 +304,9 @@ class MusicBot:
         self._import_pending: dict[int, PendingSearch] = {}
 
     def _is_authorized(self, user_id: int) -> bool:
-        """Check if a user is authorized to use the bot."""
+        """Check if a user is authorized to use the bot (fail-closed)."""
         if not self.config.telegram_allowed_users:
-            return True
+            return False
         return user_id in self.config.telegram_allowed_users
 
     async def _check_auth(self, update: Update) -> bool:

@@ -99,7 +99,7 @@ class Config:
         if self.telegram_allowed_users:
             logger.info(f"Bot restricted to {len(self.telegram_allowed_users)} allowed user(s)")
         else:
-            logger.warning("TELEGRAM_ALLOWED_USERS is empty — bot is open to anyone!")
+            logger.warning("TELEGRAM_ALLOWED_USERS is empty — bot will deny all commands until configured")
 
     def _get_required_env(self, key: str) -> str:
         """Get a required environment variable."""

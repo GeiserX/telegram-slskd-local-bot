@@ -21,9 +21,14 @@ import re
 import tempfile
 from dataclasses import dataclass
 
-import numpy as np
-import soundfile as sf
-from scipy import signal
+try:
+    import numpy as np
+    import soundfile as sf
+    from scipy import signal
+
+    HAS_ANALYSIS = True
+except ImportError:
+    HAS_ANALYSIS = False
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,9 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
     Returns:
         FlacVerdict with the analysis result, or None on error.
     """
+    if not HAS_ANALYSIS:
+        return None
+
     try:
         info = sf.info(filepath)
         sr = info.samplerate

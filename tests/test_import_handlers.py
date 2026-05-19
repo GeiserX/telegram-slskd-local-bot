@@ -41,7 +41,7 @@ def _make_config():
     config.spotify_client_secret = "test-secret"
     config.slskd_host = "http://localhost:5030"
     config.slskd_api_key = "test-key"
-    config.telegram_allowed_users = set()
+    config.telegram_allowed_users = {12345}
     config.auto_mode = False
     config.max_results = 5
     config.duration_tolerance_secs = 5

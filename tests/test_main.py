@@ -1,20 +1,45 @@
 """Tests for __main__ module."""
 
 import sys
+from io import BytesIO
 from unittest.mock import patch
 
 import pytest
 
-from music_downloader.__main__ import create_health_app, main
+from music_downloader.__main__ import HealthHandler, main
 
 
-class TestCreateHealthApp:
-    def test_creates_app(self):
-        app = create_health_app()
-        assert app.title == "Music Downloader"
-        # Verify the health route exists
-        routes = [r.path for r in app.routes]
-        assert "/health" in routes
+class TestHealthHandler:
+    def test_health_endpoint(self):
+        """HealthHandler responds 200 on /health."""
+        from unittest.mock import MagicMock
+
+        handler = MagicMock(spec=HealthHandler)
+        handler.path = "/health"
+        handler.wfile = BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+
+        HealthHandler.do_GET(handler)
+
+        handler.send_response.assert_called_once_with(200)
+        handler.wfile.seek(0)
+        assert b'{"status":"healthy"}' in handler.wfile.read()
+
+    def test_not_found(self):
+        """HealthHandler responds 404 on unknown paths."""
+        from unittest.mock import MagicMock
+
+        handler = MagicMock(spec=HealthHandler)
+        handler.path = "/unknown"
+        handler.wfile = BytesIO()
+        handler.send_response = MagicMock()
+        handler.end_headers = MagicMock()
+
+        HealthHandler.do_GET(handler)
+
+        handler.send_response.assert_called_once_with(404)
 
 
 class TestMain:

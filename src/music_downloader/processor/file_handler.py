@@ -111,6 +111,14 @@ class FileProcessor:
 
         # Walk the download directory looking for the file
         user_dir = os.path.join(self.download_dir, username)
+
+        # PATH TRAVERSAL GUARD
+        real_user_dir = os.path.realpath(user_dir)
+        real_download_dir = os.path.realpath(self.download_dir)
+        if not real_user_dir.startswith(real_download_dir + os.sep) and real_user_dir != real_download_dir:
+            logger.warning("Path traversal blocked for username: %s", username)
+            return None
+
         if os.path.isdir(user_dir):
             for root, _, files in os.walk(user_dir):
                 if basename in files:

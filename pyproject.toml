@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-slskd-local-bot"
-version = "0.9.6"
+version = "0.10.0"
 description = "Automated music discovery and download via Telegram bot. Resolves metadata from Spotify, searches and downloads FLAC from Soulseek (slskd), and organizes your library."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,16 +29,16 @@ dependencies = [
     "spotipy>=2.25.2",
     "slskd-api>=0.1.5",
     "mutagen>=1.47.0",
-    "fastapi>=0.115.0",
-    "uvicorn>=0.32.0",
     "python-dotenv>=1.0.1",
     "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+analysis = [
     "numpy>=1.26.0",
     "scipy>=1.12.0",
     "soundfile>=0.12.1",
 ]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
@@ -76,7 +76,6 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
-    "B008",   # do not perform function calls in argument defaults (FastAPI depends on this)
     "SIM102", # collapsible-if (readability preference)
     "SIM108", # use ternary operator (readability preference)
 ]
