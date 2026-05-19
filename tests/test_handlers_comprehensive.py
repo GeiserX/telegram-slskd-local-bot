@@ -36,7 +36,7 @@ def _make_config():
     config.spotify_client_secret = "test-secret"
     config.slskd_host = "http://localhost:5030"
     config.slskd_api_key = "test-key"
-    config.telegram_allowed_users = set()
+    config.telegram_allowed_users = {12345}
     config.auto_mode = False
     config.max_results = 5
     config.duration_tolerance_secs = 5
@@ -255,11 +255,11 @@ class TestMusicBotInit:
 class TestMusicBotAuthorization:
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
-    def test_is_authorized_no_restrictions(self, mock_slskd, mock_spotify):
+    def test_is_authorized_empty_denies_all(self, mock_slskd, mock_spotify):
         config = _make_config()
         config.telegram_allowed_users = set()
         bot = MusicBot(config)
-        assert bot._is_authorized(99999) is True
+        assert bot._is_authorized(99999) is False
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -287,7 +287,7 @@ class TestMusicBotAuthorization:
     @pytest.mark.asyncio
     async def test_check_auth_allowed(self, mock_slskd, mock_spotify):
         config = _make_config()
-        config.telegram_allowed_users = set()
+        config.telegram_allowed_users = {12345}
         bot = MusicBot(config)
         update = _make_update()
         result = await bot._check_auth(update)

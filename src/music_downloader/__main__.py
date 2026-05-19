@@ -7,9 +7,7 @@ import argparse
 import logging
 import sys
 import threading
-
-import uvicorn
-from fastapi import FastAPI
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from music_downloader import __version__
 from music_downloader.bot.handlers import create_bot
@@ -18,23 +16,25 @@ from music_downloader.config import Config, setup_logging
 logger = logging.getLogger(__name__)
 
 
-def create_health_app() -> FastAPI:
-    """Create a minimal FastAPI app for health checks."""
-    app = FastAPI(title="Music Downloader", version=__version__, docs_url=None, redoc_url=None)
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status":"healthy"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-    @app.get("/health")
-    async def health():
-        return {"status": "ok", "version": __version__}
-
-    return app
+    def log_message(self, format, *args):
+        pass  # Suppress access logs
 
 
-def run_health_server(port: int):
-    """Run the health check HTTP server in a background thread."""
-    app = create_health_app()
-    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    server.run()
+def _start_health_server(port: int):
+    server = HTTPServer(("127.0.0.1", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
 
 
 def cmd_run(args):
@@ -45,8 +45,7 @@ def cmd_run(args):
     logger.info(f"Music Downloader v{__version__} starting...")
 
     # Start health check server in background
-    health_thread = threading.Thread(target=run_health_server, args=(config.health_port,), daemon=True)
-    health_thread.start()
+    _start_health_server(config.health_port)
     logger.info(f"Health check endpoint running on port {config.health_port}")
 
     # Start the Telegram bot (blocking)

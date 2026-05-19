@@ -12,6 +12,18 @@ from music_downloader.search.slskd_client import SearchResult
 
 logger = logging.getLogger(__name__)
 
+# Scoring weights
+DURATION_MAX_POINTS = 40.0
+DURATION_CLOSE_POINTS = 25.0
+DURATION_FLAT_POINTS = 15.0
+QUALITY_HIRES_POINTS = 15.0
+QUALITY_CD_POINTS = 10.0
+SAMPLE_RATE_HIRES_POINTS = 10.0
+SAMPLE_RATE_CD_POINTS = 5.0
+SLOT_AVAILABLE_POINTS = 7.5
+SPEED_MAX_POINTS = 7.5
+QUEUE_MAX_POINTS = 5.0
+
 
 class ResultScorer:
     """Scores and ranks slskd search results against a Spotify track."""
@@ -103,14 +115,14 @@ class ResultScorer:
         # ===== DURATION MATCH (0-40 points) =====
         target_secs = track.duration_secs
         if target_secs == 0:
-            score += 15.0
+            score += DURATION_FLAT_POINTS
         elif result.length is not None and result.length > 0:
             diff = abs(result.length - target_secs)
 
             if diff <= self.duration_tolerance:
-                score += 40.0 - (diff * 2)
+                score += DURATION_MAX_POINTS - (diff * 2)
             elif diff <= 10:
-                score += 25.0 - (diff - self.duration_tolerance) * 3
+                score += DURATION_CLOSE_POINTS - (diff - self.duration_tolerance) * 3
             elif diff <= 30:
                 score += max(0.0, 10.0 - (diff - 10) * 0.5)
             elif max_duration_diff is not None and diff <= max_duration_diff:
@@ -119,21 +131,21 @@ class ResultScorer:
                 logger.debug(f"Excluded (duration {result.length}s vs {target_secs}s): {result.basename}")
                 return None
         else:
-            score += 15.0
+            score += DURATION_FLAT_POINTS
 
         # ===== AUDIO QUALITY (0-25 points) =====
         # Prefer hi-res: higher bit depth and sample rate score better
         if result.bit_depth:
             if result.bit_depth >= 24:
-                score += 15.0  # Hi-res — preferred
+                score += QUALITY_HIRES_POINTS  # Hi-res — preferred
             elif result.bit_depth == 16:
-                score += 10.0  # CD quality — good
+                score += QUALITY_CD_POINTS  # CD quality — good
             else:
-                score += 5.0
+                score += SAMPLE_RATE_CD_POINTS
 
         if result.sample_rate:
             if result.sample_rate >= 88200:
-                score += 10.0  # 88.2kHz / 96kHz+ — preferred
+                score += SAMPLE_RATE_HIRES_POINTS  # 88.2kHz / 96kHz+ — preferred
             elif result.sample_rate == 48000:
                 score += 7.0
             elif result.sample_rate == 44100:
@@ -143,15 +155,15 @@ class ResultScorer:
 
         # ===== SOURCE RELIABILITY (0-20 points) =====
         if result.has_free_slot:
-            score += 10.0  # Free slot means faster download
+            score += SLOT_AVAILABLE_POINTS
 
         if result.upload_speed > 0:
             # Normalize speed (cap at 10MB/s for scoring)
-            speed_score = min(result.upload_speed / 1_000_000, 10) * 1.0
+            speed_score = min(result.upload_speed / 1_000_000, 10) * (SPEED_MAX_POINTS / 10)
             score += speed_score
 
         if result.queue_length == 0:
-            score += 5.0
+            score += QUEUE_MAX_POINTS
         elif result.queue_length < 5:
             score += 2.0
 
@@ -168,7 +180,7 @@ class ResultScorer:
         artist_match = len(artist_words & filename_words) / max(len(artist_words), 1)
         title_match = len(title_words & filename_words) / max(len(title_words), 1)
 
-        score += artist_match * 7.5
-        score += title_match * 7.5
+        score += artist_match * SPEED_MAX_POINTS
+        score += title_match * SPEED_MAX_POINTS
 
         return round(score, 2)

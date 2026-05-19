@@ -8,9 +8,14 @@ import logging
 import time
 from dataclasses import dataclass
 
+import requests.exceptions
 import slskd_api
 
 logger = logging.getLogger(__name__)
+
+
+class SlskdUnavailableError(Exception):
+    """Raised when the slskd API is unreachable (network/connection errors)."""
 
 
 @dataclass
@@ -142,6 +147,9 @@ class SlskdClient:
             if search_id:
                 return await self._stop_and_collect(search_id)
             return []
+        except requests.exceptions.RequestException as exc:
+            logger.exception(f"slskd search failed for: {query}")
+            raise SlskdUnavailableError(f"slskd API unreachable: {exc}") from exc
         except Exception:
             logger.exception(f"slskd search failed for: {query}")
             return []
@@ -159,10 +167,10 @@ class SlskdClient:
             if existing:
                 logger.debug("Cleaning %d stale searches", len(existing))
                 for s in existing:
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(requests.exceptions.RequestException, KeyError):
                         await asyncio.to_thread(self.client.searches.delete, id=s["id"])
         except Exception:
-            logger.debug("Failed to clean stale searches", exc_info=True)
+            logger.warning("Failed to clean stale searches", exc_info=True)
 
     async def _search_inner(self, query: str, timeout_secs: int, response_limit: int) -> list[dict]:
         """Core search logic with polling, stop-on-timeout, and partial results."""
@@ -214,7 +222,7 @@ class SlskdClient:
         # Always stop the search before retrieving responses — slskd returns
         # empty responses array while a search is still in-progress (when
         # responseLimit hasn't been reached but the search hasn't timed out).
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(requests.exceptions.RequestException):
             await asyncio.to_thread(self.client.searches.stop, id=search_id)
 
         final_state = await asyncio.to_thread(
@@ -234,7 +242,7 @@ class SlskdClient:
                     resp_count,
                     file_count,
                 )
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(requests.exceptions.RequestException):
                     responses = await asyncio.to_thread(
                         self.client.searches.search_responses,
                         id=search_id,
@@ -242,14 +250,14 @@ class SlskdClient:
                 logger.info("search_responses returned %d responses", len(responses))
 
         # Clean up
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(requests.exceptions.RequestException):
             await asyncio.to_thread(self.client.searches.delete, id=search_id)
 
         return responses
 
     async def _stop_and_collect(self, search_id: str) -> list[dict]:
         """Stop a search and return whatever partial results exist."""
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(requests.exceptions.RequestException):
             await asyncio.to_thread(self.client.searches.stop, id=search_id)
         try:
             final_state = await asyncio.to_thread(
@@ -259,7 +267,7 @@ class SlskdClient:
             )
             responses: list[dict] = final_state.get("responses", [])
             if not responses and final_state.get("responseCount", 0) > 0:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(requests.exceptions.RequestException):
                     responses = await asyncio.to_thread(
                         self.client.searches.search_responses,
                         id=search_id,
@@ -267,7 +275,7 @@ class SlskdClient:
         except Exception:
             logger.exception(f"Failed to collect partial results for {search_id}")
             responses = []
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(requests.exceptions.RequestException):
             await asyncio.to_thread(self.client.searches.delete, id=search_id)
         return responses
 
