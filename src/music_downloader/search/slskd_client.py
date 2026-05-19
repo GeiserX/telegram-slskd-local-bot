@@ -178,7 +178,6 @@ class SlskdClient:
         logger.info(f"Search started: id={search_id}, query='{query}'")
 
         min_wait = 5
-        timed_out = False
         try:
             start = time.time()
             last_count = 0
@@ -205,14 +204,12 @@ class SlskdClient:
                     logger.info(f"Search completed with {current_count} files from {resp_count} peers")
                     break
             else:
-                timed_out = True
                 logger.info(
                     f"Search polling timeout ({timeout_secs}s) for '{query}', stopping and grabbing partial results"
                 )
 
         except Exception:
             logger.exception(f"Error during search polling for: {query}")
-            timed_out = True
 
         # Always stop the search before retrieving responses — slskd returns
         # empty responses array while a search is still in-progress (when
