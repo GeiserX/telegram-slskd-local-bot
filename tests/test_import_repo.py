@@ -34,7 +34,9 @@ def _make_tracks(count: int, start_position: int = 1) -> list[dict]:
 
 class TestCreateJob:
     def test_returns_job_id(self, repo):
-        job_id = repo.create_job(chat_id=100, spotify_url="https://spotify/playlist/1", name="My Playlist", total_tracks=10)
+        job_id = repo.create_job(
+            chat_id=100, spotify_url="https://spotify/playlist/1", name="My Playlist", total_tracks=10
+        )
         assert job_id == 1
 
     def test_creates_with_correct_fields(self, repo):
