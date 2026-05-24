@@ -691,15 +691,18 @@ class TestHandleDirectSearch:
         update.callback_query.edit_message_text.assert_awaited_once()
         assert "expired" in update.callback_query.edit_message_text.call_args[0][0]
 
-    async def test_direct_search_success(self):
+    async def test_direct_search_prompts_for_metadata(self):
         bot = _setup_bot()
         chat_id = 67890
         bot.pending[chat_id] = PendingSearch(query="test query", track=_make_track())
-        bot._do_direct_slskd_search = AsyncMock()
         update = _make_update(chat_id=chat_id)
         context = _make_context()
         await bot._handle_direct_search(update, context, chat_id, "direct_search")
-        bot._do_direct_slskd_search.assert_awaited_once()
+        update.callback_query.edit_message_text.assert_awaited_once()
+        msg = update.callback_query.edit_message_text.call_args[0][0]
+        assert "Artist - Title" in msg
+        assert chat_id in bot._awaiting_direct_metadata
+        assert bot._awaiting_direct_metadata[chat_id] == "test query"
 
 
 # ---------------------------------------------------------------------------

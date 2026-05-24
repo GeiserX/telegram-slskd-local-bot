@@ -283,6 +283,9 @@ class MusicBot:
         # Current page for Spotify browsing (chat_id -> page)
         self._spotify_page: dict[int, int] = {}
 
+        # Awaiting direct search metadata: chat_id -> original query
+        self._awaiting_direct_metadata: dict[int, str] = {}
+
         # Per-chat cancellation: generation counter bumped on each new text message.
         # Running search/download flows check their generation against the current
         # value and abort silently when superseded by a newer request.
@@ -341,6 +344,7 @@ class MusicBot:
         self._import_pending.pop(chat_id, None)
         self._spotify_candidates.pop(chat_id, None)
         self._spotify_page.pop(chat_id, None)
+        self._awaiting_direct_metadata.pop(chat_id, None)
 
         stale_ids = [k for k, v in self.downloads.items() if v.chat_id == chat_id]
         for dl_id in stale_ids:
@@ -459,6 +463,37 @@ class MusicBot:
             return
 
         chat_id = update.effective_chat.id
+
+        # Check if we're awaiting "Artist - Title" for a direct Soulseek search
+        if chat_id in self._awaiting_direct_metadata:
+            search_query = self._awaiting_direct_metadata.pop(chat_id)
+            generation = self._chat_generation.get(chat_id, 0)
+
+            if " - " in query:
+                artist, title = query.split(" - ", 1)
+            else:
+                artist, title = query, search_query
+
+            synthetic_track = TrackInfo(
+                artist=artist.strip(),
+                title=title.strip(),
+                album="",
+                duration_ms=0,
+                spotify_url="",
+                year="",
+            )
+
+            searching_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"\U0001f50d Searching slskd for: `{search_query}`\n"
+                f"Saving as: *{synthetic_track.artist} - {synthetic_track.title}*",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+            await self._do_direct_slskd_search(
+                context, chat_id, search_query, searching_msg, generation, display_track=synthetic_track
+            )
+            return
 
         # Cancel any in-flight search / download for this chat immediately.
         self._cancel_chat_operations(chat_id)
@@ -1243,7 +1278,7 @@ class MusicBot:
     # =========================================================================
 
     async def _handle_direct_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, data: str):
-        """Handle 'Search Soulseek directly' button — searches slskd without Spotify metadata."""
+        """Handle 'Search Soulseek directly' button — asks for Artist - Title, then searches slskd."""
         query = update.callback_query
 
         pending = self.pending.get(chat_id)
@@ -1252,25 +1287,14 @@ class MusicBot:
             return
 
         search_query = pending.query
-        generation = self._chat_generation.get(chat_id, 0)
-
-        # Use Spotify candidate for display if available
-        display_track = None
-        candidates = self._spotify_candidates.get(chat_id)
-        if candidates:
-            display_track = candidates[0]
+        self._awaiting_direct_metadata[chat_id] = search_query
 
         await query.edit_message_text(
-            f"\U0001f50e Searching Soulseek directly: `{search_query}`", parse_mode=ParseMode.MARKDOWN
-        )
-
-        searching_msg = await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"\U0001f50d Searching slskd for: `{search_query}`",
+            f"\U0001f3b5 How should this track be saved?\n\n"
+            f"Send the name as: `Artist - Title`\n"
+            f"(This will be used for the filename and tags)",
             parse_mode=ParseMode.MARKDOWN,
         )
-
-        await self._do_direct_slskd_search(context, chat_id, search_query, searching_msg, generation, display_track)
 
     async def _do_direct_slskd_search(
         self, context, chat_id: int, query: str, searching_msg, generation: int, display_track: TrackInfo | None = None
