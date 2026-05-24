@@ -489,7 +489,7 @@ class MusicBot:
         )
 
         try:
-            tracks = self.spotify.search_multiple(query, limit=20)
+            tracks = self.spotify.search_multiple(query, limit=50)
             if self._is_stale(chat_id, generation):
                 return
 
@@ -504,19 +504,29 @@ class MusicBot:
                 self.pending[chat_id] = PendingSearch(query=query, track=None)
                 return
 
+            query_lower = query.lower()
             query_artist = ""
             if " - " in query:
                 query_artist = query.split(" - ", 1)[0].strip().lower()
 
             seen = set()
             unique_tracks = []
+            artist_match_tracks = []
+            other_tracks = []
             for t in tracks:
-                if query_artist and query_artist not in t.artist.lower():
-                    continue
                 key = (t.artist.lower(), t.title.lower(), t.album.lower())
-                if key not in seen:
-                    seen.add(key)
-                    unique_tracks.append(t)
+                if key in seen:
+                    continue
+                seen.add(key)
+                artist_lower = t.artist.lower()
+                if query_artist and query_artist not in artist_lower:
+                    continue
+                if artist_lower in query_lower or query_lower in artist_lower:
+                    artist_match_tracks.append(t)
+                else:
+                    other_tracks.append(t)
+
+            unique_tracks = artist_match_tracks + other_tracks
 
             if not unique_tracks:
                 seen = set()
