@@ -505,6 +505,7 @@ class MusicBot:
                 return
 
             query_lower = query.lower()
+            query_words = set(query_lower.split())
             query_artist = ""
             if " - " in query:
                 query_artist = query.split(" - ", 1)[0].strip().lower()
@@ -521,11 +522,15 @@ class MusicBot:
                 artist_lower = t.artist.lower()
                 if query_artist and query_artist not in artist_lower:
                     continue
-                if artist_lower in query_lower or query_lower in artist_lower:
+                artist_words = set(artist_lower.split())
+                if len(artist_words) >= 2 and artist_lower in query_lower:
+                    artist_match_tracks.append(t)
+                elif artist_words.issubset(query_words):
                     artist_match_tracks.append(t)
                 else:
                     other_tracks.append(t)
 
+            artist_match_tracks.sort(key=lambda t: len(t.artist), reverse=True)
             unique_tracks = artist_match_tracks + other_tracks
 
             if not unique_tracks:
