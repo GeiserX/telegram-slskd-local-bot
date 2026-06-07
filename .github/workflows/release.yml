@@ -16,7 +16,7 @@ jobs:
       PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -49,7 +49,7 @@ jobs:
 
       - name: Create Release with changelog
         if: steps.changelog.outputs.has_notes == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: /tmp/release_notes.md
           draft: false
@@ -59,7 +59,7 @@ jobs:
 
       - name: Create Release with auto-generated notes
         if: steps.changelog.outputs.has_notes != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           draft: false
@@ -68,7 +68,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
