@@ -558,9 +558,7 @@ class MusicBot:
                 if query_artist and query_artist not in artist_lower:
                     continue
                 artist_words = set(artist_lower.split())
-                if len(artist_words) >= 2 and artist_lower in query_lower:
-                    artist_match_tracks.append(t)
-                elif artist_words.issubset(query_words):
+                if (len(artist_words) >= 2 and artist_lower in query_lower) or artist_words.issubset(query_words):
                     artist_match_tracks.append(t)
                 else:
                     other_tracks.append(t)
@@ -1290,9 +1288,9 @@ class MusicBot:
         self._awaiting_direct_metadata[chat_id] = search_query
 
         await query.edit_message_text(
-            f"\U0001f3b5 How should this track be saved?\n\n"
-            f"Send the name as: `Artist - Title`\n"
-            f"(This will be used for the filename and tags)",
+            "\U0001f3b5 How should this track be saved?\n\n"
+            "Send the name as: `Artist - Title`\n"
+            "(This will be used for the filename and tags)",
             parse_mode=ParseMode.MARKDOWN,
         )
 
