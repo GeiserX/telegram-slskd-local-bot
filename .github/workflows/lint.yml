@@ -9,6 +9,13 @@ on:
 jobs:
   ruff:
     runs-on: [self-hosted, Linux, X64]
+    # Never run untrusted fork PR code on the self-hosted runner.
+    # Same-repo branches, push, schedule, and workflow_dispatch still run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v6
