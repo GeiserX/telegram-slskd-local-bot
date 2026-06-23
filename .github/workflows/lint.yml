@@ -8,7 +8,7 @@ on:
 
 jobs:
   ruff:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     # Never run untrusted fork PR code on the self-hosted runner.
     # Same-repo branches, push, schedule, and workflow_dispatch still run.
     if: >-
