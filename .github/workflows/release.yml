@@ -11,7 +11,7 @@ permissions:
 jobs:
   release:
     name: Create GitHub Release
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     env:
       PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
