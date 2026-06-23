@@ -11,12 +11,9 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     # Never run untrusted fork PR code on the self-hosted runner.
     # Same-repo branches, push, and schedule still run.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       security-events: write
       contents: read
