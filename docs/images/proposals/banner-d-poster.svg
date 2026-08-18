@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="telegram-slskd-local-bot">
+  <defs>
+    <linearGradient id="dbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0F1322"/><stop offset="1" stop-color="#0F1D18"/>
+    </linearGradient>
+    <linearGradient id="darc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2AABEE"/><stop offset="1" stop-color="#1DB954"/>
+    </linearGradient>
+    <clipPath id="dclip"><rect width="1200" height="300" rx="18"/></clipPath>
+  </defs>
+  <rect width="1200" height="300" rx="18" fill="url(#dbg)"/>
+  <g clip-path="url(#dclip)">
+    <g fill="none" stroke="#1DB954">
+      <circle cx="1060" cy="150" r="222" stroke-width="3" opacity="0.14"/>
+      <circle cx="1060" cy="150" r="192" stroke-width="3" opacity="0.17"/>
+      <circle cx="1060" cy="150" r="162" stroke-width="3" opacity="0.20"/>
+      <circle cx="1060" cy="150" r="132" stroke-width="3" opacity="0.24"/>
+      <circle cx="1060" cy="150" r="102" stroke-width="3" opacity="0.28"/>
+    </g>
+    <path d="M 1060 -42 A 192 192 0 0 0 868 150" fill="none" stroke="url(#darc)" stroke-width="3.5" opacity="0.7" stroke-linecap="round"/>
+    <circle cx="1060" cy="150" r="54" fill="#13201B" stroke="#1DB954" stroke-opacity="0.5" stroke-width="2"/>
+    <circle cx="1060" cy="150" r="7" fill="#1DB954" opacity="0.9"/>
+    <!-- paper plane on dotted flight path into the record -->
+    <path d="M 470 236 C 620 258, 780 236, 928 186" fill="none" stroke="#2AABEE" stroke-width="2" stroke-dasharray="1 10" stroke-linecap="round" opacity="0.75"/>
+    <g transform="translate(936 182) rotate(-22)">
+      <polygon points="0,0 30,10 4,20 8,12" fill="#2AABEE"/>
+    </g>
+  </g>
+  <text x="64" y="126" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="62" font-weight="800" fill="#F0F4FA"><tspan fill="#2AABEE">telegram</tspan><tspan fill="#566074">-</tspan>slskd<tspan fill="#566074">-</tspan></text>
+  <text x="64" y="196" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="62" font-weight="800" fill="#1DB954">local-bot</text>
+  <text x="64" y="244" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="18" fill="#8B95A7">Text a song. Get the FLAC. Keep it local.</text>
+</svg>

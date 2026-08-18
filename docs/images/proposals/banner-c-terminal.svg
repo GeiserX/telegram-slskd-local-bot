@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="telegram-slskd-local-bot">
+  <rect width="1200" height="300" rx="18" fill="#0A0E14"/>
+  <text x="64" y="96" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="44" font-weight="800" fill="#2AABEE">telegram<tspan fill="#566074">-</tspan></text>
+  <text x="64" y="148" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="44" font-weight="800" fill="#F0F4FA">slskd<tspan fill="#566074">-</tspan></text>
+  <text x="64" y="200" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="44" font-weight="800" fill="#1DB954">local-bot</text>
+  <text x="64" y="244" font-family="'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#566074">self-hosted &#183; docker &#183; flac-first</text>
+  <!-- terminal window -->
+  <rect x="560" y="36" width="590" height="228" rx="12" fill="#0D1420" stroke="#1E2836"/>
+  <path d="M560 70 h590" stroke="#1E2836"/>
+  <circle cx="586" cy="53" r="6" fill="#FF5F56"/><circle cx="606" cy="53" r="6" fill="#FFBD2E"/><circle cx="626" cy="53" r="6" fill="#27C93F"/>
+  <g font-family="'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14.5">
+    <text x="588" y="100"><tspan fill="#1DB954">$</tspan><tspan fill="#E6EDF7"> msg &#8220;nancy sinatra &#8212; bang bang&#8221;</tspan></text>
+    <text x="588" y="130"><tspan fill="#8B95A7">spotify   </tspan><tspan fill="#1DB954">&#10003;</tspan><tspan fill="#E6EDF7"> Bang Bang (My Baby Shot Me Down) &#183; 2:42</tspan></text>
+    <text x="588" y="160"><tspan fill="#8B95A7">soulseek  </tspan><tspan fill="#1DB954">&#10003;</tspan><tspan fill="#E6EDF7"> FLAC &#183; 16-bit/44.1 kHz &#183; 30.2 MB</tspan></text>
+    <text x="588" y="190"><tspan fill="#8B95A7">saved     </tspan><tspan fill="#2AABEE">&#8594;</tspan><tspan fill="#E6EDF7"> /music/Nancy Sinatra - Bang Bang.flac</tspan></text>
+    <text x="588" y="228" fill="#1DB954">&#9610;<animate attributeName="opacity" values="1;1;0;0;1" dur="1.4s" repeatCount="indefinite"/></text>
+  </g>
+</svg>
