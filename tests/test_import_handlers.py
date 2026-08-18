@@ -291,6 +291,7 @@ class TestCmdCancel:
     @patch("music_downloader.bot.handlers.asyncio.to_thread", side_effect=_fake_to_thread)
     async def test_cmd_cancel_no_work(self, mock_thread):
         bot = _setup_bot()
+        bot.import_repo.get_active_job.return_value = None
         update = _make_update(chat_id=67890, text="/cancel")
         context = _make_context()
         await bot.cmd_cancel(update, context)

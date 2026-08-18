@@ -40,22 +40,26 @@ def _make_track(idx: int = 0) -> TrackInfo:
 class TestBuildResultsKeyboard:
     def test_single_result(self):
         results = [_make_result()]
-        kb = build_results_keyboard(results)
+        kb = build_results_keyboard(results, search_id="abc12345")
         rows = kb.inline_keyboard
         # 1 result button + action row (auto-pick + cancel)
         assert len(rows) == 2
-        assert "dl:0" in rows[0][0].callback_data
+        # Callback data carries the search id so stale keyboards can't
+        # resolve against a newer result list.
+        assert rows[0][0].callback_data == "dl:abc12345:0"
+        assert rows[1][0].callback_data == "dl:abc12345:auto"
+        assert rows[1][1].callback_data == "dl:abc12345:cancel"
 
     def test_multiple_results(self):
         results = [_make_result(i) for i in range(3)]
-        kb = build_results_keyboard(results)
+        kb = build_results_keyboard(results, search_id="s1")
         rows = kb.inline_keyboard
         # 3 result rows + action row
         assert len(rows) == 4
 
     def test_pagination_first_page(self):
         results = [_make_result(i) for i in range(15)]
-        kb = build_results_keyboard(results, page=0, page_size=10)
+        kb = build_results_keyboard(results, page=0, page_size=10, search_id="s1")
         rows = kb.inline_keyboard
         # 10 result rows + nav row + action row
         nav_row = rows[-2]
@@ -64,7 +68,7 @@ class TestBuildResultsKeyboard:
 
     def test_pagination_second_page(self):
         results = [_make_result(i) for i in range(15)]
-        kb = build_results_keyboard(results, page=1, page_size=10)
+        kb = build_results_keyboard(results, page=1, page_size=10, search_id="s1")
         rows = kb.inline_keyboard
         nav_row = rows[-2]
         assert any("Prev" in btn.text for btn in nav_row)
@@ -72,7 +76,7 @@ class TestBuildResultsKeyboard:
 
     def test_pagination_middle_page(self):
         results = [_make_result(i) for i in range(30)]
-        kb = build_results_keyboard(results, page=1, page_size=10)
+        kb = build_results_keyboard(results, page=1, page_size=10, search_id="s1")
         rows = kb.inline_keyboard
         nav_row = rows[-2]
         assert any("Prev" in btn.text for btn in nav_row)
@@ -80,14 +84,14 @@ class TestBuildResultsKeyboard:
 
     def test_action_row_has_auto_and_cancel(self):
         results = [_make_result()]
-        kb = build_results_keyboard(results)
+        kb = build_results_keyboard(results, search_id="s1")
         action_row = kb.inline_keyboard[-1]
         texts = [btn.text for btn in action_row]
         assert any("Auto" in t for t in texts)
         assert any("Cancel" in t for t in texts)
 
     def test_empty_results_has_cancel_only(self):
-        kb = build_results_keyboard([])
+        kb = build_results_keyboard([], search_id="s1")
         action_row = kb.inline_keyboard[-1]
         assert len(action_row) == 1
         assert "Cancel" in action_row[0].text

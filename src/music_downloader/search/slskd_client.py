@@ -113,8 +113,12 @@ class ActiveDownload:
 class SlskdClient:
     """Wrapper around slskd-api for search and download operations."""
 
+    # Per-request HTTP timeout. Without it slskd-api defaults to no timeout at
+    # all, so a hung (not down) slskd blocks the caller forever.
+    HTTP_TIMEOUT_SECS: int = 15
+
     def __init__(self, host: str, api_key: str):
-        self.client = slskd_api.SlskdClient(host, api_key)
+        self.client = slskd_api.SlskdClient(host, api_key, timeout=self.HTTP_TIMEOUT_SECS)
         logger.info(f"slskd client initialized for {host}")
 
     async def search(self, query: str, timeout_secs: int = 30, response_limit: int = 500) -> list[dict]:
@@ -400,7 +404,7 @@ class SlskdClient:
 
         while time.time() - start < timeout_secs:
             await asyncio.sleep(3)
-            status = self.get_download_status(username, filename)
+            status = await asyncio.to_thread(self.get_download_status, username, filename)
 
             if status is None:
                 logger.debug(f"No status yet for {filename}")

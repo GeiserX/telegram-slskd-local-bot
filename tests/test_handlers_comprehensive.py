@@ -84,6 +84,7 @@ def _make_update(user_id=12345, chat_id=67890, text="Nancy Sinatra Bang Bang"):
     update.message = AsyncMock()
     update.message.text = text
     update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
     return update
 
 
@@ -280,7 +281,10 @@ class TestMusicBotAuthorization:
         update = _make_update(user_id=99999)
         result = await bot._check_auth(update)
         assert result is False
-        update.message.reply_text.assert_called_once_with("You are not authorized to use this bot.")
+        update.message.reply_text.assert_called_once()
+        denial = update.message.reply_text.call_args[0][0]
+        assert "not authorized" in denial
+        assert "99999" in denial  # user ID included so they can self-serve the allowlist
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -373,7 +377,8 @@ class TestMusicBotCommands:
         update = _make_update(user_id=99999)
         context = _make_context()
         await bot.cmd_start(update, context)
-        update.message.reply_text.assert_called_once_with("You are not authorized to use this bot.")
+        update.message.reply_text.assert_called_once()
+        assert "not authorized" in update.message.reply_text.call_args[0][0]
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -855,9 +860,11 @@ class TestMusicBotHelpers:
         bot = MusicBot(_make_config())
         id1 = bot._next_dl_id()
         id2 = bot._next_dl_id()
+        # Random, not sequential: sequential IDs repeat after a restart and let
+        # stale approve/reject buttons act on unrelated new downloads.
         assert id1 != id2
-        assert id1 == "1"
-        assert id2 == "2"
+        assert len(id1) == 8
+        int(id1, 16)  # hex
 
 
 class TestMusicBotHandleText:
@@ -896,7 +903,8 @@ class TestMusicBotHandleText:
         update = _make_update(user_id=99999, text="test")
         context = _make_context()
         await bot.handle_text(update, context)
-        update.message.reply_text.assert_called_once_with("You are not authorized to use this bot.")
+        update.message.reply_text.assert_called_once()
+        assert "not authorized" in update.message.reply_text.call_args[0][0]
 
 
 class TestMusicBotDoSearch:
@@ -1115,8 +1123,8 @@ class TestRetryResultIndex:
         with patch.object(bot, "_do_download", new_callable=AsyncMock) as mock_dl:
             await bot.handle_callback(update, context)
             mock_dl.assert_called_once()
-            # result_index is the last positional arg
-            assert mock_dl.call_args[0][-1] == 3
+            # (context, chat_id, track, result, status_msg, result_index, search_id)
+            assert mock_dl.call_args[0][5] == 3
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -1153,7 +1161,7 @@ class TestRetryResultIndex:
             # Should download results[3] with index=3
             call_args = mock_dl.call_args[0]
             assert call_args[3] == results[3]  # next_result
-            assert call_args[-1] == 3  # next_idx
+            assert call_args[5] == 3  # next_idx (search_id is the last arg)
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")

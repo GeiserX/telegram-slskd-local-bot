@@ -74,6 +74,20 @@ class ImportRepository:
         self._conn.commit()
         return cursor.lastrowid  # type: ignore[return-value]
 
+    def cancel_stale_jobs(self) -> int:
+        """Cancel every job stuck in pending/active (e.g. left over from a restart).
+
+        Runs at startup: no import can genuinely be running before the bot is,
+        so any such row is stale state that would otherwise block /import forever.
+        Returns the number of jobs cancelled.
+        """
+        cursor = self._conn.execute(
+            "UPDATE import_jobs SET status = 'cancelled', updated_at = datetime('now') "
+            "WHERE status IN ('pending', 'active')"
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
     def get_active_job(self, chat_id: int) -> ImportJob | None:
         cursor = self._conn.execute(
             "SELECT * FROM import_jobs WHERE chat_id = ? AND status IN ('pending', 'active') LIMIT 1",

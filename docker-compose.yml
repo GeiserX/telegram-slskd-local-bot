@@ -35,9 +35,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
     volumes:
-      # Mount slskd completed downloads directory (read-only)
+      # Mount slskd completed downloads directory (read-write: the bot
+      # deletes rejected/cleaned-up files from here after processing)
       # Adjust the host path to match your slskd downloads location
-      - ${SLSKD_DOWNLOAD_PATH:-./downloads}:/downloads:ro
+      - ${SLSKD_DOWNLOAD_PATH:-./downloads}:/downloads
 
       # Mount output music directory (read-write)
       # This is where renamed FLAC files are placed
