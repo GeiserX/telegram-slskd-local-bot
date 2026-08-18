@@ -51,7 +51,7 @@ Bot: Downloaded! Nancy Sinatra - Bang Bang (My Baby Shot Me Down).flac -> /music
 ```yaml
 services:
   slskd-importer:
-    image: drumsergio/telegram-slskd-local-bot:0.1.0
+    image: drumsergio/telegram-slskd-local-bot:0.11.0
     container_name: slskd_importer
     restart: unless-stopped
     environment:
@@ -99,15 +99,15 @@ python -m music_downloader run
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
-| `TELEGRAM_ALLOWED_USERS` | No | *(open)* | Comma-separated Telegram user IDs allowed to use the bot |
+| `TELEGRAM_ALLOWED_USERS` | Yes | *(deny all)* | Comma-separated Telegram user IDs allowed to use the bot. Empty means the bot denies everyone (fail-closed) — the denial reply shows you your ID |
 | `SPOTIFY_CLIENT_ID` | Yes | — | Spotify Developer app Client ID |
 | `SPOTIFY_CLIENT_SECRET` | Yes | — | Spotify Developer app Client Secret |
 | `SLSKD_HOST` | Yes | — | slskd instance URL (e.g., `http://192.168.1.100:5030`) |
 | `SLSKD_API_KEY` | Yes | — | slskd API key (Settings > Security > API Keys) |
 | `DOWNLOAD_DIR` | No | `/downloads` | Where slskd stores completed downloads (container path) |
 | `OUTPUT_DIR` | No | `/music` | Where to place renamed FLAC files (container path) |
-| `AUTO_MODE` | No | `false` | Auto-download best match without asking |
-| `MAX_RESULTS` | No | `5` | Maximum search results shown to user |
+| `AUTO_MODE` | No | `false` | Reserved — currently has no effect (auto-download is on the roadmap) |
+| `MAX_RESULTS` | No | `10` | Maximum search results shown to user |
 | `DURATION_TOLERANCE_SECS` | No | `5` | Duration match tolerance in seconds |
 | `SEARCH_TIMEOUT_SECS` | No | `30` | slskd search timeout |
 | `DOWNLOAD_TIMEOUT_SECS` | No | `600` | Download completion timeout |
@@ -121,7 +121,9 @@ python -m music_downloader run
 | Command | Description |
 |---------|-------------|
 | *(any text)* | Search for a song and show download options |
-| `/auto` | Toggle auto-download mode on/off |
+| `/import <spotify url>` | Import a Spotify playlist or album, track by track |
+| `/cancel` | Cancel the active import or search |
+| `/auto` | Toggle auto-download mode (reserved — the toggle persists but has no effect yet) |
 | `/status` | Show active searches and downloads |
 | `/history` | Show recent download history |
 | `/help` | Show help message |
@@ -184,5 +186,5 @@ Results containing excluded keywords (live, remix, etc.) are automatically filte
 ## Links
 
 - **Repository**: https://github.com/GeiserX/telegram-slskd-local-bot
-- **Telegram Bot**: [@slskdimporterbot](https://t.me/slskdimporterbot)
+- **Telegram Bot**: [@slskdimporterbot](https://t.me/slskdimporterbot) — the author's personal instance, allow-listed; it won't respond to other users. Deploy your own to try it.
 - **Changelog**: [docs/CHANGELOG.md](docs/CHANGELOG.md)

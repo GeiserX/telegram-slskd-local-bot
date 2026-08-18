@@ -8,7 +8,7 @@ Telegram bot that automates music discovery and download. Resolves track metadat
 - python-telegram-bot (Telegram Bot API)
 - spotipy (Spotify Web API, Client Credentials flow)
 - slskd-api (Soulseek/slskd REST API)
-- FastAPI + uvicorn (health check endpoint)
+- stdlib http.server (health check endpoint)
 - mutagen (audio metadata)
 - Docker (image: `drumsergio/telegram-slskd-local-bot`)
 - Published on PyPI

@@ -648,6 +648,7 @@ class TestCreateBot:
             mock_builder = MagicMock()
             mock_app = MagicMock()
             mock_builder.token.return_value = mock_builder
+            mock_builder.post_init.return_value = mock_builder
             mock_builder.build.return_value = mock_app
             mock_app_cls.builder.return_value = mock_builder
 

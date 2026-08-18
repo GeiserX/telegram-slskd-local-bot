@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import requests.exceptions
@@ -388,7 +389,14 @@ class SlskdClient:
             logger.exception(f"Failed to get download status for {filename}")
             return None
 
-    async def wait_for_download(self, username: str, filename: str, timeout_secs: int = 600) -> DownloadStatus | None:
+    async def wait_for_download(
+        self,
+        username: str,
+        filename: str,
+        timeout_secs: int = 600,
+        progress_cb: "Callable[[DownloadStatus], Awaitable[None]] | None" = None,
+        progress_interval_secs: float = 10.0,
+    ) -> DownloadStatus | None:
         """
         Wait for a download to complete, polling periodically.
 
@@ -396,11 +404,17 @@ class SlskdClient:
             username: Source username.
             filename: Remote filename.
             timeout_secs: Maximum wait time.
+            progress_cb: Optional async callable receiving the in-flight
+                DownloadStatus at most every ``progress_interval_secs`` —
+                the data was previously fetched and dropped at DEBUG level,
+                leaving the user staring at a static "Downloading…".
+            progress_interval_secs: Minimum seconds between progress callbacks.
 
         Returns:
             Final DownloadStatus, or None on timeout.
         """
         start = time.time()
+        last_progress = 0.0
 
         while time.time() - start < timeout_secs:
             await asyncio.sleep(3)
@@ -417,6 +431,11 @@ class SlskdClient:
             if status.is_failed:
                 logger.warning(f"Download failed ({status.state}): {filename}")
                 return status
+
+            if progress_cb is not None and time.time() - last_progress >= progress_interval_secs:
+                last_progress = time.time()
+                with contextlib.suppress(Exception):
+                    await progress_cb(status)
 
             logger.debug(f"Download {status.percent_complete:.0f}%: {filename}")
 

@@ -8,10 +8,11 @@ import datetime
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from telegram import Message, Update
+from telegram import BotCommand, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
@@ -54,7 +55,7 @@ from music_downloader.processor.flac_analyzer import (
     create_preview_clip,
 )
 from music_downloader.search.scorer import ResultScorer
-from music_downloader.search.slskd_client import SearchResult, SlskdClient
+from music_downloader.search.slskd_client import DownloadStatus, SearchResult, SlskdClient
 from music_downloader.tools.embed_artwork import embed_artwork_into_file, fetch_spotify_artwork
 
 logger = logging.getLogger(__name__)
@@ -426,6 +427,8 @@ class MusicBot:
             "Send me a song name (e.g., `Nancy Sinatra Bang Bang`) "
             "and I'll find and download it in FLAC.\n\n"
             "Commands:\n"
+            "/import — Import a Spotify playlist or album\n"
+            "/cancel — Cancel the active import or search\n"
             "/auto — Toggle auto-download mode\n"
             "/status — Show active downloads\n"
             "/history — Recent downloads\n"
@@ -549,9 +552,25 @@ class MusicBot:
             )
             return
 
-        # Cancel any in-flight search / download for this chat immediately.
+        # Cancel any in-flight search / download for this chat immediately —
+        # but first snapshot their status messages so they can be marked as
+        # superseded instead of sitting frozen at "Searching…" forever.
+        stale_message_ids = []
+        old_pending = self.pending.get(chat_id)
+        if old_pending and old_pending.message_id:
+            stale_message_ids.append(old_pending.message_id)
+        stale_message_ids += [
+            dl.status_message_id
+            for dl in self.downloads.values()
+            if dl.chat_id == chat_id and dl.status_message_id and dl.source_path is None
+        ]
         self._cancel_chat_operations(chat_id)
         generation = self._chat_generation[chat_id]
+        for message_id in stale_message_ids:
+            with contextlib.suppress(Exception):
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id, text="⏹ Superseded by a newer request"
+                )
 
         # Step 0: Check for similar files already in the library
         similar = self.processor.find_similar(query)
@@ -751,12 +770,18 @@ class MusicBot:
                 return
 
             if not ranked:
+                # Not a dead end: offer the manual escape hatch. The scorer
+                # also filters live/remix/duration mismatches, so "no results"
+                # regularly means "nothing survived the filters".
+                self.pending[chat_id] = PendingSearch(query=f"{track.artist} {clean_title}", track=None)
                 await _safe_edit(
                     searching_msg,
                     f"🎵 *{track.artist} - {track.title}* ({track.duration_display})\n\n"
                     f"No results found on Soulseek matching this track.\n"
-                    f"Try a different search query.",
+                    f"Try a different query, or search Soulseek directly "
+                    f"(skips the duration and live/remix filters).",
                     parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_direct_search_keyboard(),
                 )
                 return
 
@@ -1073,6 +1098,10 @@ class MusicBot:
                 username=result.username,
                 filename=result.filename,
                 timeout_secs=self.config.download_timeout_secs,
+                progress_cb=self._make_progress_reporter(
+                    status_msg,
+                    f"⬇️ *Downloading {label}...*\n{track.artist} - {track.title}\nFrom: `{result.username}`",
+                ),
             )
 
             if status is None or status.is_failed:
@@ -1353,6 +1382,30 @@ class MusicBot:
             task.cancel()
 
     @staticmethod
+    def _make_progress_reporter(status_msg: Message, header: str) -> "Callable[[DownloadStatus], Awaitable[None]]":
+        """Build a progress callback that live-edits the download status message.
+
+        Skips edits when the rendered line hasn't changed (Telegram rejects
+        no-op edits, and queued transfers can sit unchanged for minutes).
+        """
+        last_line = ""
+
+        async def _report(status: DownloadStatus) -> None:
+            nonlocal last_line
+            state_lower = (status.state or "").lower()
+            if "queue" in state_lower:
+                line = "⏳ Queued at the source…"
+            else:
+                speed = f" · {status.average_speed / (1024 * 1024):.1f} MB/s" if status.average_speed else ""
+                line = f"{status.percent_complete:.0f}%{speed}"
+            if line == last_line:
+                return
+            last_line = line
+            await _safe_edit(status_msg, f"{header}\n{line}", parse_mode=ParseMode.MARKDOWN)
+
+        return _report
+
+    @staticmethod
     def _remove_download_file(path: str | None) -> None:
         """Delete a file from the downloads dir, never letting failure break the flow.
 
@@ -1369,13 +1422,17 @@ class MusicBot:
             logger.warning("Could not delete %s (downloads mount read-only?): %s", path, exc)
 
     @staticmethod
-    async def _edit_approval_message(query, text: str):
-        """Edit the approval message — works for both audio captions and text messages."""
+    async def _edit_approval_message(query, text: str, reply_markup=None):
+        """Edit the approval message — works for both audio captions and text messages.
+
+        Editing without reply_markup strips the buttons; pass it explicitly
+        when the message must stay actionable.
+        """
         try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_caption(caption=text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
         except Exception:
             with contextlib.suppress(Exception):
-                await query.edit_message_text(text=text, parse_mode=ParseMode.MARKDOWN)
+                await query.edit_message_text(text=text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
     # =========================================================================
     # DIRECT SEARCH (skip Spotify)
@@ -1436,10 +1493,12 @@ class MusicBot:
                 return
 
             if not ranked:
+                self.pending[chat_id] = PendingSearch(query=query, track=None)
                 await _safe_edit(
                     searching_msg,
                     f"\U0001f50e Direct search: `{query}`\n\nNo results found on Soulseek.",
                     parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_direct_search_keyboard(),
                 )
                 return
 
@@ -1644,7 +1703,13 @@ class MusicBot:
             return
 
         if not pending_dl.source_path:
-            await self._edit_approval_message(query, "❌ Source file not ready. Download may still be in progress.")
+            # Keep the buttons alive: stripping them here would freeze the
+            # whole import with no way forward once the download finishes.
+            await self._edit_approval_message(
+                query,
+                "❌ Source file not ready. Download may still be in progress — try again in a moment.",
+                reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+            )
             self.downloads[dl_id] = pending_dl
             return
 
@@ -1823,11 +1888,13 @@ class MusicBot:
         try:
             success = await asyncio.to_thread(self.slskd.enqueue_download, result)
             if not success:
+                # No file exists yet, so never offer a Save button here —
+                # tapping it could only strip the keyboard and stall the job.
                 await _safe_edit(
                     status_msg,
                     f"❌ Failed to enqueue from `{result.username}`",
                     parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+                    reply_markup=build_import_skip_keyboard(job_id, track_id),
                 )
                 await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
@@ -1836,6 +1903,11 @@ class MusicBot:
                 username=result.username,
                 filename=result.filename,
                 timeout_secs=self.config.download_timeout_secs,
+                progress_cb=self._make_progress_reporter(
+                    status_msg,
+                    f"\U0001f4cb *Import track:* {track.artist} - {track.title}\n"
+                    f"⬇️ Downloading: `{result.basename}`\nFrom: `{result.username}`",
+                ),
             )
 
             if status is None or status.is_failed:
@@ -1854,7 +1926,7 @@ class MusicBot:
                 await _safe_edit(
                     status_msg,
                     "❌ Downloaded file not found on disk.",
-                    reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
+                    reply_markup=build_import_skip_keyboard(job_id, track_id),
                 )
                 await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
@@ -2175,6 +2247,24 @@ class MusicBot:
         )
 
 
+async def _register_commands(app: Application) -> None:
+    """Publish the command menu so Telegram's `/` autocomplete shows every command.
+
+    Without this the biggest feature in the bot (/import) is invisible: nothing
+    in the UI ever reveals it exists.
+    """
+    await app.bot.set_my_commands(
+        [
+            BotCommand("import", "Import a Spotify playlist or album"),
+            BotCommand("cancel", "Cancel the active import or search"),
+            BotCommand("auto", "Toggle auto-download mode"),
+            BotCommand("status", "Show active searches and downloads"),
+            BotCommand("history", "Recent downloads"),
+            BotCommand("help", "How to use the bot"),
+        ]
+    )
+
+
 def create_bot(config: Config) -> Application:
     """
     Create and configure the Telegram bot application.
@@ -2187,7 +2277,7 @@ def create_bot(config: Config) -> Application:
     """
     bot = MusicBot(config)
 
-    app = Application.builder().token(config.telegram_bot_token).build()
+    app = Application.builder().token(config.telegram_bot_token).post_init(_register_commands).build()
 
     # Only react to NEW messages: an edited message arrives with
     # update.message=None and would crash every handler that replies.
