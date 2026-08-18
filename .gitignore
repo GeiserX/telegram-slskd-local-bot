@@ -46,3 +46,9 @@ logs/
 # Downloaded music (local dev)
 music/
 output/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
