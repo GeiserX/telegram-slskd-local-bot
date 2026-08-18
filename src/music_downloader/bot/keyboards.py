@@ -12,7 +12,8 @@ def build_results_keyboard(
     results: list[SearchResult],
     page: int = 0,
     page_size: int = 10,
-    search_id: str = "",
+    *,
+    search_id: str,
 ) -> InlineKeyboardMarkup:
     """
     Build an inline keyboard with search results for the user to pick from.

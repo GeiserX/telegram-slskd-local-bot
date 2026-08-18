@@ -4,6 +4,7 @@ Telegram bot handlers for music search and download.
 
 import asyncio
 import contextlib
+import datetime
 import logging
 import os
 import re
@@ -69,6 +70,14 @@ def _escape_md(text: str) -> str:
     return text
 
 
+def _retry_after_seconds(exc: RetryAfter) -> float:
+    """RetryAfter.retry_after is an int today and a timedelta under PTB_TIMEDELTA."""
+    value = exc.retry_after
+    if isinstance(value, datetime.timedelta):
+        return value.total_seconds()
+    return float(value)
+
+
 async def _safe_edit(msg: Message, text: str, **kwargs) -> bool:
     """Edit a Telegram message, swallowing common failures.
 
@@ -84,7 +93,7 @@ async def _safe_edit(msg: Message, text: str, **kwargs) -> bool:
                 logger.warning(f"Telegram edit still flood-limited after waiting: {exc}")
                 return False
             logger.warning(f"Telegram flood control on edit, retrying in {exc.retry_after}s")
-            await asyncio.sleep(exc.retry_after + 0.5)
+            await asyncio.sleep(_retry_after_seconds(exc) + 0.5)
         except BadRequest as exc:
             logger.warning(f"Telegram edit failed (BadRequest): {exc}")
             return False
@@ -111,7 +120,7 @@ async def _safe_query_edit(query, text: str, **kwargs) -> bool:
                 logger.warning(f"Telegram query edit still flood-limited after waiting: {exc}")
                 return False
             logger.warning(f"Telegram flood control on query edit, retrying in {exc.retry_after}s")
-            await asyncio.sleep(exc.retry_after + 0.5)
+            await asyncio.sleep(_retry_after_seconds(exc) + 0.5)
         except BadRequest as exc:
             logger.warning(f"Telegram query edit failed (BadRequest): {exc}")
             return False
@@ -457,16 +466,18 @@ class MusicBot:
             lines.append("*Active searches:*\n")
             for pending in chat_searches:
                 if pending.track:
-                    lines.append(f"• {pending.track.artist} - {pending.track.title}")
+                    lines.append(f"• {_escape_md(pending.track.artist)} - {_escape_md(pending.track.title)}")
                 else:
                     # Search still resolving on Spotify (or awaiting a pick)
-                    lines.append(f"• `{pending.query}`")
+                    lines.append(f"• {_escape_md(pending.query)}")
 
         chat_downloads = [d for d in self.downloads.values() if d.chat_id == chat_id]
         if chat_downloads:
             lines.append("\n*Active downloads:*\n")
             for dl in chat_downloads:
-                lines.append(f"• {dl.track.artist} - {dl.track.title} ({dl.result.basename})")
+                lines.append(
+                    f"• {_escape_md(dl.track.artist)} - {_escape_md(dl.track.title)} ({_escape_md(dl.result.basename)})"
+                )
 
         if not lines:
             await update.message.reply_text("No active searches or downloads.")
@@ -918,7 +929,7 @@ class MusicBot:
 
         search_id, action = self._split_search_callback(data)
         if search_id != pending.search_id:
-            await query.edit_message_text("⌛ These results are out of date. Send a new search.")
+            await _safe_query_edit(query, "⌛ These results are out of date. Send a new search.")
             return
 
         try:
@@ -954,7 +965,7 @@ class MusicBot:
         if search_id != pending.search_id:
             # Button belongs to an older search; acting on it would download
             # from the CURRENT result list under the old labels.
-            await query.edit_message_text("⌛ These results are out of date. Send a new search.")
+            await _safe_query_edit(query, "⌛ These results are out of date. Send a new search.")
             return
 
         if action == "cancel":
@@ -971,7 +982,7 @@ class MusicBot:
                 return
 
         if index >= len(pending.results):
-            await query.edit_message_text("⌛ These results are out of date. Send a new search.")
+            await _safe_query_edit(query, "⌛ These results are out of date. Send a new search.")
             return
 
         result = pending.results[index]

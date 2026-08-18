@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_download_history_created ON download_history(crea
 # locked database) is a SUBCLASS of DatabaseError. Only genuine file
 # corruption justifies replacing the database; everything else must
 # propagate so a transient condition can't destroy history.
-_CORRUPTION_MARKERS = ("malformed", "not a database", "file is encrypted")
+_CORRUPTION_MARKERS: tuple[str, ...] = ("malformed", "not a database", "file is encrypted")
 
 
 def _is_corruption(exc: sqlite3.DatabaseError) -> bool:
@@ -83,7 +84,7 @@ class Database:
         except sqlite3.DatabaseError as exc:
             if not _is_corruption(exc):
                 raise
-            logger.warning("Database corrupt at %s (%s) — moving it aside and recreating", db_path, exc)
+            logger.warning(f"Database corrupt at {db_path} ({exc}) — moving it aside and recreating")
             self._move_corrupt_aside(db_path)
             self._conn = self._connect(db_path)
         atexit.register(self.close)
@@ -107,7 +108,9 @@ class Database:
     @staticmethod
     def _move_corrupt_aside(db_path: str) -> None:
         """Preserve a corrupt database (and WAL/SHM siblings) instead of deleting it."""
-        stamp = int(time.time())
+        # Second-resolution timestamps can collide across rapid recoveries;
+        # the random suffix keeps an earlier backup from being overwritten.
+        stamp = f"{int(time.time())}-{uuid.uuid4().hex[:4]}"
         for suffix in ("", "-wal", "-shm"):
             src = f"{db_path}{suffix}"
             if os.path.exists(src):

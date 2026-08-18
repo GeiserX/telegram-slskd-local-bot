@@ -115,7 +115,7 @@ class SlskdClient:
 
     # Per-request HTTP timeout. Without it slskd-api defaults to no timeout at
     # all, so a hung (not down) slskd blocks the caller forever.
-    HTTP_TIMEOUT_SECS = 15
+    HTTP_TIMEOUT_SECS: int = 15
 
     def __init__(self, host: str, api_key: str):
         self.client = slskd_api.SlskdClient(host, api_key, timeout=self.HTTP_TIMEOUT_SECS)

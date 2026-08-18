@@ -391,3 +391,14 @@ class TestSlskdClientTimeout:
         with patch("music_downloader.search.slskd_client.slskd_api.SlskdClient") as mock_cls:
             SlskdClient("http://localhost:5030", "key")
         mock_cls.assert_called_once_with("http://localhost:5030", "key", timeout=SlskdClient.HTTP_TIMEOUT_SECS)
+
+
+class TestRetryAfterNormalization:
+    def test_seconds_from_int_and_timedelta(self):
+        from music_downloader.bot.handlers import _retry_after_seconds
+
+        exc = MagicMock()
+        exc.retry_after = 7
+        assert _retry_after_seconds(exc) == 7.0
+        exc.retry_after = datetime.timedelta(seconds=3)
+        assert _retry_after_seconds(exc) == 3.0
