@@ -8,10 +8,11 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from telegram import Message, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -71,36 +72,56 @@ def _escape_md(text: str) -> str:
 async def _safe_edit(msg: Message, text: str, **kwargs) -> bool:
     """Edit a Telegram message, swallowing common failures.
 
+    Waits out flood control (RetryAfter) once before giving up.
     Returns True on success, False if the edit failed (logged as warning).
     """
-    try:
-        await msg.edit_text(text, **kwargs)
-        return True
-    except BadRequest as exc:
-        logger.warning(f"Telegram edit failed (BadRequest): {exc}")
-        return False
-    except TimedOut:
-        logger.warning("Telegram edit timed out")
-        return False
-    except NetworkError as exc:
-        logger.warning(f"Telegram edit network error: {exc}")
-        return False
+    for attempt in (1, 2):
+        try:
+            await msg.edit_text(text, **kwargs)
+            return True
+        except RetryAfter as exc:
+            if attempt == 2:
+                logger.warning(f"Telegram edit still flood-limited after waiting: {exc}")
+                return False
+            logger.warning(f"Telegram flood control on edit, retrying in {exc.retry_after}s")
+            await asyncio.sleep(exc.retry_after + 0.5)
+        except BadRequest as exc:
+            logger.warning(f"Telegram edit failed (BadRequest): {exc}")
+            return False
+        except TimedOut:
+            logger.warning("Telegram edit timed out")
+            return False
+        except NetworkError as exc:
+            logger.warning(f"Telegram edit network error: {exc}")
+            return False
+    return False
 
 
 async def _safe_query_edit(query, text: str, **kwargs) -> bool:
-    """Edit a callback query message, swallowing transient Telegram errors."""
-    try:
-        await query.edit_message_text(text, **kwargs)
-        return True
-    except BadRequest as exc:
-        logger.warning(f"Telegram query edit failed (BadRequest): {exc}")
-        return False
-    except TimedOut:
-        logger.warning("Telegram query edit timed out")
-        return False
-    except NetworkError as exc:
-        logger.warning(f"Telegram query edit network error: {exc}")
-        return False
+    """Edit a callback query message, swallowing transient Telegram errors.
+
+    Waits out flood control (RetryAfter) once before giving up.
+    """
+    for attempt in (1, 2):
+        try:
+            await query.edit_message_text(text, **kwargs)
+            return True
+        except RetryAfter as exc:
+            if attempt == 2:
+                logger.warning(f"Telegram query edit still flood-limited after waiting: {exc}")
+                return False
+            logger.warning(f"Telegram flood control on query edit, retrying in {exc.retry_after}s")
+            await asyncio.sleep(exc.retry_after + 0.5)
+        except BadRequest as exc:
+            logger.warning(f"Telegram query edit failed (BadRequest): {exc}")
+            return False
+        except TimedOut:
+            logger.warning("Telegram query edit timed out")
+            return False
+        except NetworkError as exc:
+            logger.warning(f"Telegram query edit network error: {exc}")
+            return False
+    return False
 
 
 # Noise keywords that Spotify appends to track titles but Soulseek users never use.
@@ -237,6 +258,9 @@ class PendingSearch:
     message_id: int | None = None
     is_fallback: bool = False
     page: int = 0
+    # Unique id binding result keyboards to this search; stale buttons from an
+    # earlier search must never resolve against a newer result list.
+    search_id: str = ""
 
 
 @dataclass
@@ -250,6 +274,7 @@ class PendingDownload:
     status_message_id: int | None = None
     approval_message_id: int | None = None  # Message with approve/reject buttons
     result_index: int = 0  # Position in ranked results list
+    search_id: str = ""  # Search this download came from (see PendingSearch)
 
 
 class MusicBot:
@@ -273,10 +298,9 @@ class MusicBot:
         # Per-user pending searches (chat_id -> PendingSearch)
         self.pending: dict[int, PendingSearch] = {}
 
-        # Active downloads keyed by short numeric ID
+        # Active downloads keyed by short unique ID
         # download_id -> PendingDownload
         self.downloads: dict[str, PendingDownload] = {}
-        self._dl_counter = 0
 
         # Per-chat Spotify candidates when multiple tracks match (chat_id -> list[TrackInfo])
         self._spotify_candidates: dict[int, list[TrackInfo]] = {}
@@ -306,6 +330,12 @@ class MusicBot:
         # Separate pending search state for import flows (avoids clobbering self.pending)
         self._import_pending: dict[int, PendingSearch] = {}
 
+        # A restart cannot leave a genuinely running import behind, but it does
+        # leave pending/active rows that would block /import for that chat forever.
+        stale_jobs = self.import_repo.cancel_stale_jobs()
+        if stale_jobs:
+            logger.warning("Cancelled %d stale import job(s) left over from a previous run", stale_jobs)
+
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot (fail-closed)."""
         if not self.config.telegram_allowed_users:
@@ -314,10 +344,15 @@ class MusicBot:
 
     async def _check_auth(self, update: Update) -> bool:
         """Check authorization and send a message if denied."""
-        if not self._is_authorized(update.effective_user.id):
-            await update.message.reply_text("You are not authorized to use this bot.")
-            return False
-        return True
+        user = update.effective_user
+        if user is not None and self._is_authorized(user.id):
+            return True
+        message = update.effective_message
+        if message is not None and user is not None:
+            # Include the numeric ID so a self-hoster can copy it straight
+            # into TELEGRAM_ALLOWED_USERS instead of hunting for it.
+            await message.reply_text(f"You are not authorized to use this bot.\nYour Telegram user ID: {user.id}")
+        return False
 
     # =========================================================================
     # CANCELLATION
@@ -413,16 +448,24 @@ class MusicBot:
         if not await self._check_auth(update):
             return
 
+        chat_id = update.effective_chat.id
         lines = []
 
-        if self.pending:
+        # Only this chat's activity: /status must not leak other users' work.
+        chat_searches = [p for cid, p in self.pending.items() if cid == chat_id]
+        if chat_searches:
             lines.append("*Active searches:*\n")
-            for _chat_id, pending in self.pending.items():
-                lines.append(f"• {pending.track.artist} - {pending.track.title}")
+            for pending in chat_searches:
+                if pending.track:
+                    lines.append(f"• {pending.track.artist} - {pending.track.title}")
+                else:
+                    # Search still resolving on Spotify (or awaiting a pick)
+                    lines.append(f"• `{pending.query}`")
 
-        if self.downloads:
+        chat_downloads = [d for d in self.downloads.values() if d.chat_id == chat_id]
+        if chat_downloads:
             lines.append("\n*Active downloads:*\n")
-            for _dl_id, dl in self.downloads.items():
+            for dl in chat_downloads:
                 lines.append(f"• {dl.track.artist} - {dl.track.title} ({dl.result.basename})")
 
         if not lines:
@@ -706,12 +749,14 @@ class MusicBot:
                 )
                 return
 
+            search_id = uuid4().hex[:8]
             self.pending[chat_id] = PendingSearch(
                 query=f"{track.artist} {track.title}",
                 track=track,
                 results=ranked,
                 message_id=searching_msg.message_id,
                 is_fallback=is_fallback,
+                search_id=search_id,
             )
 
             results_text = self._format_results(track, ranked, is_fallback, page=0, page_size=self.config.max_results)
@@ -719,7 +764,9 @@ class MusicBot:
                 searching_msg,
                 results_text,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=build_results_keyboard(ranked, page=0, page_size=self.config.max_results),
+                reply_markup=build_results_keyboard(
+                    ranked, page=0, page_size=self.config.max_results, search_id=search_id
+                ),
             )
 
         except Exception:
@@ -853,6 +900,14 @@ class MusicBot:
         generation = self._chat_generation.get(chat_id, 0)
         await self._do_slskd_search(context, chat_id, track, searching_msg, generation)
 
+    @staticmethod
+    def _split_search_callback(data: str) -> tuple[str, str]:
+        """Split ``dl:<search_id>:<action>`` (or legacy ``dl:<action>``) into (search_id, action)."""
+        parts = data.split(":", 2)
+        if len(parts) == 3:
+            return parts[1], parts[2]
+        return "", parts[1]
+
     async def _handle_results_page(self, update, context, chat_id: int, data: str):
         """Handle slskd results page navigation (◀️ / ▶️)."""
         query = update.callback_query
@@ -861,8 +916,13 @@ class MusicBot:
             await query.edit_message_text("Search expired. Send a new query.")
             return
 
+        search_id, action = self._split_search_callback(data)
+        if search_id != pending.search_id:
+            await query.edit_message_text("⌛ These results are out of date. Send a new search.")
+            return
+
         try:
-            page = int(data.split(":", 1)[1])
+            page = int(action)
         except ValueError:
             return
 
@@ -877,7 +937,9 @@ class MusicBot:
         await query.edit_message_text(
             results_text,
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=build_results_keyboard(pending.results, page=page, page_size=self.config.max_results),
+            reply_markup=build_results_keyboard(
+                pending.results, page=page, page_size=self.config.max_results, search_id=pending.search_id
+            ),
         )
 
     async def _handle_download_selection(self, update, context, chat_id: int, data: str):
@@ -888,7 +950,12 @@ class MusicBot:
             await query.edit_message_text("Search expired. Send a new query.")
             return
 
-        action = data.split(":", 1)[1]
+        search_id, action = self._split_search_callback(data)
+        if search_id != pending.search_id:
+            # Button belongs to an older search; acting on it would download
+            # from the CURRENT result list under the old labels.
+            await query.edit_message_text("⌛ These results are out of date. Send a new search.")
+            return
 
         if action == "cancel":
             del self.pending[chat_id]
@@ -904,6 +971,7 @@ class MusicBot:
                 return
 
         if index >= len(pending.results):
+            await query.edit_message_text("⌛ These results are out of date. Send a new search.")
             return
 
         result = pending.results[index]
@@ -921,7 +989,7 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, result, status_msg, index),
+            self._do_download(context, chat_id, track, result, status_msg, index, pending.search_id),
             update=update,
         )
         self._track_task(chat_id, task)
@@ -944,23 +1012,34 @@ class MusicBot:
     # =========================================================================
 
     def _next_dl_id(self) -> str:
-        """Generate a short unique download ID."""
-        self._dl_counter += 1
-        return str(self._dl_counter)
+        """Generate a short unique download ID.
+
+        Random rather than sequential: sequential IDs restart at 1 after a
+        restart, so a stale approve/reject button embedded in an old Telegram
+        message would act on an unrelated new download.
+        """
+        return uuid4().hex[:8]
 
     def _has_next_result(self, chat_id: int, current_index: int) -> bool:
         pending = self.pending.get(chat_id)
         return pending is not None and current_index + 1 < len(pending.results)
 
     async def _do_download(
-        self, context, chat_id: int, track: TrackInfo, result: SearchResult, status_msg, result_index: int = 0
+        self,
+        context,
+        chat_id: int,
+        track: TrackInfo,
+        result: SearchResult,
+        status_msg,
+        result_index: int = 0,
+        search_id: str = "",
     ):
         """Download a file, send it to Telegram for preview, and ask for approval."""
         dl_id = self._next_dl_id()
         label = f"#{result_index + 1}"
 
         try:
-            success = self.slskd.enqueue_download(result)
+            success = await asyncio.to_thread(self.slskd.enqueue_download, result)
             if not success:
                 pending_dl = PendingDownload(
                     track=track,
@@ -968,6 +1047,7 @@ class MusicBot:
                     chat_id=chat_id,
                     status_message_id=status_msg.message_id,
                     result_index=result_index,
+                    search_id=search_id,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -992,6 +1072,7 @@ class MusicBot:
                     chat_id=chat_id,
                     status_message_id=status_msg.message_id,
                     result_index=result_index,
+                    search_id=search_id,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -1020,6 +1101,7 @@ class MusicBot:
                 source_path=source_path,
                 status_message_id=status_msg.message_id,
                 result_index=result_index,
+                search_id=search_id,
             )
             self.downloads[dl_id] = pending_dl
 
@@ -1220,9 +1302,7 @@ class MusicBot:
                 await self._add_history(track, result, "file_not_found")
 
         elif action == "reject":
-            if pending_dl.source_path and os.path.isfile(pending_dl.source_path):
-                os.remove(pending_dl.source_path)
-                logger.info(f"Deleted rejected file: {pending_dl.source_path}")
+            self._remove_download_file(pending_dl.source_path)
             await self._edit_approval_message(query, f"🚫 Rejected: {track.artist} - {track.title}")
             await self._add_history(track, result, "rejected")
             logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
@@ -1242,8 +1322,7 @@ class MusicBot:
         stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
-            if dl.source_path and os.path.isfile(dl.source_path):
-                os.remove(dl.source_path)
+            self._remove_download_file(dl.source_path)
             if dl.approval_message_id:
                 try:
                     await context.bot.edit_message_caption(
@@ -1261,6 +1340,22 @@ class MusicBot:
 
         for task in self._active_tasks.pop(chat_id, set()):
             task.cancel()
+
+    @staticmethod
+    def _remove_download_file(path: str | None) -> None:
+        """Delete a file from the downloads dir, never letting failure break the flow.
+
+        The downloads volume may be mounted read-only; a failed delete must not
+        swallow the reject/dismiss handling around it.
+        """
+        if not path:
+            return
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                logger.info(f"Deleted file from downloads: {path}")
+        except OSError as exc:
+            logger.warning("Could not delete %s (downloads mount read-only?): %s", path, exc)
 
     @staticmethod
     async def _edit_approval_message(query, text: str):
@@ -1337,12 +1432,14 @@ class MusicBot:
                 )
                 return
 
+            search_id = uuid4().hex[:8]
             self.pending[chat_id] = PendingSearch(
                 query=query,
                 track=synthetic_track,
                 results=ranked,
                 message_id=searching_msg.message_id,
                 is_fallback=is_fallback,
+                search_id=search_id,
             )
 
             results_text = self._format_results(
@@ -1352,7 +1449,9 @@ class MusicBot:
                 searching_msg,
                 results_text,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=build_results_keyboard(ranked, page=0, page_size=self.config.max_results),
+                reply_markup=build_results_keyboard(
+                    ranked, page=0, page_size=self.config.max_results, search_id=search_id
+                ),
             )
 
         except Exception:
@@ -1446,8 +1545,15 @@ class MusicBot:
 
         chat_id = update.effective_chat.id
 
-        # Cancel import if active
+        # Cancel import if active. Fall back to the DB when the in-memory map
+        # is empty (abandoned confirm screen, or state lost to a restart) —
+        # otherwise the pending/active row blocks /import forever while this
+        # very command reports "Nothing to cancel."
         job_id = self._active_import.pop(chat_id, None)
+        if job_id is None:
+            active = await asyncio.to_thread(self.import_repo.get_active_job, chat_id)
+            if active is not None:
+                job_id = active.id
         if job_id:
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.cancelled)
             self._cancel_chat_operations(chat_id)
@@ -1644,12 +1750,14 @@ class MusicBot:
             best = ranked[0]
 
             # Store results for potential "next result" retry (separate from regular search)
+            search_id = uuid4().hex[:8]
             self._import_pending[chat_id] = PendingSearch(
                 query=search_query,
                 track=track,
                 results=ranked,
                 message_id=searching_msg.message_id,
                 is_fallback=is_fallback,
+                search_id=search_id,
             )
 
             dl_id = self._next_dl_id()
@@ -1659,6 +1767,7 @@ class MusicBot:
                 chat_id=chat_id,
                 source_path=None,
                 status_message_id=searching_msg.message_id,
+                search_id=search_id,
             )
             self.downloads[dl_id] = pending_dl
 
@@ -1701,7 +1810,7 @@ class MusicBot:
     ):
         """Download a file within an import flow."""
         try:
-            success = self.slskd.enqueue_download(result)
+            success = await asyncio.to_thread(self.slskd.enqueue_download, result)
             if not success:
                 await _safe_edit(
                     status_msg,
@@ -1829,7 +1938,7 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, result, status_msg, result_index),
+            self._do_download(context, chat_id, track, result, status_msg, result_index, pending_dl.search_id),
             update=update,
         )
         self._track_task(chat_id, task)
@@ -1848,6 +1957,12 @@ class MusicBot:
 
         if pending_dl.chat_id != chat_id:
             self.downloads[dl_id] = pending_dl
+            return
+
+        if pending.search_id != pending_dl.search_id:
+            # The failed download belongs to an older search; indexing into the
+            # current result list would fetch an unrelated file.
+            await _safe_query_edit(query, "⏹ No more results available. Try a new search.")
             return
 
         next_idx = pending_dl.result_index + 1
@@ -1871,7 +1986,7 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, next_result, status_msg, next_idx),
+            self._do_download(context, chat_id, track, next_result, status_msg, next_idx, pending.search_id),
             update=update,
         )
         self._track_task(chat_id, task)
@@ -2021,6 +2136,18 @@ class MusicBot:
             return words[0].title(), words[1].title()
         return "", query.title()
 
+    async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Global error handler: log the crash and tell the user something broke.
+
+        Without this, python-telegram-bot logs one line and the user sees
+        nothing at all — a crashed command is indistinguishable from a dead bot.
+        """
+        logger.error("Unhandled error while processing update", exc_info=context.error)
+        message = update.effective_message if isinstance(update, Update) else None
+        if message is not None:
+            with contextlib.suppress(Exception):
+                await message.reply_text("⚠️ Something went wrong. Please try again.")
+
     async def _add_history(self, track: TrackInfo, result: SearchResult, status: str):
         """Add an entry to download history (persisted in SQLite)."""
         await asyncio.to_thread(
@@ -2051,20 +2178,27 @@ def create_bot(config: Config) -> Application:
 
     app = Application.builder().token(config.telegram_bot_token).build()
 
+    # Only react to NEW messages: an edited message arrives with
+    # update.message=None and would crash every handler that replies.
+    new_messages = filters.UpdateType.MESSAGE
+
     # Command handlers
-    app.add_handler(CommandHandler("start", bot.cmd_start))
-    app.add_handler(CommandHandler("help", bot.cmd_help))
-    app.add_handler(CommandHandler("auto", bot.cmd_auto))
-    app.add_handler(CommandHandler("status", bot.cmd_status))
-    app.add_handler(CommandHandler("history", bot.cmd_history))
-    app.add_handler(CommandHandler("import", bot.cmd_import))
-    app.add_handler(CommandHandler("cancel", bot.cmd_cancel))
+    app.add_handler(CommandHandler("start", bot.cmd_start, filters=new_messages))
+    app.add_handler(CommandHandler("help", bot.cmd_help, filters=new_messages))
+    app.add_handler(CommandHandler("auto", bot.cmd_auto, filters=new_messages))
+    app.add_handler(CommandHandler("status", bot.cmd_status, filters=new_messages))
+    app.add_handler(CommandHandler("history", bot.cmd_history, filters=new_messages))
+    app.add_handler(CommandHandler("import", bot.cmd_import, filters=new_messages))
+    app.add_handler(CommandHandler("cancel", bot.cmd_cancel, filters=new_messages))
 
     # Callback query handler (inline keyboard buttons)
     app.add_handler(CallbackQueryHandler(bot.handle_callback))
 
     # Text message handler (song search) — must be last
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & new_messages, bot.handle_text))
+
+    # Surface crashes to the operator and the user instead of swallowing them
+    app.add_error_handler(bot.on_error)
 
     logger.info("Telegram bot configured")
     return app

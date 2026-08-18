@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -62,36 +63,60 @@ CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_download_history_created ON download_history(created_at);
 """
 
+# sqlite3.OperationalError (disk full, disk I/O error, readonly database,
+# locked database) is a SUBCLASS of DatabaseError. Only genuine file
+# corruption justifies replacing the database; everything else must
+# propagate so a transient condition can't destroy history.
+_CORRUPTION_MARKERS = ("malformed", "not a database", "file is encrypted")
+
+
+def _is_corruption(exc: sqlite3.DatabaseError) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _CORRUPTION_MARKERS)
+
 
 class Database:
     def __init__(self, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         try:
-            self._conn = sqlite3.connect(db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA busy_timeout=5000")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            self._init_schema()
-        except sqlite3.DatabaseError:
-            logger.warning("Database corrupt or unreadable at %s — recreating", db_path)
-            if os.path.exists(db_path):
-                os.remove(db_path)
-            self._conn = sqlite3.connect(db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA busy_timeout=5000")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            self._init_schema()
+            self._conn = self._connect(db_path)
+        except sqlite3.DatabaseError as exc:
+            if not _is_corruption(exc):
+                raise
+            logger.warning("Database corrupt at %s (%s) — moving it aside and recreating", db_path, exc)
+            self._move_corrupt_aside(db_path)
+            self._conn = self._connect(db_path)
         atexit.register(self.close)
+
+    @staticmethod
+    def _connect(db_path: str) -> sqlite3.Connection:
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.executescript(_SCHEMA)
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()
+            raise
+        return conn
+
+    @staticmethod
+    def _move_corrupt_aside(db_path: str) -> None:
+        """Preserve a corrupt database (and WAL/SHM siblings) instead of deleting it."""
+        stamp = int(time.time())
+        for suffix in ("", "-wal", "-shm"):
+            src = f"{db_path}{suffix}"
+            if os.path.exists(src):
+                with contextlib.suppress(OSError):
+                    os.replace(src, f"{db_path}.corrupt-{stamp}{suffix}")
 
     @property
     def connection(self) -> sqlite3.Connection:
         return self._conn
-
-    def _init_schema(self) -> None:
-        self._conn.executescript(_SCHEMA)
-        self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     def close(self) -> None:
         with contextlib.suppress(Exception):

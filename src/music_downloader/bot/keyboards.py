@@ -12,12 +12,15 @@ def build_results_keyboard(
     results: list[SearchResult],
     page: int = 0,
     page_size: int = 10,
+    search_id: str = "",
 ) -> InlineKeyboardMarkup:
     """
     Build an inline keyboard with search results for the user to pick from.
 
     Each button shows: duration | quality | size
-    Callback data format: dl:<index>
+    Callback data format: dl:<search_id>:<index> — the search_id binds the
+    button to the search that produced it, so a stale keyboard from an
+    earlier search can never act on the current one.
     """
     start = page * page_size
     end = min(start + page_size, len(results))
@@ -27,22 +30,22 @@ def build_results_keyboard(
     for i, result in enumerate(page_results):
         absolute_idx = start + i
         label = f"#{absolute_idx + 1} {result.duration_display} | {result.quality_display} | {result.size_mb:.0f}MB"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"dl:{absolute_idx}")])
+        buttons.append([InlineKeyboardButton(label, callback_data=f"dl:{search_id}:{absolute_idx}")])
 
     # Pagination row
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"dl_page:{page - 1}"))
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"dl_page:{search_id}:{page - 1}"))
     if end < len(results):
-        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"dl_page:{page + 1}"))
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"dl_page:{search_id}:{page + 1}"))
     if nav_row:
         buttons.append(nav_row)
 
     # Action row
     action_row = []
     if results:
-        action_row.append(InlineKeyboardButton("Auto-pick best", callback_data="dl:auto"))
-    action_row.append(InlineKeyboardButton("Cancel", callback_data="dl:cancel"))
+        action_row.append(InlineKeyboardButton("Auto-pick best", callback_data=f"dl:{search_id}:auto"))
+    action_row.append(InlineKeyboardButton("Cancel", callback_data=f"dl:{search_id}:cancel"))
     buttons.append(action_row)
 
     return InlineKeyboardMarkup(buttons)
