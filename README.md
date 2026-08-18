@@ -123,7 +123,7 @@ python -m music_downloader run
 | *(any text)* | Search for a song and show download options |
 | `/import <spotify url>` | Import a Spotify playlist or album, track by track |
 | `/cancel` | Cancel the active import or search |
-| `/auto` | Toggle auto-download mode on/off |
+| `/auto` | Toggle auto-download mode (reserved — the toggle persists but has no effect yet) |
 | `/status` | Show active searches and downloads |
 | `/history` | Show recent download history |
 | `/help` | Show help message |

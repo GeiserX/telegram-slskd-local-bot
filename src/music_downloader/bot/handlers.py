@@ -8,6 +8,7 @@ import datetime
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -54,7 +55,7 @@ from music_downloader.processor.flac_analyzer import (
     create_preview_clip,
 )
 from music_downloader.search.scorer import ResultScorer
-from music_downloader.search.slskd_client import SearchResult, SlskdClient
+from music_downloader.search.slskd_client import DownloadStatus, SearchResult, SlskdClient
 from music_downloader.tools.embed_artwork import embed_artwork_into_file, fetch_spotify_artwork
 
 logger = logging.getLogger(__name__)
@@ -1381,7 +1382,7 @@ class MusicBot:
             task.cancel()
 
     @staticmethod
-    def _make_progress_reporter(status_msg, header: str):
+    def _make_progress_reporter(status_msg: Message, header: str) -> "Callable[[DownloadStatus], Awaitable[None]]":
         """Build a progress callback that live-edits the download status message.
 
         Skips edits when the rendered line hasn't changed (Telegram rejects
@@ -1389,7 +1390,7 @@ class MusicBot:
         """
         last_line = ""
 
-        async def _report(status) -> None:
+        async def _report(status: DownloadStatus) -> None:
             nonlocal last_line
             state_lower = (status.state or "").lower()
             if "queue" in state_lower:

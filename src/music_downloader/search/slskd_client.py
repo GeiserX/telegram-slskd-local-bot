@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import requests.exceptions
@@ -393,7 +394,7 @@ class SlskdClient:
         username: str,
         filename: str,
         timeout_secs: int = 600,
-        progress_cb=None,
+        progress_cb: "Callable[[DownloadStatus], Awaitable[None]] | None" = None,
         progress_interval_secs: float = 10.0,
     ) -> DownloadStatus | None:
         """
