@@ -1264,13 +1264,15 @@ class MusicBot:
         self, chat_id: int, dl_id: str, pending_dl: PendingDownload, status_msg, quality_line: str, label: str
     ):
         """Save a downloaded file straight to the library (auto-mode: no preview, no approval)."""
-        self.downloads.pop(dl_id, None)
         track = pending_dl.track
         result = pending_dl.result
 
         target_path = await asyncio.to_thread(
             self.processor.process_file, pending_dl.source_path, track.artist, track.title
         )
+        # Popped only after processing: the entry keeps the source protected
+        # from the orphan sweep while process_file runs.
+        self.downloads.pop(dl_id, None)
         if target_path:
             await asyncio.to_thread(self.processor.cleanup_download, pending_dl.source_path)
             await self._embed_spotify_artwork(target_path, track)
