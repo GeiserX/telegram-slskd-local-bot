@@ -124,13 +124,12 @@ def build_direct_search_keyboard() -> InlineKeyboardMarkup:
 
 
 def build_import_confirm_keyboard(job_id: int) -> InlineKeyboardMarkup:
-    """Confirm/cancel keyboard for playlist import."""
+    """Confirm/cancel keyboard for playlist import, with a review-vs-auto choice."""
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton("✅ Start import", callback_data=f"ic:{job_id}"),
-                InlineKeyboardButton("❌ Cancel", callback_data=f"ix:{job_id}"),
-            ]
+            [InlineKeyboardButton("▶️ Review each track", callback_data=f"ic:{job_id}")],
+            [InlineKeyboardButton("\U0001f916 Auto-save all", callback_data=f"ic:{job_id}:auto")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"ix:{job_id}")],
         ]
     )
 

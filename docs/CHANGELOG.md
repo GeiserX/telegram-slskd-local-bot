@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-08-19
+
+### Added
+
+- **Auto-download mode is now real.** `/auto` (per chat, persisted across
+  restarts; `AUTO_MODE` is the default for chats that never toggled) skips the
+  picker and the approval step: the best-ranked match is downloaded, saved to
+  the library, tagged with artwork, and confirmed in one message
+- **Unattended playlist imports.** The import confirm screen offers
+  "Review each track" or "Auto-save all"; auto-save imports run start-to-finish
+  with no taps and no Telegram preview uploads, marking failed tracks and
+  continuing instead of pausing
+- `/status` shows import progress (mode, processed/total, saved/failed/skipped)
+- **Automatic orphan cleanup**: an hourly sweep deletes files in
+  `DOWNLOAD_DIR` older than `DOWNLOAD_CLEANUP_HOURS` (default 24, `0`
+  disables) and prunes emptied per-user folders. In-flight downloads are
+  protected explicitly, and mtime-based age keeps actively-written slskd
+  transfers safe. Production had accumulated 4.8 GB of abandoned files
+  before this existed
+
 ## [0.11.0] - 2026-08-18
 
 ### Fixed

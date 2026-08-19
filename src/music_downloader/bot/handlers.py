@@ -47,6 +47,7 @@ from music_downloader.persistence.import_repo import (
     JobStatus,
     TrackStatus,
 )
+from music_downloader.persistence.settings_repo import SettingsRepository
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.flac_analyzer import (
     FlacVerdict,
@@ -303,7 +304,9 @@ class MusicBot:
             output_dir=config.output_dir,
             filename_template=config.filename_template,
         )
-        self.auto_mode = config.auto_mode
+        # Per-chat auto-mode cache; the durable value lives in chat_settings
+        # (config.auto_mode is only the default for chats that never toggled).
+        self._auto_mode_cache: dict[int, bool] = {}
 
         # Per-user pending searches (chat_id -> PendingSearch)
         self.pending: dict[int, PendingSearch] = {}
@@ -333,6 +336,7 @@ class MusicBot:
         self.db = Database(f"{config.data_dir}/importer.db")
         self.history_repo = HistoryRepository(self.db)
         self.import_repo = ImportRepository(self.db)
+        self.settings_repo = SettingsRepository(self.db)
 
         # Playlist resolver
         self.playlist_resolver = PlaylistResolver(self.spotify)
@@ -341,12 +345,25 @@ class MusicBot:
         self._active_import: dict[int, int] = {}
         # Separate pending search state for import flows (avoids clobbering self.pending)
         self._import_pending: dict[int, PendingSearch] = {}
+        # Import runs unattended for these chats (chosen on the confirm keyboard)
+        self._import_auto: dict[int, bool] = {}
 
         # A restart cannot leave a genuinely running import behind, but it does
         # leave pending/active rows that would block /import for that chat forever.
         stale_jobs = self.import_repo.cancel_stale_jobs()
         if stale_jobs:
             logger.warning("Cancelled %d stale import job(s) left over from a previous run", stale_jobs)
+
+    def _is_auto(self, chat_id: int) -> bool:
+        """Whether auto-download is on for this chat (persisted; config is the default)."""
+        if chat_id not in self._auto_mode_cache:
+            stored = self.settings_repo.get_auto_mode(chat_id)
+            self._auto_mode_cache[chat_id] = self.config.auto_mode if stored is None else stored
+        return self._auto_mode_cache[chat_id]
+
+    def _set_auto(self, chat_id: int, enabled: bool) -> None:
+        self._auto_mode_cache[chat_id] = enabled
+        self.settings_repo.set_auto_mode(chat_id, enabled)
 
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot (fail-closed)."""
@@ -389,6 +406,7 @@ class MusicBot:
 
         self.pending.pop(chat_id, None)
         self._import_pending.pop(chat_id, None)
+        self._import_auto.pop(chat_id, None)
         self._spotify_candidates.pop(chat_id, None)
         self._spotify_page.pop(chat_id, None)
         self._awaiting_direct_metadata.pop(chat_id, None)
@@ -449,12 +467,14 @@ class MusicBot:
         if not await self._check_auth(update):
             return
 
-        mode_str = "ON" if self.auto_mode else "OFF"
+        current = self._is_auto(update.effective_chat.id)
+        mode_str = "ON" if current else "OFF"
         await update.message.reply_text(
             f"Auto-download mode is currently: *{mode_str}*\n\n"
-            "When ON, the best FLAC match is downloaded automatically without asking you to pick.",
+            "When ON, the best match is downloaded and saved to your library "
+            "automatically — no picking, no approval step. The setting survives restarts.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=build_auto_mode_keyboard(self.auto_mode),
+            reply_markup=build_auto_mode_keyboard(current),
         )
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -483,6 +503,15 @@ class MusicBot:
                 lines.append(
                     f"• {_escape_md(dl.track.artist)} - {_escape_md(dl.track.title)} ({_escape_md(dl.result.basename)})"
                 )
+
+        job_id = self._active_import.get(chat_id)
+        if job_id:
+            completed, failed, skipped, total = await asyncio.to_thread(self.import_repo.get_job_progress, job_id)
+            mode = "auto-save" if self._import_auto.get(chat_id) else "review"
+            lines.append(
+                f"\n*Import ({mode}):* {completed + failed + skipped}/{total} processed — "
+                f"✅ {completed} · ❌ {failed} · ⏭ {skipped}"
+            )
 
         if not lines:
             await update.message.reply_text("No active searches or downloads.")
@@ -798,6 +827,18 @@ class MusicBot:
             )
 
             results_text = self._format_results(track, ranked, is_fallback, page=0, page_size=self.config.max_results)
+
+            if self._is_auto(chat_id):
+                # Auto-mode: no picker, no approval — take the top-ranked match.
+                best = ranked[0]
+                await _safe_edit(
+                    searching_msg,
+                    f"{results_text}\n\n\U0001f916 *Auto-mode:* downloading best match #1…",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                await self._launch_download(context, chat_id, track, best, 0, search_id)
+                return
+
             await _safe_edit(
                 searching_msg,
                 results_text,
@@ -857,8 +898,9 @@ class MusicBot:
 
         # Auto-mode toggle (inline, no separate handler needed)
         if data.startswith("auto:"):
-            self.auto_mode = data == "auto:on"
-            mode_str = "ON" if self.auto_mode else "OFF"
+            enabled = data == "auto:on"
+            self._set_auto(chat_id, enabled)
+            mode_str = "ON" if enabled else "OFF"
             await query.edit_message_text(
                 f"Auto-download mode: *{mode_str}*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -1014,7 +1056,12 @@ class MusicBot:
 
         result = pending.results[index]
         track = pending.track
+        await self._launch_download(context, chat_id, track, result, index, pending.search_id, update=update)
 
+    async def _launch_download(
+        self, context, chat_id: int, track: TrackInfo, result: SearchResult, index: int, search_id: str, update=None
+    ):
+        """Send the download status message and start the download task."""
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
             text=(
@@ -1027,7 +1074,7 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, result, status_msg, index, pending.search_id),
+            self._do_download(context, chat_id, track, result, status_msg, index, search_id),
             update=update,
         )
         self._track_task(chat_id, task)
@@ -1151,6 +1198,10 @@ class MusicBot:
             if flac_verdict:
                 quality_line += f"\n{flac_verdict.display}"
 
+            if self._is_auto(chat_id):
+                await self._auto_save(chat_id, dl_id, pending_dl, status_msg, quality_line, label)
+                return
+
             await status_msg.edit_text(
                 f"✅ *{label} Downloaded!* Sending preview...\n`{result.basename}`\n{quality_line}",
                 parse_mode=ParseMode.MARKDOWN,
@@ -1208,6 +1259,36 @@ class MusicBot:
                 f"❌ Error downloading `{result.basename}`. Check logs.",
                 parse_mode=ParseMode.MARKDOWN,
             )
+
+    async def _auto_save(
+        self, chat_id: int, dl_id: str, pending_dl: PendingDownload, status_msg, quality_line: str, label: str
+    ):
+        """Save a downloaded file straight to the library (auto-mode: no preview, no approval)."""
+        self.downloads.pop(dl_id, None)
+        track = pending_dl.track
+        result = pending_dl.result
+
+        target_path = await asyncio.to_thread(
+            self.processor.process_file, pending_dl.source_path, track.artist, track.title
+        )
+        if target_path:
+            await asyncio.to_thread(self.processor.cleanup_download, pending_dl.source_path)
+            await self._embed_spotify_artwork(target_path, track)
+            target_name = os.path.basename(target_path)
+            await _safe_edit(
+                status_msg,
+                f"✅ *{label} Auto-saved:* `{target_name}`\n{quality_line}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await self._add_history(track, result, "success")
+            logger.info(f"Auto-saved: {target_name}")
+        else:
+            await _safe_edit(
+                status_msg,
+                f"❌ {label} Downloaded but failed to save. Check logs.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await self._add_history(track, result, "process_failed")
 
     async def _send_large_file(
         self,
@@ -1659,7 +1740,10 @@ class MusicBot:
             return
 
         if prefix == "ic":
-            await _safe_query_edit(query, "✅ Import started! Processing tracks one by one...")
+            auto = len(parts) > 1 and parts[1] == "auto"
+            self._import_auto[chat_id] = auto
+            mode_note = "auto-saving every track" if auto else "you review each track"
+            await _safe_query_edit(query, f"✅ Import started — {mode_note}...")
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.active)
             self._active_import[chat_id] = job_id
             generation = self._chat_generation.get(chat_id, 0)
@@ -1672,6 +1756,7 @@ class MusicBot:
         elif prefix == "ix":
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.cancelled)
             self._active_import.pop(chat_id, None)
+            self._import_auto.pop(chat_id, None)
             await _safe_query_edit(query, "❌ Import cancelled.")
 
         elif prefix == "ia":
@@ -1749,6 +1834,7 @@ class MusicBot:
             completed, failed, skipped, total = progress
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.completed)
             self._active_import.pop(chat_id, None)
+            self._import_auto.pop(chat_id, None)
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"\U0001f3c1 *Import complete!*\n\n"
@@ -1890,6 +1976,19 @@ class MusicBot:
         try:
             success = await asyncio.to_thread(self.slskd.enqueue_download, result)
             if not success:
+                if self._import_auto.get(chat_id):
+                    await self._import_auto_fail(
+                        context,
+                        chat_id,
+                        job_id,
+                        track_id,
+                        dl_id,
+                        status_msg,
+                        generation,
+                        f"❌ Failed to enqueue from `{result.username}` — continuing.",
+                        "Enqueue failed",
+                    )
+                    return
                 # No file exists yet, so never offer a Save button here —
                 # tapping it could only strip the keyboard and stall the job.
                 await _safe_edit(
@@ -1914,6 +2013,19 @@ class MusicBot:
 
             if status is None or status.is_failed:
                 state = status.state if status else "Timeout"
+                if self._import_auto.get(chat_id):
+                    await self._import_auto_fail(
+                        context,
+                        chat_id,
+                        job_id,
+                        track_id,
+                        dl_id,
+                        status_msg,
+                        generation,
+                        f"❌ Download failed ({state}): `{result.basename}` — continuing.",
+                        state,
+                    )
+                    return
                 await _safe_edit(
                     status_msg,
                     f"❌ Download failed: {state}\n`{result.basename}`",
@@ -1925,6 +2037,19 @@ class MusicBot:
 
             source_path = self.processor.find_downloaded_file(result.username, result.filename)
             if not source_path:
+                if self._import_auto.get(chat_id):
+                    await self._import_auto_fail(
+                        context,
+                        chat_id,
+                        job_id,
+                        track_id,
+                        dl_id,
+                        status_msg,
+                        generation,
+                        "❌ Downloaded file not found on disk — continuing.",
+                        "File not found on disk",
+                    )
+                    return
                 await _safe_edit(
                     status_msg,
                     "❌ Downloaded file not found on disk.",
@@ -1936,6 +2061,12 @@ class MusicBot:
             # Update PendingDownload with source path
             if dl_id in self.downloads:
                 self.downloads[dl_id].source_path = source_path
+
+            if self._import_auto.get(chat_id):
+                await self._import_auto_save(
+                    context, chat_id, job_id, track_id, dl_id, track, result, source_path, status_msg, generation
+                )
+                return
 
             # Send file for approval
             await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
@@ -1987,6 +2118,62 @@ class MusicBot:
                 self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, "Download error"
             )
             await self._process_next_import_track(context, chat_id, job_id, generation)
+
+    async def _import_auto_fail(
+        self,
+        context,
+        chat_id: int,
+        job_id: int,
+        track_id: int,
+        dl_id: str,
+        status_msg,
+        generation: int,
+        message: str,
+        reason: str,
+    ):
+        """Unattended import: mark the track failed and move on instead of pausing."""
+        self.downloads.pop(dl_id, None)
+        await _safe_edit(status_msg, message, parse_mode=ParseMode.MARKDOWN)
+        await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, reason)
+        await self._process_next_import_track(context, chat_id, job_id, generation)
+
+    async def _import_auto_save(
+        self,
+        context,
+        chat_id: int,
+        job_id: int,
+        track_id: int,
+        dl_id: str,
+        track: TrackInfo,
+        result: SearchResult,
+        source_path: str,
+        status_msg,
+        generation: int,
+    ):
+        """Unattended import: save the track straight to the library, no preview upload."""
+        self.downloads.pop(dl_id, None)
+        target_path = await asyncio.to_thread(self.processor.process_file, source_path, track.artist, track.title)
+        if target_path:
+            await asyncio.to_thread(self.processor.cleanup_download, source_path)
+            await self._embed_spotify_artwork(target_path, track)
+            target_name = os.path.basename(target_path)
+            await _safe_edit(
+                status_msg,
+                f"\U0001f4cb *Import:* {track.artist} - {track.title}\n✅ Auto-saved: `{target_name}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await self._add_history(track, result, "success")
+            await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.completed)
+        else:
+            await _safe_edit(
+                status_msg,
+                f"\U0001f4cb *Import:* {track.artist} - {track.title}\n❌ Failed to save — continuing.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await asyncio.to_thread(
+                self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, "File processing failed"
+            )
+        await self._process_next_import_track(context, chat_id, job_id, generation)
 
     # =========================================================================
     # RETRY HANDLERS
