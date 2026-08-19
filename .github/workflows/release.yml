@@ -83,4 +83,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: twine upload dist/*
+        # --skip-existing keeps duplicate/re-run uploads green: PyPI rejects
+        # re-uploads of an existing version with a 400 (a doubled tag event
+        # turned the v0.12.0 release run red this way)
+        run: twine upload --skip-existing dist/*
