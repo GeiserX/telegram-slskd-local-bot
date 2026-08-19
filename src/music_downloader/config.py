@@ -71,6 +71,11 @@ class Config:
         # How long to wait for a download to complete (seconds)
         self.download_timeout_secs = int(os.getenv("DOWNLOAD_TIMEOUT_SECS", "600"))
 
+        # Hours before an abandoned file in DOWNLOAD_DIR is swept away (0 disables).
+        # Abandoned = superseded search, restart, timeout — anything never
+        # approved or rejected. Active transfers are safe (fresh mtime).
+        self.download_cleanup_hours = max(0, int(os.getenv("DOWNLOAD_CLEANUP_HOURS", "24")))
+
         # Keywords in file paths that indicate unwanted versions
         exclude_kw = os.getenv(
             "EXCLUDE_KEYWORDS",

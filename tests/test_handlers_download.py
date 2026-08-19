@@ -33,6 +33,7 @@ def _make_config():
     config.filename_template = "{artist} - {title}"
     config.search_timeout_secs = 30
     config.download_timeout_secs = 600
+    config.download_cleanup_hours = 24
     return config
 
 
@@ -649,6 +650,7 @@ class TestCreateBot:
             mock_app = MagicMock()
             mock_builder.token.return_value = mock_builder
             mock_builder.post_init.return_value = mock_builder
+            mock_builder.post_shutdown.return_value = mock_builder
             mock_builder.build.return_value = mock_app
             mock_app_cls.builder.return_value = mock_builder
 
