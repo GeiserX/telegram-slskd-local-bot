@@ -326,6 +326,8 @@ class MusicBot:
         self._chat_generation: dict[int, int] = {}
         # Background tasks (downloads) tracked per chat for cancellation.
         self._active_tasks: dict[int, set[asyncio.Task]] = {}
+        # Orphan-sweep loop handle; owned here and cancelled on shutdown.
+        self._sweep_task: asyncio.Task | None = None
 
         # Persistence
         self.db = Database(f"{config.data_dir}/importer.db")
@@ -2301,13 +2303,28 @@ def create_bot(config: Config) -> Application:
     async def _post_init(app: Application) -> None:
         await _register_commands(app)
         if config.download_cleanup_hours > 0:
-            app.create_task(bot._orphan_sweep_loop())
+            # Plain asyncio task, deliberately NOT app.create_task: PTB must
+            # never await this infinite loop as part of its own lifecycle.
+            bot._sweep_task = asyncio.get_running_loop().create_task(bot._orphan_sweep_loop())
             logger.info(
                 f"Orphan sweep enabled: files older than {config.download_cleanup_hours}h "
                 f"are removed from the downloads dir hourly"
             )
 
-    app = Application.builder().token(config.telegram_bot_token).post_init(_post_init).build()
+    async def _post_shutdown(app: Application) -> None:
+        task = getattr(bot, "_sweep_task", None)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    app = (
+        Application.builder()
+        .token(config.telegram_bot_token)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
 
     # Only react to NEW messages: an edited message arrives with
     # update.message=None and would crash every handler that replies.
