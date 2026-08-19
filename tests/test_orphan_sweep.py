@@ -2,10 +2,41 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from music_downloader.processor.file_handler import FileProcessor
+
+
+def _handlers_config():
+    """Config shaped for MusicBot construction (mirrors the handlers test fixtures)."""
+    import tempfile
+    from unittest.mock import MagicMock
+
+    td = tempfile.mkdtemp()
+    config = MagicMock()
+    config.telegram_bot_token = "test-token"
+    config.spotify_client_id = "i"
+    config.spotify_client_secret = "s"
+    config.slskd_host = "http://localhost:5030"
+    config.slskd_api_key = "k"
+    config.telegram_allowed_users = {12345}
+    config.auto_mode = False
+    config.max_results = 5
+    config.duration_tolerance_secs = 5
+    config.exclude_keywords = []
+    config.download_dir = os.path.join(td, "downloads")
+    config.output_dir = os.path.join(td, "music")
+    config.data_dir = os.path.join(td, "data")
+    config.filename_template = "{artist} - {title}"
+    config.search_timeout_secs = 30
+    config.download_timeout_secs = 600
+    config.download_cleanup_hours = 24
+    return config
 
 
 def _make_processor(tmp_path):
@@ -104,3 +135,55 @@ class TestCleanupHoursConfig:
     def test_zero_disables_and_negatives_clamp(self, monkeypatch):
         assert self._config(monkeypatch, DOWNLOAD_CLEANUP_HOURS="0").download_cleanup_hours == 0
         assert self._config(monkeypatch, DOWNLOAD_CLEANUP_HOURS="-5").download_cleanup_hours == 0
+
+
+class TestSweepLoopLifecycle:
+    @pytest.mark.asyncio
+    async def test_loop_sweeps_and_survives_errors(self):
+        """One failing sweep must not kill the hourly loop."""
+        with (
+            patch("music_downloader.bot.handlers.SpotifyResolver"),
+            patch("music_downloader.bot.handlers.SlskdClient"),
+        ):
+            from music_downloader.bot.handlers import MusicBot
+
+            bot = MusicBot(_handlers_config())
+        bot.processor = MagicMock()
+        bot.processor.sweep_orphans = MagicMock(side_effect=[RuntimeError("boom"), (2, 1024)])
+
+        with patch("music_downloader.bot.handlers.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            mock_sleep.side_effect = [None, asyncio.CancelledError()]
+            with pytest.raises(asyncio.CancelledError):
+                await bot._orphan_sweep_loop()
+
+        assert bot.processor.sweep_orphans.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_post_init_starts_task_and_post_shutdown_cancels_it(self):
+        from music_downloader.bot.handlers import create_bot
+
+        config = _handlers_config()
+        with (
+            patch("music_downloader.bot.handlers.SpotifyResolver"),
+            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.bot.handlers.Application") as mock_app_cls,
+        ):
+            mock_builder = MagicMock()
+            for chain in ("token", "post_init", "post_shutdown"):
+                getattr(mock_builder, chain).return_value = mock_builder
+            mock_builder.build.return_value = MagicMock()
+            mock_app_cls.builder.return_value = mock_builder
+            create_bot(config)
+            post_init = mock_builder.post_init.call_args[0][0]
+            post_shutdown = mock_builder.post_shutdown.call_args[0][0]
+
+        app = MagicMock()
+        app.bot = AsyncMock()
+
+        before = asyncio.all_tasks()
+        await post_init(app)
+        started = asyncio.all_tasks() - before
+        assert len(started) == 1, "post_init must start exactly the sweep task"
+
+        await post_shutdown(app)
+        assert started.pop().cancelled(), "post_shutdown must cancel the sweep task"
