@@ -51,7 +51,7 @@ Bot: Downloaded! Nancy Sinatra - Bang Bang (My Baby Shot Me Down).flac -> /music
 ```yaml
 services:
   slskd-importer:
-    image: drumsergio/telegram-slskd-local-bot:0.11.0
+    image: drumsergio/telegram-slskd-local-bot:0.12.0
     container_name: slskd_importer
     restart: unless-stopped
     environment:
@@ -62,7 +62,8 @@ services:
       SLSKD_HOST: "http://your-slskd-host:5030"
       SLSKD_API_KEY: "your-slskd-api-key"
     volumes:
-      - /path/to/slskd/downloads:/downloads:ro
+      # Read-write: the bot deletes rejected files and sweeps abandoned ones
+      - /path/to/slskd/downloads:/downloads
       - /path/to/music/library:/music
     logging:
       driver: "json-file"
@@ -106,7 +107,7 @@ python -m music_downloader run
 | `SLSKD_API_KEY` | Yes | — | slskd API key (Settings > Security > API Keys) |
 | `DOWNLOAD_DIR` | No | `/downloads` | Where slskd stores completed downloads (container path) |
 | `OUTPUT_DIR` | No | `/music` | Where to place renamed FLAC files (container path) |
-| `AUTO_MODE` | No | `false` | Reserved — currently has no effect (auto-download is on the roadmap) |
+| `AUTO_MODE` | No | `false` | Default auto-download state for chats that never toggled `/auto`: best match is downloaded and saved without asking |
 | `MAX_RESULTS` | No | `10` | Maximum search results shown to user |
 | `DURATION_TOLERANCE_SECS` | No | `5` | Duration match tolerance in seconds |
 | `SEARCH_TIMEOUT_SECS` | No | `30` | slskd search timeout |
@@ -122,9 +123,9 @@ python -m music_downloader run
 | Command | Description |
 |---------|-------------|
 | *(any text)* | Search for a song and show download options |
-| `/import <spotify url>` | Import a Spotify playlist or album, track by track |
+| `/import <spotify url>` | Import a Spotify playlist or album — review each track or auto-save all |
 | `/cancel` | Cancel the active import or search |
-| `/auto` | Toggle auto-download mode (reserved — the toggle persists but has no effect yet) |
+| `/auto` | Toggle auto-download per chat: best match is downloaded and saved without picking or approval (persists across restarts) |
 | `/status` | Show active searches and downloads |
 | `/history` | Show recent download history |
 | `/help` | Show help message |

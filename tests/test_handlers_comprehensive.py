@@ -248,7 +248,7 @@ class TestMusicBotInit:
     def test_init(self, mock_slskd, mock_spotify):
         config = _make_config()
         bot = MusicBot(config)
-        assert bot.auto_mode is False
+        assert bot._is_auto(67890) is False  # config default, no stored setting
         assert bot.pending == {}
         assert bot.downloads == {}
         assert bot.history_repo is not None
@@ -495,7 +495,8 @@ class TestMusicBotCallbackHandler:
         update = _make_callback_update(data="auto:on")
         context = _make_context()
         await bot.handle_callback(update, context)
-        assert bot.auto_mode is True
+        assert bot._is_auto(67890) is True
+        assert bot.settings_repo.get_auto_mode(67890) is True  # survives restarts
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -507,7 +508,7 @@ class TestMusicBotCallbackHandler:
         update = _make_callback_update(data="auto:off")
         context = _make_context()
         await bot.handle_callback(update, context)
-        assert bot.auto_mode is False
+        assert bot._is_auto(67890) is False
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -783,7 +784,7 @@ class TestMusicBotCallbackHandler:
         context = _make_context()
         await bot.handle_callback(update, context)
         # Should not change auto_mode
-        assert bot.auto_mode is False
+        assert bot._is_auto(67890) is False
 
 
 class TestMusicBotHelpers:
