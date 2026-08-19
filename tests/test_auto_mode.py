@@ -248,3 +248,149 @@ class TestImportAutoSave:
         text = update.message.reply_text.call_args[0][0]
         assert "Import (auto-save)" in text
         assert "4/10" in text
+
+
+class TestAutoBranchCoverage:
+    @pytest.mark.asyncio
+    async def test_auto_save_failure_records_process_failed(self, tmp_path):
+        bot = _make_bot()
+        source = tmp_path / "t.flac"
+        source.write_bytes(b"x")
+        pending = PendingDownload(track=_make_track(), result=_make_result(), chat_id=67890, source_path=str(source))
+        bot.downloads["zz"] = pending
+        bot.processor = MagicMock()
+        bot.processor.process_file = MagicMock(return_value=None)  # save fails
+        status_msg = AsyncMock()
+
+        await bot._auto_save(67890, "zz", pending, status_msg, "q", "#1")
+
+        records = bot.history_repo.get_recent(5)
+        assert records and records[0].status == "process_failed"
+        assert "failed to save" in status_msg.edit_text.call_args[0][0].lower()
+
+    @pytest.mark.asyncio
+    async def test_import_download_auto_enqueue_failure_routes_to_auto_fail(self):
+        bot = _make_bot()
+        bot._import_auto[67890] = True
+        bot.slskd.enqueue_download = MagicMock(return_value=False)
+
+        with patch.object(bot, "_import_auto_fail", new_callable=AsyncMock) as mock_fail:
+            await bot._do_import_download(
+                _make_context(),
+                67890,
+                _make_track(),
+                _make_result(),
+                AsyncMock(),
+                0,
+                job_id=1,
+                track_id=2,
+                dl_id="d1",
+            )
+        mock_fail.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_import_download_auto_timeout_routes_to_auto_fail(self):
+        bot = _make_bot()
+        bot._import_auto[67890] = True
+        bot.slskd.enqueue_download = MagicMock(return_value=True)
+        bot.slskd.wait_for_download = AsyncMock(return_value=None)  # timeout
+
+        with patch.object(bot, "_import_auto_fail", new_callable=AsyncMock) as mock_fail:
+            await bot._do_import_download(
+                _make_context(),
+                67890,
+                _make_track(),
+                _make_result(),
+                AsyncMock(),
+                0,
+                job_id=1,
+                track_id=2,
+                dl_id="d1",
+            )
+        mock_fail.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_import_download_auto_success_routes_to_auto_save(self, tmp_path):
+        from music_downloader.search.slskd_client import DownloadStatus
+
+        bot = _make_bot()
+        bot._import_auto[67890] = True
+        bot.slskd.enqueue_download = MagicMock(return_value=True)
+        bot.slskd.wait_for_download = AsyncMock(
+            return_value=DownloadStatus(username="u", filename="f", state="Completed, Succeeded")
+        )
+        source = tmp_path / "s.flac"
+        source.write_bytes(b"x")
+        bot.processor = MagicMock()
+        bot.processor.find_downloaded_file = MagicMock(return_value=str(source))
+        bot.downloads["d1"] = PendingDownload(track=_make_track(), result=_make_result(), chat_id=67890)
+
+        with patch.object(bot, "_import_auto_save", new_callable=AsyncMock) as mock_save:
+            await bot._do_import_download(
+                _make_context(),
+                67890,
+                _make_track(),
+                _make_result(),
+                AsyncMock(),
+                0,
+                job_id=1,
+                track_id=2,
+                dl_id="d1",
+            )
+        mock_save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_import_auto_save_failure_marks_failed_and_continues(self):
+        bot = _make_bot()
+        bot.import_repo = MagicMock()
+        bot.processor = MagicMock()
+        bot.processor.process_file = MagicMock(return_value=None)
+
+        with (
+            patch.object(bot, "_process_next_import_track", new_callable=AsyncMock) as mock_next,
+            patch("music_downloader.bot.handlers.asyncio.to_thread", side_effect=lambda fn, *a, **k: fn(*a, **k)),
+        ):
+            await bot._import_auto_save(
+                _make_context(), 67890, 1, 2, "d1", _make_track(), _make_result(), "/tmp/s.flac", AsyncMock(), 0
+            )
+
+        from music_downloader.persistence.import_repo import TrackStatus
+
+        assert bot.import_repo.complete_track.call_args[0][2] == TrackStatus.failed
+        mock_next.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ic_auto_callback_sets_unattended_mode(self):
+        bot = _make_bot()
+        bot.import_repo = MagicMock()
+        bot.import_repo.get_job_for_chat = MagicMock(return_value=MagicMock(id=1))
+
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        context = _make_context()
+        context.application.create_task = MagicMock(return_value=MagicMock())
+
+        with patch("music_downloader.bot.handlers.asyncio.to_thread", side_effect=lambda fn, *a, **k: fn(*a, **k)):
+            await bot._handle_import_callback(update, context, 67890, "ic:1:auto")
+
+        assert bot._import_auto.get(67890) is True
+
+    @pytest.mark.asyncio
+    async def test_do_download_auto_routes_to_auto_save(self, tmp_path):
+        from music_downloader.search.slskd_client import DownloadStatus
+
+        bot = _make_bot()
+        bot._set_auto(67890, True)
+        bot.slskd.enqueue_download = MagicMock(return_value=True)
+        bot.slskd.wait_for_download = AsyncMock(
+            return_value=DownloadStatus(username="u", filename="f", state="Completed, Succeeded")
+        )
+        source = tmp_path / "s.flac"
+        source.write_bytes(b"x")
+        bot.processor = MagicMock()
+        bot.processor.find_downloaded_file = MagicMock(return_value=str(source))
+        bot.processor.build_filename = MagicMock(return_value="n.flac")
+
+        with patch.object(bot, "_auto_save", new_callable=AsyncMock) as mock_auto:
+            await bot._do_download(_make_context(), 67890, _make_track(), _make_result(), AsyncMock(), 0, "sid")
+        mock_auto.assert_awaited_once()
