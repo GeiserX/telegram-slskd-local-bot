@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from difflib import SequenceMatcher
 
 import mutagen.flac
@@ -218,6 +219,58 @@ class FileProcessor:
         except Exception:
             logger.exception(f"Failed to cleanup: {source_path}")
             return False
+
+    def sweep_orphans(self, max_age_hours: int, protected_paths: set[str] | None = None) -> tuple[int, int]:
+        """Delete files in the downloads dir older than *max_age_hours*.
+
+        Everything landing in the downloads dir is transient: approved files
+        are copied to the library and rejected ones deleted immediately, so
+        anything left behind is an abandoned download (superseded search,
+        restart, timeout, or slskd finishing after the bot gave up). Age is
+        judged by mtime, which also keeps in-flight slskd transfers
+        inherently safe — a file still being written always has a fresh mtime.
+
+        Args:
+            max_age_hours: Minimum age before deletion; <= 0 disables the sweep.
+            protected_paths: Paths that must never be deleted (in-flight
+                PendingDownload sources), compared by realpath.
+
+        Returns:
+            Tuple of (files_deleted, bytes_freed).
+        """
+        if max_age_hours <= 0 or not os.path.isdir(self.download_dir):
+            return (0, 0)
+
+        protected = {os.path.realpath(p) for p in (protected_paths or set())}
+        cutoff = time.time() - max_age_hours * 3600
+        deleted = 0
+        freed = 0
+
+        for root, _dirs, files in os.walk(self.download_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                if os.path.islink(path) or os.path.realpath(path) in protected:
+                    continue
+                try:
+                    stat = os.stat(path)
+                    if stat.st_mtime >= cutoff:
+                        continue
+                    os.remove(path)
+                    deleted += 1
+                    freed += stat.st_size
+                    logger.info(f"Orphan sweep deleted: {path}")
+                except OSError as exc:
+                    logger.warning(f"Orphan sweep could not delete {path}: {exc}")
+
+        # Prune now-empty per-user subdirectories (never the root itself)
+        for root, _dirs, _files in os.walk(self.download_dir, topdown=False):
+            if root == self.download_dir:
+                continue
+            with contextlib.suppress(OSError):
+                if not os.listdir(root):
+                    os.rmdir(root)
+
+        return (deleted, freed)
 
     @staticmethod
     def _dedup_flac_tags(filepath: str) -> None:

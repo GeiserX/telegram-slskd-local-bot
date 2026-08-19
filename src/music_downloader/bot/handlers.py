@@ -2219,6 +2219,27 @@ class MusicBot:
             return words[0].title(), words[1].title()
         return "", query.title()
 
+    async def _orphan_sweep_loop(self) -> None:
+        """Hourly TTL sweep of abandoned files in the downloads dir.
+
+        Runs once at startup (catching leftovers from before a restart) and
+        then every hour. In-flight downloads are protected explicitly, on top
+        of the mtime-based safety in FileProcessor.sweep_orphans.
+        """
+        while True:
+            try:
+                protected = {dl.source_path for dl in self.downloads.values() if dl.source_path}
+                deleted, freed = await asyncio.to_thread(
+                    self.processor.sweep_orphans, self.config.download_cleanup_hours, protected
+                )
+                if deleted:
+                    logger.info(
+                        f"Orphan sweep: removed {deleted} abandoned file(s), freed {freed / (1024 * 1024):.0f} MB"
+                    )
+            except Exception:
+                logger.exception("Orphan sweep failed")
+            await asyncio.sleep(3600)
+
     async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Global error handler: log the crash and tell the user something broke.
 
@@ -2277,7 +2298,16 @@ def create_bot(config: Config) -> Application:
     """
     bot = MusicBot(config)
 
-    app = Application.builder().token(config.telegram_bot_token).post_init(_register_commands).build()
+    async def _post_init(app: Application) -> None:
+        await _register_commands(app)
+        if config.download_cleanup_hours > 0:
+            app.create_task(bot._orphan_sweep_loop())
+            logger.info(
+                f"Orphan sweep enabled: files older than {config.download_cleanup_hours}h "
+                f"are removed from the downloads dir hourly"
+            )
+
+    app = Application.builder().token(config.telegram_bot_token).post_init(_post_init).build()
 
     # Only react to NEW messages: an edited message arrives with
     # update.message=None and would crash every handler that replies.
