@@ -171,7 +171,7 @@ Results containing excluded keywords (live, remix, etc.) are automatically filte
 
 - [slskd-transform](https://github.com/GeiserX/slskd-transform) — Bulk upgrade lossy to lossless FLAC via Soulseek
 - [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) — Automated multi-format audio transcoding
-- [jellyfin-encoder](https://github.com/GeiserX/jellyfin-encoder) — Automatic 720p HEVC/AV1 transcoding for Jellyfin
+- [quality-gate-encoder](https://github.com/GeiserX/quality-gate-encoder) (formerly jellyfin-encoder) — Automatic 720p HEVC/AV1 transcoding for Jellyfin
 
 **Telegram Bots:**
 
