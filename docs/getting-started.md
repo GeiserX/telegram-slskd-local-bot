@@ -1,4 +1,4 @@
-# Installation
+# Getting started
 
 <p>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.x-3776AB?logo=python&logoColor=white" alt="Python"/></a>
@@ -11,6 +11,8 @@
 - A running [slskd](https://github.com/slskd/slskd) instance with an API key
 - A [Spotify Developer](https://developer.spotify.com/dashboard) app (free — Client ID + Secret)
 - A [Telegram bot](https://core.telegram.org/bots#botfather) token (via @BotFather)
+
+The bot at [@slskdimporterbot](https://t.me/slskdimporterbot) is a private, allow-listed instance and will not answer you; deploy your own.
 
 ## Docker Compose
 

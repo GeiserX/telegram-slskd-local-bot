@@ -1,5 +1,6 @@
 services:
   slskd-importer:
+    image: drumsergio/telegram-slskd-local-bot:0.12.0
     build: .
     container_name: slskd_importer
     restart: unless-stopped
