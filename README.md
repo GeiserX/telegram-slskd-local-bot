@@ -23,7 +23,7 @@
 
 ## Quick start
 
-You need a running [slskd](https://github.com/slskd/slskd) with an API key, a [Spotify Developer](https://developer.spotify.com/dashboard) app and a [Telegram bot](https://core.telegram.org/bots#botfather) token; run this in an empty folder, since it writes `docker-compose.yml` and `.env`.
+You need a running [slskd](https://github.com/slskd/slskd) with an API key, a [Spotify Developer](https://developer.spotify.com/dashboard) app and a [Telegram bot](https://core.telegram.org/bots#botfather) token, on an amd64 host (the image has no arm64 build); run this in an empty folder, since it writes `docker-compose.yml` and `.env`.
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GeiserX/telegram-slskd-local-bot/main/docker-compose.yml
