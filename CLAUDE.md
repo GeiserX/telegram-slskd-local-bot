@@ -89,6 +89,7 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 - **Major** (`v0.x.y` -> `v1.0.0`): Breaking changes
 - Check the latest tag before tagging: `git describe --tags --abbrev=0`
 - Also update the image tag in `gitea/watchtower/slskd-importer/docker-compose.yml` to match
+- Before tagging, bump the image pin in this repo's `docker-compose.yml` and `docs/getting-started.md` to the new version (the README quick start fetches that compose file)
 
 ## External Dependencies
 
