@@ -2,168 +2,43 @@
 
 <h1 align="center">telegram-slskd-local-bot</h1>
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/GeiserX/telegram-slskd-local-bot" alt="License"/></a>
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.x-3776AB?logo=python&logoColor=white" alt="Python"/></a>
-  <a href="https://hub.docker.com/r/drumsergio/telegram-slskd-local-bot"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-slskd-local-bot" alt="Docker Pulls"/></a>
-  <a href="https://hub.docker.com/r/drumsergio/telegram-slskd-local-bot"><img src="https://img.shields.io/docker/image-size/drumsergio/telegram-slskd-local-bot/latest" alt="Docker Image Size"/></a>
   <a href="https://pypi.org/project/telegram-slskd-local-bot/"><img src="https://img.shields.io/pypi/v/telegram-slskd-local-bot?style=flat-square" alt="PyPI"/></a>
-  <a href="https://codecov.io/gh/GeiserX/telegram-slskd-local-bot"><img src="https://codecov.io/gh/GeiserX/telegram-slskd-local-bot/graph/badge.svg" alt="codecov"/></a>
+  <a href="https://github.com/GeiserX/telegram-slskd-local-bot/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/GeiserX/telegram-slskd-local-bot/tests.yml?label=tests" alt="Tests"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/GeiserX/telegram-slskd-local-bot" alt="License"/></a>
+  <a href="https://hub.docker.com/r/drumsergio/telegram-slskd-local-bot"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-slskd-local-bot" alt="Docker Pulls"/></a>
 </p>
 
 <p align="center"><strong>Automated music discovery and download via Telegram bot. Resolves track metadata from Spotify, searches and downloads FLAC files from Soulseek (via <a href="https://github.com/slskd/slskd">slskd</a>), renames them to <code>Artist - Title.flac</code>, and places them in your music library. Docker-ready.</strong></p>
 
----
+## Features
 
-## How It Works
+- Send a song name, or `/import` a Spotify playlist or album.
+- Resolves artist, title, duration and album on Spotify, then searches slskd for FLAC files.
+- Ranks results by duration match, audio quality, source reliability and file name relevance, and drops live and remix versions unless the original title has them.
+- You pick from the top matches, or turn on `/auto` per chat to save the best one without asking.
+- Renames downloads to `Artist - Title.flac` and moves them into your library, ready for tools like [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) or Navidrome.
+- Only answers allow-listed Telegram users, and denies everyone when the list is empty.
+- Sweeps abandoned downloads after `DOWNLOAD_CLEANUP_HOURS` and never touches transfers in flight.
 
-```
-You: "Nancy Sinatra Bang Bang"
-Bot: Found: Nancy Sinatra - Bang Bang (My Baby Shot Me Down) (2:42)
-     Searching slskd for FLAC...
-     #1 [free] 2:42 | 16bit/44.1kHz | 30MB
-     #2 [free] 2:41 | 16bit/44.1kHz | 28MB
-     [Download #1] [Download #2] [Auto-pick best] [Cancel]
-You: (taps Download #1)
-Bot: Downloaded! Nancy Sinatra - Bang Bang (My Baby Shot Me Down).flac -> /music/
-```
+## Quick start
 
-### Flow
-
-1. Send a song name to the Telegram bot (text message)
-2. Bot resolves the track on **Spotify** (artist, title, duration, album)
-3. Bot searches **slskd** (Soulseek) for FLAC files matching the track
-4. Results are **scored** by duration match, audio quality, source reliability, and filename relevance
-5. Bot presents the top matches — you **pick one** (or enable auto-mode)
-6. File is downloaded, **renamed** to `Artist - Title.flac`, and placed in your output directory
-7. Your existing tools (e.g., [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher), Navidrome) pick it up from there
-
-## Quick Start
-
-### Prerequisites
-
-- A running [slskd](https://github.com/slskd/slskd) instance with an API key
-- A [Spotify Developer](https://developer.spotify.com/dashboard) app (free — Client ID + Secret)
-- A [Telegram bot](https://core.telegram.org/bots#botfather) token (via @BotFather)
-
-### Docker Compose
-
-```yaml
-services:
-  slskd-importer:
-    image: drumsergio/telegram-slskd-local-bot:0.12.0
-    container_name: slskd_importer
-    restart: unless-stopped
-    environment:
-      TELEGRAM_BOT_TOKEN: "your-bot-token"
-      TELEGRAM_ALLOWED_USERS: "your-telegram-user-id"
-      SPOTIFY_CLIENT_ID: "your-spotify-client-id"
-      SPOTIFY_CLIENT_SECRET: "your-spotify-client-secret"
-      SLSKD_HOST: "http://your-slskd-host:5030"
-      SLSKD_API_KEY: "your-slskd-api-key"
-    volumes:
-      # Read-write: the bot deletes rejected files and sweeps abandoned ones
-      - /path/to/slskd/downloads:/downloads
-      - /path/to/music/library:/music
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "3"
-```
-
-### Local Development
+You need a running [slskd](https://github.com/slskd/slskd) with an API key, a [Spotify Developer](https://developer.spotify.com/dashboard) app and a [Telegram bot](https://core.telegram.org/bots#botfather) token. Put them in the [compose file](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/installation.md), then:
 
 ```bash
-# Clone the repo
-git clone https://github.com/GeiserX/telegram-slskd-local-bot.git
-cd telegram-slskd-local-bot
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-pip install -e ".[dev]"
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your credentials
-
-# Run
-python -m music_downloader run
+docker compose up -d
 ```
 
-## Environment Variables
+Send the bot a song name, for example "Nancy Sinatra Bang Bang".
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
-| `TELEGRAM_ALLOWED_USERS` | Yes | *(deny all)* | Comma-separated Telegram user IDs allowed to use the bot. Empty means the bot denies everyone (fail-closed) — the denial reply shows you your ID |
-| `SPOTIFY_CLIENT_ID` | Yes | — | Spotify Developer app Client ID |
-| `SPOTIFY_CLIENT_SECRET` | Yes | — | Spotify Developer app Client Secret |
-| `SLSKD_HOST` | Yes | — | slskd instance URL (e.g., `http://192.168.1.100:5030`) |
-| `SLSKD_API_KEY` | Yes | — | slskd API key (Settings > Security > API Keys) |
-| `DOWNLOAD_DIR` | No | `/downloads` | Where slskd stores completed downloads (container path) |
-| `OUTPUT_DIR` | No | `/music` | Where to place renamed FLAC files (container path) |
-| `AUTO_MODE` | No | `false` | Default auto-download state for chats that never toggled `/auto`: best match is downloaded and saved without asking |
-| `MAX_RESULTS` | No | `10` | Maximum search results shown to user |
-| `DURATION_TOLERANCE_SECS` | No | `5` | Duration match tolerance in seconds |
-| `SEARCH_TIMEOUT_SECS` | No | `30` | slskd search timeout |
-| `DOWNLOAD_TIMEOUT_SECS` | No | `600` | Download completion timeout |
-| `DOWNLOAD_CLEANUP_HOURS` | No | `24` | Hours before abandoned files in `DOWNLOAD_DIR` are auto-deleted (hourly sweep; `0` disables). In-flight transfers are never touched |
-| `EXCLUDE_KEYWORDS` | No | `live,remix,...` | Comma-separated keywords to filter out |
-| `FILENAME_TEMPLATE` | No | `{artist} - {title}` | Output filename template |
-| `LOG_LEVEL` | No | `INFO` | Logging level |
-| `HEALTH_PORT` | No | `8080` | Health check HTTP port |
+## Documentation
 
-## Telegram Bot Commands
-
-| Command | Description |
-|---------|-------------|
-| *(any text)* | Search for a song and show download options |
-| `/import <spotify url>` | Import a Spotify playlist or album — review each track or auto-save all |
-| `/cancel` | Cancel the active import or search |
-| `/auto` | Toggle auto-download per chat: best match is downloaded and saved without picking or approval (persists across restarts) |
-| `/status` | Show active searches and downloads |
-| `/history` | Show recent download history |
-| `/help` | Show help message |
-
-## Scoring Algorithm
-
-Search results are ranked by:
-
-1. **Duration match** (40 pts): Compared to Spotify duration. Within ±5s = perfect, ±10s = acceptable, >30s = excluded
-2. **Audio quality** (25 pts): Prefers 16-bit/44.1kHz (CD quality) for consistency
-3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue
-4. **Filename relevance** (15 pts): Artist and title words found in the filename
-
-Results containing excluded keywords (live, remix, etc.) are automatically filtered out, unless the original track title also contains that keyword.
-
-## Architecture
-
-```
-┌──────────────────┐     ┌──────────────┐     ┌──────────────────┐
-│  Telegram Bot    │────▶│  Spotify API │     │  slskd (Soulseek)│
-│  (user input)    │     │  (metadata)  │     │  (search/download)│
-└──────────────────┘     └──────────────┘     └──────────────────┘
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Music Downloader Service                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐│
-│  │ Resolver │─▶│ Searcher │─▶│  Scorer  │─▶│ File Processor   ││
-│  │(Spotify) │  │ (slskd)  │  │(ranking) │  │(rename + move)   ││
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-                                                      │
-                                                      ▼
-                                              ┌──────────────┐
-                                              │ Music Library │
-                                              │  (FLAC files) │
-                                              └──────────────┘
-```
+- [Installation](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/installation.md): prerequisites, Docker Compose, local development
+- [Configuration](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/configuration.md): environment variables
+- [Usage](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/usage.md): an example chat, the flow, bot commands, the scoring algorithm
+- [Architecture](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/architecture.md)
+- [Changelog](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/CHANGELOG.md)
+- Repository: https://github.com/GeiserX/telegram-slskd-local-bot
+- Telegram bot: [@slskdimporterbot](https://t.me/slskdimporterbot) is the author's personal instance, allow-listed, so it won't respond to other users. Deploy your own to try it.
 
 ## Related Projects
 
@@ -183,10 +58,4 @@ Results containing excluded keywords (live, remix, etc.) are automatically filte
 
 ## License
 
-[GPL-3.0](LICENSE)
-
-## Links
-
-- **Repository**: https://github.com/GeiserX/telegram-slskd-local-bot
-- **Telegram Bot**: [@slskdimporterbot](https://t.me/slskdimporterbot) — the author's personal instance, allow-listed; it won't respond to other users. Deploy your own to try it.
-- **Changelog**: [docs/CHANGELOG.md](docs/CHANGELOG.md)
+[GPL-3.0](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/LICENSE)
