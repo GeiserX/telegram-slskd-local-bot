@@ -23,7 +23,7 @@
 
 ## Quick start
 
-You need a running [slskd](https://github.com/slskd/slskd) with an API key, a [Spotify Developer](https://developer.spotify.com/dashboard) app and a [Telegram bot](https://core.telegram.org/bots#botfather) token. Run this in an empty folder, since it writes `docker-compose.yml` and `.env`:
+You need a running [slskd](https://github.com/slskd/slskd) with an API key, a [Spotify Developer](https://developer.spotify.com/dashboard) app and a [Telegram bot](https://core.telegram.org/bots#botfather) token; run this in an empty folder, since it writes `docker-compose.yml` and `.env`.
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GeiserX/telegram-slskd-local-bot/main/docker-compose.yml
@@ -32,7 +32,7 @@ mkdir -p data && sudo chown 1000:1000 data   # the container runs as uid 1000
 docker compose up -d
 ```
 
-Before the last command, fill in `.env`: the tokens, your Telegram user id in `TELEGRAM_ALLOWED_USERS` (an empty list answers nobody), and `SLSKD_DOWNLOAD_PATH` and `MUSIC_OUTPUT_PATH`, slskd's download folder and your library, both writable by uid 1000. Then send the bot a song name, for example "Nancy Sinatra Bang Bang". [Getting started](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/getting-started.md) has the other install paths.
+Before the last command, fill in `.env`: the tokens, your Telegram user id in `TELEGRAM_ALLOWED_USERS` (an empty list answers nobody), and `SLSKD_DOWNLOAD_PATH` and `MUSIC_OUTPUT_PATH`, slskd's download folder and your library, both writable by uid 1000. Then send the bot a song name, for example "Nancy Sinatra Bang Bang"; [Getting started](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/getting-started.md) has the other install paths.
 
 ## Documentation
 
