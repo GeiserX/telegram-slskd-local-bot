@@ -26,6 +26,27 @@ updates:
       - dependency-name: '*'
         update-types:
           - version-update:semver-major
+  # The docs toolchain is a separate install: docs.yml pip-installs
+  # docs/requirements-docs.txt to run MkDocs, and the pip entry for / does
+  # not see a file under /docs.
+  - package-ecosystem: pip
+    directory: /docs
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: docs
+    labels:
+      - documentation
+      - automated
+    groups:
+      docs_toolchain:
+        patterns:
+          - '*'
+      docs_security:
+        applies-to: security-updates
+        patterns:
+          - '*'
   - package-ecosystem: docker
     directory: /
     schedule:
