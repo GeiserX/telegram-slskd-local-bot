@@ -41,7 +41,9 @@ Search results are ranked by:
 
 Results containing excluded keywords (live, remix, etc.) are automatically filtered out, unless the original track title also contains that keyword.
 
-Every FLAC is checked for a lossy cutoff before it is offered to you: a spectrum that stops around 16 kHz
-means the file was most likely transcoded from MP3, and it is marked "Fake lossless". The check needs the
-analysis extra (installed in the Docker image; `pip install 'telegram-slskd-local-bot[analysis]'`
-elsewhere). Auto-mode and auto-save imports save the file without waiting for you, whatever the check says.
+A FLAC downloaded from a song name, whether you picked the copy or `/auto` did, is checked for a lossy
+cutoff before it is offered to you: a spectrum that stops around 16 kHz means the file was most likely
+transcoded from MP3, and it is marked "Fake lossless". The check needs the analysis extra (installed in the
+Docker image; `pip install 'telegram-slskd-local-bot[analysis]'` elsewhere). Auto-mode saves the file
+without waiting for you, whatever the check says. Tracks from `/import` are downloaded and saved without
+the check.
