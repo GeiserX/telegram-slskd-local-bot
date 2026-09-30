@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-09-30
+
+### Security
+
+- The image now installs urllib3 2.8.0 or later. 0.12.0 shipped urllib3 2.7.0,
+  which three advisories cover: an HTTPS proxy TLS
+  setting that can be ignored (GHSA-8988-9cw3-xx77), an unbounded chunk-size
+  line held in memory (GHSA-vxq7-64xx-v4gw) and an infinite loop in chunked
+  deflate streaming (GHSA-gh4c-6fx4-qh6g). `uv.lock` moves to 2.8.0 as well
+
 ## [0.12.0] - 2026-08-19
 
 ### Added
