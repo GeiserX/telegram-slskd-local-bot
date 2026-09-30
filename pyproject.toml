@@ -49,6 +49,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/GeiserX/telegram-slskd-local-bot"
+Documentation = "https://geiserx.github.io/telegram-slskd-local-bot/"
 Repository = "https://github.com/GeiserX/telegram-slskd-local-bot"
 Issues = "https://github.com/GeiserX/telegram-slskd-local-bot/issues"
 Changelog = "https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/CHANGELOG.md"

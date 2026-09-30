@@ -63,26 +63,4 @@ curl -fsSL https://raw.githubusercontent.com/GeiserX/telegram-slskd-local-bot/ma
 slskd-importer run
 ```
 
-## Local Development
-
-```bash
-# Clone the repo
-git clone https://github.com/GeiserX/telegram-slskd-local-bot.git
-cd telegram-slskd-local-bot
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-pip install -e ".[dev]"
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your credentials
-
-# Run
-python -m music_downloader run
-```
-
+Running from a checkout, tests and releases: [Development](development.md).
