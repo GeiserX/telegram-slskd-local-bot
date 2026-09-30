@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - The image now installs urllib3 2.8.0 or later. 0.12.0 shipped urllib3 2.7.0,
-  which three advisories published on 2026-09-30 cover: an HTTPS proxy TLS
+  which three advisories cover: an HTTPS proxy TLS
   setting that can be ignored (GHSA-8988-9cw3-xx77), an unbounded chunk-size
   line held in memory (GHSA-vxq7-64xx-v4gw) and an infinite loop in chunked
   deflate streaming (GHSA-gh4c-6fx4-qh6g). `uv.lock` moves to 2.8.0 as well
