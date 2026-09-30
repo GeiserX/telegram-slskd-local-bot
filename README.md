@@ -17,7 +17,7 @@
 - Send a song name; the bot resolves artist, title, album and duration on Spotify and searches Soulseek for FLAC copies through your slskd.
 - Ranks copies by duration against Spotify, bit depth and sample rate (hi-res first), free slots, speed and file name; drops live, remix and karaoke cuts unless the title has them.
 - Sends you the track in the chat before it is saved: the FLAC itself, or an Opus copy of the whole song when the file is over Telegram's 50 MB limit.
-- Checks the spectrum of a FLAC downloaded from a song name (picked by you or by `/auto`) and flags one that stops at an MP3-style cutoff ("Possible transcode", "Likely transcode", "Fake lossless") before you tap Save; `/import` tracks skip the check.
+- Checks the spectrum of a FLAC found from a song name (by you or `/auto`) and flags an MP3-style cutoff ("Possible transcode", "Likely transcode", "Fake lossless") before you tap Save; `/import` skips the check.
 - Warns when similar files are already in the library before it searches.
 - Saves as `Artist - Title.flac` with the Spotify cover art embedded, in the folder your player or [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) watches.
 - `/import` a Spotify playlist or album and review each track or auto-save them all; `/status` shows the progress.
