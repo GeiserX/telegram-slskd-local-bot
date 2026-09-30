@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="34 72 98 94" width="98" height="94" role="img" aria-label="telegram-slskd-local-bot">
+  <g transform="translate(56,120)" fill="#FFFFFF">
+    <ellipse cx="0" cy="30" rx="16" ry="11" transform="rotate(-25,0,30)"/>
+    <rect x="14" y="-34" width="5" height="64" rx="1"/>
+    <ellipse cx="52" cy="22" rx="16" ry="11" transform="rotate(-25,52,22)"/>
+    <rect x="66" y="-42" width="5" height="64" rx="1"/>
+    <polygon points="14,-34 71,-42 71,-34 14,-26"/>
+  </g>
+</svg>
