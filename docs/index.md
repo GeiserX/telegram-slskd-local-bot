@@ -1,7 +1,6 @@
 ---
 hide:
   - navigation
-  - toc
 ---
 
 # telegram-slskd-local-bot { .tsb-visually-hidden }
