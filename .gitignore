@@ -52,3 +52,6 @@ output/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# MkDocs build output
+site/
