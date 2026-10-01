@@ -76,10 +76,10 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 ### Release Steps
 
 1. In a PR, bump the version in [`pyproject.toml`](pyproject.toml), the image pin in this repo's [`docker-compose.yml`](docker-compose.yml), [`docs/getting-started.md`](docs/getting-started.md) and the README quick start, and add the [`docs/CHANGELOG.md`](docs/CHANGELOG.md) entry. Merge it.
-2. Tag the merge commit and push only that tag: `git tag v0.3.1 <sha> && git push origin refs/tags/v0.3.1`
+2. Tag the merge commit with the new version (`vX.Y.Z` below is that version) and push only that tag: `git tag vX.Y.Z <sha> && git push origin refs/tags/vX.Y.Z`
 3. The tag runs [`docker-publish.yml`](.github/workflows/docker-publish.yml), which pushes `drumsergio/telegram-slskd-local-bot:<tag>` to Docker Hub, and [`release.yml`](.github/workflows/release.yml), which publishes the GitHub release and PyPI. Wait for both to pass.
-4. Production deploys through GitOps: in the watchtower Gitea repo, set `slskd-importer/docker-compose.yml` to `drumsergio/telegram-slskd-local-bot:v0.3.1@sha256:<digest>`, commit and push. The webhook redeploys the stack. Take the digest from `docker buildx imagetools inspect drumsergio/telegram-slskd-local-bot:v0.3.1 --format '{{.Manifest.Digest}}'`. Docker resolves the image by digest, so changing only the tag deploys nothing new. Don't run `docker compose up` by hand as well. It races the webhook.
-5. Verify on watchtower: `slskd_importer` is healthy and its log says `Music Downloader v0.3.1 starting`.
+4. Production deploys through GitOps: in the watchtower Gitea repo, set `slskd-importer/docker-compose.yml` to `drumsergio/telegram-slskd-local-bot:vX.Y.Z@sha256:<digest>`, commit and push. The webhook redeploys the stack. Take the digest from `docker buildx imagetools inspect drumsergio/telegram-slskd-local-bot:vX.Y.Z --format '{{.Manifest.Digest}}'`. Docker resolves the image by digest, so changing only the tag deploys nothing new. Don't run `docker compose up` by hand as well. It races the webhook.
+5. Verify on watchtower: `slskd_importer` is healthy and its log says `Music Downloader vX.Y.Z starting`.
 
 ### Versioning Rules
 
