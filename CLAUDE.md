@@ -75,11 +75,11 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 
 ### Release Steps
 
-1. Commit to `main`, create a **new** semver tag (e.g. `git tag v0.3.1`), push with `--tags`
-2. GHA `docker-publish.yml` builds and pushes `drumsergio/telegram-slskd-local-bot:<tag>` to Docker Hub
-3. Update `gitea/watchtower/slskd-importer/docker-compose.yml` with the new tag, commit and push to Gitea
-4. Redeploy via Portainer API on **watchtower** (stack ID `195`, endpoint `2`)
-5. Verify with `docker ps --filter name=slskd_importer` on watchtower
+1. In a PR, bump the version in [`pyproject.toml`](pyproject.toml), the image pin in this repo's [`docker-compose.yml`](docker-compose.yml), [`docs/getting-started.md`](docs/getting-started.md) and the README quick start, and add the [`docs/CHANGELOG.md`](docs/CHANGELOG.md) entry. Merge it.
+2. Tag the merge commit with the new version (`vX.Y.Z` below is that version) and push only that tag: `git tag vX.Y.Z <sha> && git push origin refs/tags/vX.Y.Z`
+3. The tag runs [`docker-publish.yml`](.github/workflows/docker-publish.yml), which pushes `drumsergio/telegram-slskd-local-bot:<tag>` to Docker Hub, and [`release.yml`](.github/workflows/release.yml), which publishes the GitHub release and PyPI. Wait for both to pass.
+4. Production deploys through GitOps: in the watchtower Gitea repo, set `slskd-importer/docker-compose.yml` to `drumsergio/telegram-slskd-local-bot:vX.Y.Z@sha256:<digest>`, commit and push. The webhook redeploys the stack. Take the digest from `docker buildx imagetools inspect drumsergio/telegram-slskd-local-bot:vX.Y.Z --format '{{.Manifest.Digest}}'`. Docker resolves the image by digest, so changing only the tag deploys nothing new. Don't run `docker compose up` by hand as well. It races the webhook.
+5. Verify on watchtower: `slskd_importer` is healthy and its log says `Music Downloader vX.Y.Z starting`.
 
 ### Versioning Rules
 
@@ -88,8 +88,8 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 - **Minor** (`v0.3.x` -> `v0.4.0`): New features, significant behavior changes
 - **Major** (`v0.x.y` -> `v1.0.0`): Breaking changes
 - Check the latest tag before tagging: `git describe --tags --abbrev=0`
-- Also update the image tag in `gitea/watchtower/slskd-importer/docker-compose.yml` to match
-- Before tagging, bump the image pin in this repo's `docker-compose.yml` and `docs/getting-started.md` to the new version (the README quick start fetches that compose file)
+- The README quick start fetches this repo's `docker-compose.yml`, so its pin must name the new version before the tag goes out.
+- The image installs from [`requirements.txt`](requirements.txt), not `uv.lock`. A security fix in a transitive package (an alert on `uv.lock`) needs a floor in `requirements.txt` as well, or the image keeps the old version.
 
 ## External Dependencies
 
