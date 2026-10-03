@@ -13,10 +13,12 @@ from difflib import SequenceMatcher
 
 import mutagen.flac
 
+from music_downloader.formats import AUDIO_EXTENSIONS
+
 logger = logging.getLogger(__name__)
 
 # Audio extensions to check for duplicates
-_AUDIO_EXTENSIONS = {".flac", ".alac", ".wav", ".aiff", ".mp3", ".aac", ".m4a", ".ogg", ".opus", ".wma"}
+_AUDIO_EXTENSIONS = {f".{ext}" for ext in AUDIO_EXTENSIONS}
 
 
 class FileProcessor:

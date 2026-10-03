@@ -802,12 +802,14 @@ class TestMusicBotHelpers:
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
-    def test_format_results_fallback(self, mock_slskd, mock_spotify):
+    def test_format_results_lossy_only(self, mock_slskd, mock_spotify):
         bot = MusicBot(_make_config())
         track = _make_track()
-        results = [_make_search_result()]
-        text = bot._format_results(track, results, is_fallback=True)
-        assert "No FLAC found" in text
+        mp3 = _make_search_result()
+        mp3.filename = "\\Music\\Nancy Sinatra - Bang Bang.mp3"
+        text = bot._format_results(track, [mp3])
+        assert "Found 1 matches, all lossy (no lossless copy found)" in text
+        assert "[MP3]" in text
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -1191,29 +1193,25 @@ class TestRankResponses:
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
     def test_flac_found(self, mock_slskd, mock_spotify):
-        """When FLAC results exist, returns them with is_fallback=False."""
+        """Ranked results come back as a plain list."""
         bot = MusicBot(_make_config())
         track = _make_track()
         flac_result = [_make_search_result()]
         bot.slskd.parse_results = MagicMock(side_effect=[flac_result])
         bot.scorer.score_results = MagicMock(return_value=flac_result)
-        ranked, is_fallback = bot._rank_responses([], track)
+        ranked = bot._rank_responses([], track)
         assert len(ranked) == 1
-        assert is_fallback is False
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
-    def test_non_flac_fallback(self, mock_slskd, mock_spotify):
-        """When only non-FLAC exists, returns with is_fallback=True."""
+    def test_parses_every_format_in_one_pass(self, mock_slskd, mock_spotify):
+        """No FLAC-first pass and fallback any more: every audio format is parsed once."""
         bot = MusicBot(_make_config())
         track = _make_track()
-        mp3_result = [_make_search_result()]
-        # First call (flac_only=True) returns nothing scored, second call returns results
-        bot.slskd.parse_results = MagicMock(side_effect=[[], mp3_result])
-        bot.scorer.score_results = MagicMock(side_effect=[[], mp3_result])
-        ranked, is_fallback = bot._rank_responses([], track)
-        assert len(ranked) == 1
-        assert is_fallback is True
+        bot.slskd.parse_results = MagicMock(return_value=[])
+        bot.scorer.score_results = MagicMock(return_value=[])
+        bot._rank_responses([], track)
+        bot.slskd.parse_results.assert_called_once_with([], flac_only=False)
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
@@ -1223,9 +1221,8 @@ class TestRankResponses:
         track = _make_track()
         bot.slskd.parse_results = MagicMock(return_value=[])
         bot.scorer.score_results = MagicMock(return_value=[])
-        ranked, is_fallback = bot._rank_responses([], track)
+        ranked = bot._rank_responses([], track)
         assert ranked == []
-        assert is_fallback is False
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")

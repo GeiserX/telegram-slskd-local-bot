@@ -56,14 +56,14 @@ from music_downloader.processor.flac_analyzer import (
     convert_to_ogg,
     create_preview_clip,
 )
-from music_downloader.search.scorer import ResultScorer
+from music_downloader.search.scorer import CHAT_SIZE_LIMIT_BYTES, PROFILE_CHAT, PROFILE_LIBRARY, ResultScorer
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult, SlskdClient
 from music_downloader.tools.embed_artwork import embed_artwork_into_file, fetch_spotify_artwork
 
 logger = logging.getLogger(__name__)
 
-# Telegram bot API file size limit: 50 MB
-TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024
+# Telegram bot API file size limit: 50 MB (one value, shared with the chat ranking profile)
+TELEGRAM_FILE_LIMIT = CHAT_SIZE_LIMIT_BYTES
 
 # Delivery modes: "library" saves to OUTPUT_DIR after approval; "chat" sends the
 # track into the chat as the deliverable and saves nothing anywhere.
@@ -292,7 +292,6 @@ class PendingSearch:
     track: TrackInfo | None = None
     results: list[SearchResult] = field(default_factory=list)
     message_id: int | None = None
-    is_fallback: bool = False
     page: int = 0
     # Unique id binding result keyboards to this search; stale buttons from an
     # earlier search must never resolve against a newer result list.
@@ -820,7 +819,7 @@ class MusicBot:
             if self._is_stale(chat_id, generation):
                 return
 
-            ranked, is_fallback = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
+            ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
 
             # Fallback 2: title-only search
             if not ranked:
@@ -841,7 +840,7 @@ class MusicBot:
                 if self._is_stale(chat_id, generation):
                     return
 
-                ranked, is_fallback = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
+                ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
 
             # Fallback 3: keyword reduction + album year
             if not ranked and not _has_non_latin_script(clean_title):
@@ -865,9 +864,7 @@ class MusicBot:
                         raw_responses = await self.slskd.search(
                             fallback_query, timeout_secs=self.config.search_timeout_secs
                         )
-                        ranked, is_fallback = self._rank_responses(
-                            raw_responses, track, chat_id=chat_id, user_id=user_id
-                        )
+                        ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
                         if ranked:
                             logger.info("Keyword-reduction fallback hit: '%s'", fallback_query)
                             break
@@ -898,7 +895,7 @@ class MusicBot:
                 if self._is_stale(chat_id, generation):
                     return
 
-                ranked, is_fallback = self._rank_responses(
+                ranked = self._rank_responses(
                     raw_responses, track, max_duration_diff=120, chat_id=chat_id, user_id=user_id
                 )
                 if ranked:
@@ -929,11 +926,10 @@ class MusicBot:
                 track=track,
                 results=ranked,
                 message_id=searching_msg.message_id,
-                is_fallback=is_fallback,
                 search_id=search_id,
             )
 
-            results_text = self._format_results(track, ranked, is_fallback, page=0, page_size=self.config.max_results)
+            results_text = self._format_results(track, ranked, page=0, page_size=self.config.max_results)
 
             if self._is_auto(chat_id):
                 # Auto-mode: no picker, no approval — take the top-ranked match.
@@ -1134,7 +1130,6 @@ class MusicBot:
         results_text = self._format_results(
             pending.track,
             pending.results,
-            pending.is_fallback,
             page=page,
             page_size=self.config.max_results,
         )
@@ -1220,25 +1215,26 @@ class MusicBot:
         max_duration_diff: int | None = None,
         chat_id: int | None = None,
         user_id: int | None = None,
-    ) -> tuple[list[SearchResult], bool]:
-        """Parse raw slskd responses and rank: try FLAC first, fall back to all audio.
+    ) -> list[SearchResult]:
+        """Parse raw slskd responses (every audio format) and rank them for this chat.
 
-        In chat delivery, results over the Telegram upload limit sort after every
-        result that fits (stable), since those would have to be lossy-converted.
+        Library delivery: every lossless result before every lossy one, each
+        group by score, so a lossy copy is offered only below the lossless ones.
+        Chat delivery: one list scored by the chat profile (perceived quality
+        versus size); results over the Telegram upload limit sort after every
+        result that fits (stable), since those would have to be converted.
         """
+        chat = chat_id is not None and self._is_chat_delivery(chat_id, user_id)
         score_kwargs = {"max_duration_diff": max_duration_diff} if max_duration_diff else {}
-        flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
-        ranked = self.scorer.score_results(flac_results, track, **score_kwargs)
-        is_fallback = False
-        if not ranked:
-            all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-            ranked = self.scorer.score_results(all_audio, track, **score_kwargs)
-            is_fallback = bool(ranked)
-        if chat_id is not None and ranked and self._is_chat_delivery(chat_id, user_id):
-            ranked = [r for r in ranked if r.size <= TELEGRAM_FILE_LIMIT] + [
+        results = self.slskd.parse_results(raw_responses, flac_only=False)
+        ranked = self.scorer.score_results(
+            results, track, profile=PROFILE_CHAT if chat else PROFILE_LIBRARY, **score_kwargs
+        )
+        if chat:
+            return [r for r in ranked if r.size <= TELEGRAM_FILE_LIMIT] + [
                 r for r in ranked if r.size > TELEGRAM_FILE_LIMIT
             ]
-        return ranked, is_fallback
+        return [r for r in ranked if r.is_lossless] + [r for r in ranked if not r.is_lossless]
 
     # =========================================================================
     # DOWNLOAD + PREVIEW + APPROVAL
@@ -1862,7 +1858,7 @@ class MusicBot:
                     year="",
                 )
 
-            ranked, is_fallback = self._rank_responses(raw_responses, synthetic_track, chat_id=chat_id, user_id=user_id)
+            ranked = self._rank_responses(raw_responses, synthetic_track, chat_id=chat_id, user_id=user_id)
 
             if self._is_stale(chat_id, generation):
                 return
@@ -1883,13 +1879,10 @@ class MusicBot:
                 track=synthetic_track,
                 results=ranked,
                 message_id=searching_msg.message_id,
-                is_fallback=is_fallback,
                 search_id=search_id,
             )
 
-            results_text = self._format_results(
-                synthetic_track, ranked, is_fallback, page=0, page_size=self.config.max_results
-            )
+            results_text = self._format_results(synthetic_track, ranked, page=0, page_size=self.config.max_results)
             await _safe_edit(
                 searching_msg,
                 results_text,
@@ -2199,9 +2192,7 @@ class MusicBot:
             if self._is_stale(chat_id, generation):
                 return
 
-            ranked, is_fallback = self._rank_responses(
-                raw_responses, track, chat_id=chat_id, user_id=self._import_user.get(chat_id)
-            )
+            ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=self._import_user.get(chat_id))
 
             # Title-only fallback
             if not ranked:
@@ -2210,7 +2201,7 @@ class MusicBot:
                 raw_responses = await self.slskd.search(clean_title, timeout_secs=self.config.search_timeout_secs)
                 if self._is_stale(chat_id, generation):
                     return
-                ranked, is_fallback = self._rank_responses(
+                ranked = self._rank_responses(
                     raw_responses, track, chat_id=chat_id, user_id=self._import_user.get(chat_id)
                 )
 
@@ -2237,7 +2228,6 @@ class MusicBot:
                 track=track,
                 results=ranked,
                 message_id=searching_msg.message_id,
-                is_fallback=is_fallback,
                 search_id=search_id,
             )
 
@@ -2735,7 +2725,6 @@ class MusicBot:
         self,
         track: TrackInfo,
         results: list[SearchResult],
-        is_fallback: bool = False,
         page: int = 0,
         page_size: int = 10,
     ) -> str:
@@ -2745,29 +2734,26 @@ class MusicBot:
         end = min(start + page_size, total)
         total_pages = (total + page_size - 1) // page_size
 
+        lossless = sum(1 for r in results if r.is_lossless)
+        lossy = total - lossless
+        if lossless and lossy:
+            found = f"Found {total} matches ({lossless} lossless, {lossy} lossy):\n"
+        elif lossless:
+            found = f"Found {total} matches, all lossless:\n"
+        else:
+            found = f"Found {total} matches, all lossy (no lossless copy found):\n"
+
         is_direct = track.duration_ms == 0
         if is_direct:
             if track.artist:
-                header = [
-                    f"🎵 *{track.artist} - {track.title}*\n",
-                    f"Found {total} FLAC matches:\n",
-                ]
+                header = [f"🎵 *{track.artist} - {track.title}*\n", found]
             else:
-                header = [
-                    f"\U0001f50e *Direct search:* `{track.title}`\n",
-                    f"Found {total} FLAC matches:\n",
-                ]
-        elif is_fallback:
-            header = [
-                f"🎵 *{track.artist} - {track.title}*",
-                f"Duration: {track.duration_display} | Album: {track.album}\n",
-                f"⚠️ No FLAC found — showing all formats ({total} matches):\n",
-            ]
+                header = [f"\U0001f50e *Direct search:* `{track.title}`\n", found]
         else:
             header = [
                 f"🎵 *{track.artist} - {track.title}*",
                 f"Duration: {track.duration_display} | Album: {track.album}\n",
-                f"Found {total} FLAC matches:\n",
+                found,
             ]
 
         if total_pages > 1:
@@ -2777,11 +2763,9 @@ class MusicBot:
         for i in range(start, end):
             r = results[i]
             slot_icon = "🟢" if r.has_free_slot else "🔴"
-            fmt = r.extension.upper()
-            format_tag = f" [{fmt}]" if is_fallback else ""
             lines.append(
                 f"*#{i + 1}* {slot_icon} `{r.duration_display}` | "
-                f"{r.quality_display}{format_tag} | {r.size_mb:.0f}MB\n"
+                f"{r.quality_display} [{r.extension.upper()}] | {r.size_mb:.0f}MB\n"
                 f"    `{r.basename}`"
             )
 

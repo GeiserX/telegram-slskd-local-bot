@@ -516,7 +516,7 @@ class TestDoImportSlskdSearch:
                 {"username": "user0", "files": [{"filename": "\\Music\\track0.flac", "size": 30000000, "length": 162}]}
             ]
         )
-        bot._rank_responses = MagicMock(return_value=(results, False))
+        bot._rank_responses = MagicMock(return_value=results)
         bot.slskd.enqueue_download = MagicMock(return_value=True)
         bot.slskd.wait_for_download = AsyncMock()
         track = _make_track()
@@ -718,7 +718,7 @@ class TestDoDirectSlskdSearch:
         bot = _setup_bot()
         chat_id = 67890
         bot.slskd.search = AsyncMock(return_value=[])
-        bot._rank_responses = MagicMock(return_value=([], False))
+        bot._rank_responses = MagicMock(return_value=[])
         searching_msg = MagicMock(message_id=100)
         await bot._do_direct_slskd_search(_make_context(), chat_id, "test query", searching_msg, generation=0)
         mock_edit.assert_awaited()
@@ -730,7 +730,7 @@ class TestDoDirectSlskdSearch:
         chat_id = 67890
         results = [_make_result(0), _make_result(1)]
         bot.slskd.search = AsyncMock(return_value=[{"username": "u", "files": []}])
-        bot._rank_responses = MagicMock(return_value=(results, False))
+        bot._rank_responses = MagicMock(return_value=results)
         bot._format_results = MagicMock(return_value="Results text")
         searching_msg = MagicMock(message_id=100)
         await bot._do_direct_slskd_search(_make_context(), chat_id, "test query", searching_msg, generation=0)

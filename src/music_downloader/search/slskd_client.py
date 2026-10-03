@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import requests.exceptions
 import slskd_api
 
+from music_downloader.formats import AUDIO_EXTENSIONS, is_lossless
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +47,11 @@ class SearchResult:
     def extension(self) -> str:
         """File extension in lowercase."""
         return self.basename.rsplit(".", 1)[-1].lower() if "." in self.basename else ""
+
+    @property
+    def is_lossless(self) -> bool:
+        """True for a lossless format (see music_downloader.formats)."""
+        return is_lossless(self.extension)
 
     @property
     def duration_display(self) -> str:
@@ -284,22 +291,20 @@ class SlskdClient:
             await asyncio.to_thread(self.client.searches.delete, id=search_id)
         return responses
 
-    # Audio formats accepted in fallback mode (lossless + common lossy)
-    AUDIO_EXTENSIONS = {"flac", "alac", "wav", "aiff", "mp3", "aac", "m4a", "ogg", "opus", "wma"}
-
     def parse_results(self, responses: list[dict], flac_only: bool = True) -> list[SearchResult]:
         """
         Parse raw slskd search responses into SearchResult objects.
 
         Args:
             responses: Raw responses from slskd search API.
-            flac_only: If True, only include FLAC files. If False, include all audio formats.
+            flac_only: If True, only include FLAC files. If False, include every format in
+                music_downloader.formats.AUDIO_EXTENSIONS (lossless and lossy).
 
         Returns:
             List of SearchResult objects.
         """
         results = []
-        allowed = {"flac"} if flac_only else self.AUDIO_EXTENSIONS
+        allowed = {"flac"} if flac_only else AUDIO_EXTENSIONS
 
         for response in responses:
             username = response.get("username", "")

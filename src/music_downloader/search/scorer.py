@@ -24,6 +24,31 @@ SLOT_AVAILABLE_POINTS = 7.5
 SPEED_MAX_POINTS = 7.5
 QUEUE_MAX_POINTS = 5.0
 
+# Ranking profiles. "library" keeps the original hi-res preference; "chat" (chat
+# delivery, files sent into Telegram) trades the 25 audio-quality points for
+# perceived quality versus size: a small transparent file is the best buy.
+PROFILE_LIBRARY = "library"
+PROFILE_CHAT = "chat"
+
+# Perceived-quality tiers, used by the chat profile and for lossy files in the
+# library profile (bit depth and sample rate say nothing about a lossy file).
+PERCEIVED_TOP_POINTS = 25.0  # lossless, or lossy at 256 kbps or more: transparent to most ears
+PERCEIVED_TOP_KBPS = 256
+PERCEIVED_GOOD_POINTS = 20.0  # 192-255 kbps: a step below transparent
+PERCEIVED_GOOD_KBPS = 192
+PERCEIVED_FAIR_POINTS = 10.0  # 128-191 kbps: audibly worse on good gear
+PERCEIVED_FAIR_KBPS = 128
+PERCEIVED_POOR_POINTS = 1.0  # under 128 kbps: near zero
+PERCEIVED_UNKNOWN_POINTS = PERCEIVED_FAIR_POINTS  # lossy with no bitrate and no way to estimate one
+
+# Chat profile size cost, inside the range that fits Telegram's upload limit.
+CHAT_SIZE_LIMIT_BYTES = 50 * 1024 * 1024  # Telegram bot API upload limit (handlers.TELEGRAM_FILE_LIMIT)
+CHAT_SIZE_FREE_BYTES = 5 * 1024 * 1024  # files this small cost nothing
+CHAT_SIZE_PENALTY_MAX_POINTS = 5.0  # cost at the limit, linear from the free size
+# A file over the limit is sent as Opus converted from it: scored as its own
+# tier minus this, with no size cost (the Opus that goes out fits).
+CHAT_OPUS_CONVERSION_POINTS = 8.0
+
 
 class ResultScorer:
     """Scores and ranks slskd search results against a Spotify track."""
@@ -51,19 +76,22 @@ class ResultScorer:
         results: list[SearchResult],
         track: TrackInfo,
         max_duration_diff: int | None = None,
+        profile: str = PROFILE_LIBRARY,
     ) -> list[SearchResult]:
         """
         Score and rank search results against the reference track.
         Filters out unwanted results and sorts by score (highest first).
 
         Args:
-            results: FLAC search results from slskd.
+            results: Audio search results from slskd.
             track: Reference track info from Spotify.
             max_duration_diff: Override the hard duration cutoff (seconds).
                 When set, results beyond the normal 30 s tolerance but
                 within this limit receive 0 duration points instead of
                 being excluded.  Useful for fallback searches where a
                 different version of the same song is acceptable.
+            profile: PROFILE_LIBRARY (hi-res preferred) or PROFILE_CHAT (perceived
+                quality versus size, for files sent into Telegram).
 
         Returns:
             Filtered and sorted list of SearchResult with scores assigned.
@@ -71,7 +99,7 @@ class ResultScorer:
         scored = []
 
         for result in results:
-            score = self._calculate_score(result, track, max_duration_diff)
+            score = self._calculate_score(result, track, max_duration_diff, profile)
             if score is not None:
                 result.score = score
                 scored.append(result)
@@ -92,7 +120,11 @@ class ResultScorer:
         return deduplicated
 
     def _calculate_score(
-        self, result: SearchResult, track: TrackInfo, max_duration_diff: int | None = None
+        self,
+        result: SearchResult,
+        track: TrackInfo,
+        max_duration_diff: int | None = None,
+        profile: str = PROFILE_LIBRARY,
     ) -> float | None:
         """
         Calculate a score for a single result.
@@ -134,8 +166,12 @@ class ResultScorer:
             score += DURATION_FLAT_POINTS
 
         # ===== AUDIO QUALITY (0-25 points) =====
-        # Prefer hi-res: higher bit depth and sample rate score better
-        if result.bit_depth:
+        if profile == PROFILE_CHAT:
+            score += self._chat_quality_points(result)
+        elif not result.is_lossless:
+            score += self._perceived_points(result)
+        # Library, lossless: prefer hi-res, higher bit depth and sample rate score better
+        elif result.bit_depth:
             if result.bit_depth >= 24:
                 score += QUALITY_HIRES_POINTS  # Hi-res — preferred
             elif result.bit_depth == 16:
@@ -143,7 +179,7 @@ class ResultScorer:
             else:
                 score += SAMPLE_RATE_CD_POINTS
 
-        if result.sample_rate:
+        if profile != PROFILE_CHAT and result.is_lossless and result.sample_rate:
             if result.sample_rate >= 88200:
                 score += SAMPLE_RATE_HIRES_POINTS  # 88.2kHz / 96kHz+ — preferred
             elif result.sample_rate == 48000:
@@ -184,3 +220,39 @@ class ResultScorer:
         score += title_match * SPEED_MAX_POINTS
 
         return round(score, 2)
+
+    @staticmethod
+    def _perceived_points(result: SearchResult) -> float:
+        """Perceived-quality points: lossless is top tier, lossy goes by bitrate.
+
+        A lossy result without a reported bitrate gets one estimated from its
+        size and length (both known for nearly every Soulseek file).
+        """
+        if result.is_lossless:
+            return PERCEIVED_TOP_POINTS
+        kbps = result.bit_rate
+        if not kbps and result.size and result.length:
+            kbps = result.size * 8 / result.length / 1000
+        if not kbps:
+            return PERCEIVED_UNKNOWN_POINTS
+        if kbps >= PERCEIVED_TOP_KBPS:
+            return PERCEIVED_TOP_POINTS
+        if kbps >= PERCEIVED_GOOD_KBPS:
+            return PERCEIVED_GOOD_POINTS
+        if kbps >= PERCEIVED_FAIR_KBPS:
+            return PERCEIVED_FAIR_POINTS
+        return PERCEIVED_POOR_POINTS
+
+    @classmethod
+    def _chat_quality_points(cls, result: SearchResult) -> float:
+        """Chat profile: perceived quality minus a size cost ("best bang for buck").
+
+        A fitting file pays up to CHAT_SIZE_PENALTY_MAX_POINTS, growing linearly
+        from CHAT_SIZE_FREE_BYTES to the limit. A file over the limit will be
+        converted to Opus, so it scores as its tier minus the conversion.
+        """
+        points = cls._perceived_points(result)
+        if result.size > CHAT_SIZE_LIMIT_BYTES:
+            return points - CHAT_OPUS_CONVERSION_POINTS
+        over_free = max(0, result.size - CHAT_SIZE_FREE_BYTES)
+        return points - CHAT_SIZE_PENALTY_MAX_POINTS * over_free / (CHAT_SIZE_LIMIT_BYTES - CHAT_SIZE_FREE_BYTES)

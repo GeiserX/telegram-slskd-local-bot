@@ -385,7 +385,7 @@ class TestRanking:
         bot.slskd.parse_results = MagicMock(return_value=results)
         bot.scorer = MagicMock()
         bot.scorer.score_results = MagicMock(return_value=list(results))
-        ranked, _ = bot._rank_responses([], _make_track(), chat_id=chat_id)
+        ranked = bot._rank_responses([], _make_track(), chat_id=chat_id)
         return [r.username for r in ranked]
 
     def test_chat_mode_puts_oversize_after_every_fit_stably(self):
@@ -413,7 +413,7 @@ class TestRanking:
         bot.slskd.parse_results = MagicMock(return_value=results)
         bot.scorer = MagicMock()
         bot.scorer.score_results = MagicMock(return_value=list(results))
-        ranked, _ = bot._rank_responses([], _make_track(), chat_id=CHAT)
+        ranked = bot._rank_responses([], _make_track(), chat_id=CHAT)
         assert [r.username for r in ranked] == ["user1", "user0"]
 
 
