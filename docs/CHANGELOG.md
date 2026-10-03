@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-10-03
+
+### Added
+
+- **Chat delivery.** A chat can now get the song in Telegram instead of the
+  library. You pick the song as before; when the download finishes, the bot
+  sends the track into the chat, saves nothing anywhere and deletes the
+  downloaded file. A file over Telegram's 50 MB bot limit is converted to Opus
+  at the highest of 192, 160, 128 or 96 kbps that fits, and the caption says
+  so; copies that fit under 50 MB rank ahead of copies that would need
+  converting. `/deliver` switches a chat between library and chat delivery
+  (persisted across restarts), and `TELEGRAM_CHAT_DELIVERY_USERS` makes chat
+  delivery the default for the users it lists. It works with `/auto` (the best
+  match arrives with no taps) and with `/import`. One bot token can run only
+  one bot process, so both modes share the same instance
+- `/history` marks delivered tracks with 📨
+
 ## [0.12.1] - 2026-09-30
 
 ### Security

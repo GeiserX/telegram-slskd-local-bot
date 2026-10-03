@@ -1,6 +1,6 @@
 services:
   slskd-importer:
-    image: drumsergio/telegram-slskd-local-bot:0.12.1
+    image: drumsergio/telegram-slskd-local-bot:0.13.0
     build: .
     container_name: slskd_importer
     restart: unless-stopped
@@ -9,6 +9,7 @@ services:
       # Telegram Bot (required)
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
+      TELEGRAM_CHAT_DELIVERY_USERS: ${TELEGRAM_CHAT_DELIVERY_USERS:-}
 
       # Spotify API (required)
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
