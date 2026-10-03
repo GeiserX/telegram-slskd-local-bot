@@ -78,7 +78,7 @@ class LibraryIndex:
         if ext not in AUDIO_EXTENSIONS:
             return None
         rel_path = os.path.relpath(path, self.root)
-        if rel_path.startswith(os.pardir):
+        if rel_path == os.pardir or rel_path.startswith(os.pardir + os.sep):
             return None
         try:
             mtime = os.path.getmtime(path)
@@ -87,7 +87,12 @@ class LibraryIndex:
         return rel_path, stem, normalise(stem), ext, mtime
 
     def rebuild(self) -> int:
-        """Walk root recursively and replace every row. Returns the number of files indexed."""
+        """Walk root recursively and replace every row. Returns the number of files indexed.
+
+        A missing or empty root never wipes a non-empty index: that is an
+        unmounted share far more often than a library emptied on purpose, and
+        wiping would silence the duplicate check until the next pass.
+        """
         rows = []
         for dirpath, _, files in os.walk(self.root):
             for name in files:
@@ -95,6 +100,15 @@ class LibraryIndex:
                 if row is not None:
                     rows.append(row)
         with self._lock, self._conn:
+            if not rows:
+                kept = self._conn.execute("SELECT COUNT(*) FROM library_index").fetchone()[0]
+                if kept:
+                    logger.warning(
+                        "Library index: no audio files under %s (missing or unmounted?); keeping the %d previous row(s)",
+                        self.root,
+                        kept,
+                    )
+                    return 0
             self._conn.execute("DELETE FROM library_index")
             self._conn.executemany(
                 "INSERT OR REPLACE INTO library_index (rel_path, stem, norm_stem, extension, mtime) VALUES (?, ?, ?, ?, ?)",

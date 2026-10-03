@@ -162,6 +162,14 @@ class TestTitleGuard:
         assert kept == results
         assert hidden == 0
 
+    def test_non_latin_only_title_keeps_romanised_copies(self):
+        # "紅" shares no word with "KURENAI", yet both are the song.
+        romanised = _r("a", "\\X Japan\\KURENAI.flac", bit_depth=16)
+        native = _r("b", "\\X Japan\\紅.flac", bit_depth=16)
+        kept, hidden = title_guard([romanised, native], _echoes(title="紅"))
+        assert kept == [romanised, native]
+        assert hidden == 0
+
     def test_rank_reports_hidden_count(self):
         echoes = _r("a", "\\Meddle\\Echoes.flac", bit_depth=16, length=ECHOES_SECS)
         seamus = _r("b", "\\Meddle\\Seamus.flac", bit_depth=16, length=ECHOES_SECS)

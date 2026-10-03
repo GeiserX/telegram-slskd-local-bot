@@ -181,9 +181,11 @@ def title_guard(results: list[SearchResult], track: TrackInfo) -> tuple[list[Sea
 
     Returns the kept results and how many were hidden. Never empties the
     list: when every copy would go, all are kept and the guard is skipped.
+    Also skipped for a title written only in a non-Latin script ("紅"): a
+    romanised copy ("KURENAI") shares no word with it and is still the song.
     """
     tokens = title_tokens(track.title)
-    if not tokens or not results:
+    if not tokens or not results or all(has_non_latin_script(t) for t in tokens):
         return results, 0
     kept = [r for r in results if tokens & _name_words(r)]
     hidden = len(results) - len(kept)

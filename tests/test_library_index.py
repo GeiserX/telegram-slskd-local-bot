@@ -41,10 +41,28 @@ class TestBuild:
 
     def test_rebuild_forgets_deleted_files(self, index, tmp_path):
         path = _touch(tmp_path / "music" / "Pink Floyd - Echoes.flac")
+        _touch(tmp_path / "music" / "Nancy Sinatra - Bang Bang.mp3")
         index.rebuild()
         os.remove(path)
         index.rebuild()
         assert index.find_similar("Pink Floyd Echoes") == []
+
+    def test_missing_or_empty_root_keeps_the_previous_rows(self, index, tmp_path):
+        # An unmounted share must not silence the duplicate check until the next pass.
+        _touch(tmp_path / "music" / "Pink Floyd - Echoes.flac")
+        assert index.rebuild() == 1
+        os.rename(tmp_path / "music", tmp_path / "away")
+        assert index.rebuild() == 0
+        (tmp_path / "music").mkdir()
+        assert index.rebuild() == 0
+        assert index.find_similar("Pink Floyd Echoes") == ["Pink Floyd - Echoes.flac"]
+
+    def test_name_starting_with_two_dots_is_indexed(self, index, tmp_path):
+        # "..Intro.mp3" is inside the library; only a path that climbs out is refused.
+        path = _touch(tmp_path / "music" / "..Intro.mp3")
+        assert index.rebuild() == 1
+        assert index.find_similar("Intro") == ["..Intro.mp3"]
+        assert index.add(path) is True
 
     def test_accents_do_not_hide_a_match(self, index, tmp_path):
         # The prefilter compares accent-free stems: "beyonce" finds "Beyoncé".
