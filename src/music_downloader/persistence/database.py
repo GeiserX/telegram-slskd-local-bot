@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS chat_settings (
     chat_id INTEGER PRIMARY KEY,
     auto_mode INTEGER NOT NULL DEFAULT 0,
     delivery_mode TEXT,
+    send_format TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -126,7 +127,10 @@ _CORRUPTION_MARKERS: tuple[str, ...] = ("malformed", "not a database", "file is 
 # Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS never
 # touches an existing table, so a database created by an older release gets
 # them here. Each must be nullable (or have a default) for ALTER TABLE ADD.
-_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (("chat_settings", "delivery_mode", "TEXT"),)
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("chat_settings", "delivery_mode", "TEXT"),
+    ("chat_settings", "send_format", "TEXT"),
+)
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:

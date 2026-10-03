@@ -127,6 +127,20 @@ def build_delivery_mode_keyboard(current_mode: str) -> InlineKeyboardMarkup:
     )
 
 
+def build_send_format_keyboard(current_format: str, labels: dict[str, str]) -> InlineKeyboardMarkup:
+    """One button per send format (*labels*: key -> label), the current one ticked."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"\u2705 {label}" if key == current_format else label, callback_data=f"format:{key}"
+                )
+                for key, label in labels.items()
+            ]
+        ]
+    )
+
+
 def build_direct_search_keyboard() -> InlineKeyboardMarkup:
     """Button to search Soulseek directly without Spotify resolution."""
     return InlineKeyboardMarkup(

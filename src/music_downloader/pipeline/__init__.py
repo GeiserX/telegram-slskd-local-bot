@@ -118,6 +118,16 @@ class Pipeline:
     async def convert_to_opus(self, path: str, bitrate_kbps: int = 128) -> str | None:
         return await _fetch.convert_to_opus(path, bitrate_kbps)
 
+    async def transcode(self, path: str, fmt: str, track: TrackInfo) -> str | None:
+        """*path* transcoded to send format *fmt* (fetch.SEND_FORMATS) with title, artist and cover.
+
+        Returns a temporary file the caller deletes, or None when ffmpeg failed.
+        """
+        out_path = await _fetch.transcode(path, fmt, track.title, track.artist)
+        if out_path:
+            await self.embed_artwork(out_path, track)
+        return out_path
+
     async def preview_clip(self, path: str, duration_secs: float = 60.0) -> str | None:
         return await _fetch.preview_clip(path, duration_secs)
 

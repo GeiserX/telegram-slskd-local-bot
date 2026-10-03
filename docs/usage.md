@@ -27,6 +27,7 @@ lossless", with the frequency where it stops. Then you tap Save to library or Re
 | `/cancel` | Cancel the active import or search |
 | `/auto` | Toggle auto-download per chat: best match is downloaded and saved without picking or approval (persists across restarts) |
 | `/deliver` | Switch this chat between library delivery (save after you approve) and chat delivery (the track is sent here, nothing is saved). Persists across restarts |
+| `/format` | Pick the format of tracks sent into this chat: Original (default), MP3 320 kbps or Opus 192 kbps. Chat delivery only; persists across restarts |
 | `/status` | Show active searches and downloads |
 | `/history` | Show recent download history |
 | `/help` | Show help message |
@@ -44,6 +45,10 @@ The upload cap is Telegram's 50 MB (50,000,000 bytes), set by `TELEGRAM_MAX_UPLO
 - A bigger file is converted to Opus at the highest of 192, 160, 128 or 96 kbps that fits under the cap, and
   the caption says so (for example "Converted to Opus 192 kbps, original 61 MB FLAC"). When even 96 kbps
   cannot fit, the bot says so and offers Retry and Try next result.
+- `/format` picks MP3 320 kbps or Opus 192 kbps instead of the original: a file in another format is
+  converted before sending and the caption says so (for example "Sent as MP3 320 kbps (original 31 MB FLAC)");
+  a file already in that format goes as it is. When the converted file is still over the cap, the Opus steps
+  above apply. Library delivery always keeps the original file.
 - Copies are ranked by quality for their size, with no lossless-first split (see [Scoring](#scoring-algorithm)).
 - Copies that fit under the cap rank ahead of copies that would have to be converted.
 - `/auto` still decides whether you pick first; with both on, the best match arrives in the chat with no taps.

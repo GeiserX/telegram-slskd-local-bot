@@ -38,6 +38,7 @@ from music_downloader.bot.keyboards import (
     build_results_keyboard,
     build_retry_keyboard,
     build_retry_next_keyboard,
+    build_send_format_keyboard,
     build_spotify_keyboard,
 )
 from music_downloader.bot.poll_request import PollTrackingRequest
@@ -48,7 +49,14 @@ from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.import_repo import JobStatus, TrackStatus
 from music_downloader.persistence.pending_repo import PendingDownload, PendingSearch, WriteThroughDict
 from music_downloader.pipeline import Pipeline
-from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED
+from music_downloader.pipeline.fetch import (
+    DOWNLOAD_FAILED,
+    ENQUEUE_FAILED,
+    FORMAT_LABELS,
+    FORMAT_ORIGINAL,
+    SEND_FORMATS,
+    already_in_format,
+)
 from music_downloader.pipeline.resolve import parse_query_artist_title, synthetic_track
 from music_downloader.pipeline.search import (
     build_reduced_queries,
@@ -166,6 +174,8 @@ class MusicBot:
         self._auto_mode_cache: dict[int, bool] = {}
         # Per-chat stored delivery mode cache (None = never set, env list decides).
         self._delivery_cache: dict[int, str | None] = {}
+        # Per-chat send format cache (/format; chat delivery only).
+        self._format_cache: dict[int, str] = {}
 
         # When this process started: a button on an older message whose state
         # is gone expired with the restart (see _expired_text).
@@ -324,6 +334,17 @@ class MusicBot:
         self._delivery_cache[chat_id] = mode
         self.settings_repo.set_delivery_mode(chat_id, mode, auto_mode=self._is_auto(chat_id))
 
+    def _send_format(self, chat_id: int) -> str:
+        """The chat's /format choice: a fetch.FORMAT_LABELS key, "original" when never set."""
+        if chat_id not in self._format_cache:
+            stored = self.settings_repo.get_send_format(chat_id)
+            self._format_cache[chat_id] = stored if stored in FORMAT_LABELS else FORMAT_ORIGINAL
+        return self._format_cache[chat_id]
+
+    def _set_send_format(self, chat_id: int, fmt: str) -> None:
+        self._format_cache[chat_id] = fmt
+        self.settings_repo.set_send_format(chat_id, fmt, auto_mode=self._is_auto(chat_id))
+
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot (fail-closed)."""
         if not self.config.telegram_allowed_users:
@@ -416,6 +437,7 @@ class MusicBot:
             "/cancel — Cancel the active import or search\n"
             "/auto — Toggle auto-download mode\n"
             "/deliver — Toggle chat delivery (send tracks here instead of saving)\n"
+            "/format — Format of tracks sent in the chat (Original, MP3 320, Opus 192)\n"
             "/status — Show active downloads\n"
             "/history — Recent downloads\n"
             "/help — Show this message",
@@ -466,6 +488,28 @@ class MusicBot:
             "converted to Opus to fit. The setting survives restarts.",
             parse_mode=ParseMode.HTML,
             reply_markup=build_delivery_mode_keyboard(current),
+        )
+
+    async def cmd_format(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /format command — pick the format of tracks sent into the chat."""
+        if not await self._check_auth(update):
+            return
+
+        chat_id = update.effective_chat.id
+        current = self._send_format(chat_id)
+        library_note = (
+            ""
+            if self._is_chat_delivery(chat_id, update.effective_user.id)
+            else "\n\nThis chat saves to the library, which keeps the original file: the format "
+            "applies when tracks are sent in the chat (/deliver)."
+        )
+        await update.message.reply_text(
+            f"Send format for this chat: <b>{FORMAT_LABELS[current]}</b>\n\n"
+            "Original: the file as downloaded. MP3 320 kbps or Opus 192 kbps: converted before sending, "
+            f"unless it already is that format. Over {self._upload_mb} MB it is converted to Opus to fit."
+            f"{library_note}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=build_send_format_keyboard(current, FORMAT_LABELS),
         )
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -866,6 +910,16 @@ class MusicBot:
             mode_str = "Chat" if mode == DELIVERY_CHAT else "Library"
             await query.edit_message_text(
                 f"Delivery mode: <b>{mode_str}</b>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Send-format choice (/format)
+        if data.startswith("format:") and data.split(":", 1)[1] in FORMAT_LABELS:
+            fmt = data.split(":", 1)[1]
+            self._set_send_format(chat_id, fmt)
+            await query.edit_message_text(
+                f"Send format: <b>{FORMAT_LABELS[fmt]}</b>",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -1331,25 +1385,50 @@ class MusicBot:
     ) -> tuple[str, str]:
         """Send a finished download into the chat as the deliverable (chat delivery).
 
-        At or under the limit the file goes as-is (with Spotify artwork embedded
-        first, best effort). Over it, the file is converted to Opus at the
-        highest bitrate whose estimate fits, retrying once one step lower.
+        With a /format other than Original, a file not already in that format
+        is transcoded first and sent when it fits. Otherwise, at or under the
+        limit the file goes as-is (with Spotify artwork embedded first, best
+        effort). Over it (or when the transcode is still over it), the file is
+        converted to Opus at the highest bitrate whose estimate fits, retrying
+        once one step lower.
 
         ``caption`` is HTML. Returns (outcome, note): outcome is "sent" (note = the
         sent filename, raw) or "too_large" / "convert_failed" / "send_failed"
         (note = an HTML-safe reason).
         """
         size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
-        if size <= self.pipeline.upload_limit_bytes:
+        original = f"original {size / BYTES_PER_MB:.0f} MB {result.extension.upper()}"
+        fmt = self._send_format(chat_id)
+        try_original = True
+        if fmt != FORMAT_ORIGINAL and not already_in_format(source_path, result.extension, fmt):
+            send_format = SEND_FORMATS[fmt]
+            out_path = await self.pipeline.transcode(source_path, fmt, track)
+            if out_path:
+                try:
+                    if os.path.getsize(out_path) <= self.pipeline.upload_limit_bytes:
+                        target_name = self.pipeline.target_filename(track, send_format.extension)
+                        sent_caption = f"{caption}\n\U0001f3a7 Sent as {send_format.label} ({original})"
+                        error = await self._send_audio_file(
+                            context, chat_id, out_path, target_name, track, sent_caption
+                        )
+                        return ("sent", target_name) if error is None else ("send_failed", error)
+                    # Still over the cap: straight to the Opus ladder.
+                    try_original = False
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(out_path)
+            else:
+                logger.warning("Transcode to %s failed for %s; sending as downloaded", fmt, source_path)
+
+        if try_original and size <= self.pipeline.upload_limit_bytes:
             # The source is deleted right after sending, so tagging it is free.
             await self.pipeline.embed_artwork(source_path, track)
             size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
-        if size <= self.pipeline.upload_limit_bytes:
+        if try_original and size <= self.pipeline.upload_limit_bytes:
             target_name = self.pipeline.target_filename(track, result.extension)
             error = await self._send_audio_file(context, chat_id, source_path, target_name, track, caption)
             return ("sent", target_name) if error is None else ("send_failed", error)
 
-        original = f"original {size / BYTES_PER_MB:.0f} MB {result.extension.upper()}"
         too_large = (
             "too_large",
             f"Could not fit this track under {self._upload_mb} MB, even converted to Opus ({original}).",
@@ -2693,6 +2772,7 @@ async def _register_commands(app: Application) -> None:
             BotCommand("cancel", "Cancel the active import or search"),
             BotCommand("auto", "Toggle auto-download mode"),
             BotCommand("deliver", "Toggle chat delivery (send tracks here instead of saving)"),
+            BotCommand("format", "Format of tracks sent in the chat"),
             BotCommand("status", "Show active searches and downloads"),
             BotCommand("history", "Recent downloads"),
             BotCommand("help", "How to use the bot"),
@@ -2779,6 +2859,7 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
     app.add_handler(CommandHandler("help", bot.cmd_help, filters=new_messages))
     app.add_handler(CommandHandler("auto", bot.cmd_auto, filters=new_messages))
     app.add_handler(CommandHandler("deliver", bot.cmd_deliver, filters=new_messages))
+    app.add_handler(CommandHandler("format", bot.cmd_format, filters=new_messages))
     app.add_handler(CommandHandler("status", bot.cmd_status, filters=new_messages))
     app.add_handler(CommandHandler("history", bot.cmd_history, filters=new_messages))
     app.add_handler(CommandHandler("import", bot.cmd_import, filters=new_messages))
