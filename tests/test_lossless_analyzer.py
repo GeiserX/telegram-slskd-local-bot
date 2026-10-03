@@ -118,6 +118,17 @@ class TestAnalyzeLossless:
         finally:
             os.unlink(path)
 
+    def test_low_sample_rate_cannot_be_judged(self):
+        """An 8 kHz file has no bins above 14 kHz: the check says nothing, not AUTHENTIC."""
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            path = f.name
+        try:
+            rng = np.random.default_rng(0)
+            sf.write(path, (rng.standard_normal(8000 * 3) * 0.1).astype(np.float32), 8000, subtype="PCM_16")
+            assert analyze_lossless(path, sample_duration=3.0) is None
+        finally:
+            os.unlink(path)
+
     def test_nonexistent_file_returns_none(self):
         """Analyzing a non-existent file should return None."""
         result = analyze_lossless("/tmp/nonexistent_test_file.flac")

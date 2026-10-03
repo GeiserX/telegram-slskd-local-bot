@@ -137,13 +137,10 @@ def analyze_lossless(filepath: str, sample_duration: float = 30.0) -> LosslessVe
         high_psd = psd_db[high_freq_mask]
 
         if len(high_freqs) < 10:
-            return LosslessVerdict(
-                verdict="AUTHENTIC",
-                cutoff_khz=nyquist / 1000,
-                nyquist_khz=nyquist / 1000,
-                sample_rate=sr,
-                bit_depth=bit_depth,
-            )
+            # Too few bins above 14 kHz to judge (very low sample rate or a tiny
+            # file): say "not checked" rather than vouch for the file.
+            logger.info("Lossless check skipped for %s: only %d bins above 14 kHz", filepath, len(high_freqs))
+            return None
 
         # Reference level: average energy in the mid-frequency band (2-8 kHz)
         mid_mask = (freqs >= 2000) & (freqs <= 8000)
