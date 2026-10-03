@@ -64,7 +64,9 @@ Search results are ranked by:
       different version (more than 30 s off Spotify's length, kept only by the last-resort search), which ranks
       among the lossy copies by score. A lossless copy scores by
       bit depth (24-bit 15, 16-bit 10) and sample rate (88.2 kHz and above 10, 48 kHz 7, 44.1 kHz 6). A lossy
-      copy scores by bitrate: 256 kbps or more 25, 192 kbps 20, 128 kbps 10, under 128 kbps 1.
+      copy scores by bitrate: 256 kbps or more 25, 192 kbps 20, 128 kbps 10, under 128 kbps 1. The bitrate is
+      first scaled to what it sounds like in MP3 terms: Opus counts double, AAC and Vorbis one and a half times
+      (an Opus file at 128 kbps is top tier, an AAC one at 128 kbps is a step below).
     - **Chat delivery**: no lossless-first split; the points measure quality for the size. A lossless file and
       a lossy one at 256 kbps or more both start at 25 (192 kbps 20, 128 kbps 10, under 128 kbps 1), then lose
       up to 5 points as the file grows from 5 MB to 50 MB. A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality

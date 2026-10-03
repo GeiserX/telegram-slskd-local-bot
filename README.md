@@ -38,10 +38,10 @@ curl -fsSL https://raw.githubusercontent.com/GeiserX/telegram-slskd-local-bot/ma
 # SPOTIFY_CLIENT_SECRET, SLSKD_HOST and SLSKD_API_KEY, SLSKD_DOWNLOAD_PATH (slskd's completed-downloads
 # folder) and MUSIC_OUTPUT_PATH (your library); the last two must be writable by uid 1000
 mkdir -p data && sudo chown 1000:1000 data    # the container runs as uid 1000
-docker compose up -d                          # starts drumsergio/telegram-slskd-local-bot:0.14.1
+docker compose up -d                          # starts drumsergio/telegram-slskd-local-bot:0.14.2
 ```
 
-The container is `slskd_importer`, and the log line `Music Downloader v0.14.1 starting` means it is up. A message to your bot (for example `Nancy Sinatra Bang Bang`) is answered with the Spotify matches to pick from, or with the ranked copies when there is only one match; an empty `TELEGRAM_ALLOWED_USERS` answers nobody, and the denial reply shows your id. [Getting started](https://geiserx.github.io/telegram-slskd-local-bot/getting-started/) has the other install paths.
+The container is `slskd_importer`, and the log line `Music Downloader v0.14.2 starting` means it is up. A message to your bot (for example `Nancy Sinatra Bang Bang`) is answered with the Spotify matches to pick from, or with the ranked copies when there is only one match; an empty `TELEGRAM_ALLOWED_USERS` answers nobody, and the denial reply shows your id. [Getting started](https://geiserx.github.io/telegram-slskd-local-bot/getting-started/) has the other install paths.
 
 ## Documentation
 

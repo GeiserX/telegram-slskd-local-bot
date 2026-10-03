@@ -44,6 +44,11 @@ PERCEIVED_FAIR_POINTS = 10.0  # 128-191 kbps: audibly worse on good gear
 PERCEIVED_FAIR_KBPS = 128
 PERCEIVED_POOR_POINTS = 1.0  # under 128 kbps: near zero
 PERCEIVED_UNKNOWN_POINTS = PERCEIVED_FAIR_POINTS  # lossy with no bitrate and no way to estimate one
+# Codecs are not equal per kbps. A lossy file's bitrate is first scaled to the
+# MP3 bitrate it sounds like, then tiered: Opus 128 counts as MP3 256 (top),
+# AAC or Vorbis 128 as MP3 192 (good). An .ogg may hold Opus or Vorbis and the
+# extension cannot tell, so it takes the lower Vorbis factor.
+CODEC_MP3_EQUIVALENT = {"opus": 2.0, "aac": 1.5, "m4a": 1.5, "ogg": 1.5, "wma": 1.0, "mp3": 1.0}
 
 # Chat profile size cost, inside the range that fits Telegram's upload limit.
 CHAT_SIZE_LIMIT_BYTES = 50 * 1024 * 1024  # Telegram bot API upload limit (handlers.TELEGRAM_FILE_LIMIT)
@@ -227,7 +232,7 @@ class ResultScorer:
 
     @staticmethod
     def _perceived_points(result: SearchResult) -> float:
-        """Perceived-quality points: lossless is top tier, lossy goes by bitrate.
+        """Perceived-quality points: lossless is top tier, lossy goes by MP3-equivalent bitrate.
 
         A lossy result without a reported bitrate gets one estimated from its
         size and length (both known for nearly every Soulseek file).
@@ -239,6 +244,7 @@ class ResultScorer:
             kbps = result.size * 8 / result.length / 1000
         if not kbps:
             return PERCEIVED_UNKNOWN_POINTS
+        kbps *= CODEC_MP3_EQUIVALENT.get(result.extension, 1.0)
         if kbps >= PERCEIVED_TOP_KBPS:
             return PERCEIVED_TOP_POINTS
         if kbps >= PERCEIVED_GOOD_KBPS:

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] - 2026-10-03
+
+### Changed
+
+- Lossy copies are tiered by what their bitrate sounds like, not by the raw
+  number: Opus counts double and AAC or Vorbis one and a half times, so an
+  Opus file at 128 kbps ranks with an MP3 at 256 kbps instead of with an MP3
+  at 128 kbps. Applies to both the library and the chat ranking
+- Cover art is now embedded into WAV and AIFF saves as well (an ID3 chunk,
+  the same frame as MP3)
+
+### Fixed
+
+- The auto-save import status lines escape the artist and title, so a name
+  with Markdown characters no longer breaks that edit
+
 ## [0.14.1] - 2026-10-03
 
 ### Fixed

@@ -6,6 +6,7 @@ import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import mutagen
 import mutagen.mp3
 import pytest
 
@@ -19,6 +20,7 @@ from music_downloader.search.scorer import (
     PERCEIVED_GOOD_POINTS,
     PERCEIVED_UNKNOWN_POINTS,
     PROFILE_CHAT,
+    PROFILE_LIBRARY,
     ResultScorer,
 )
 from music_downloader.search.slskd_client import SearchResult, SlskdClient
@@ -232,6 +234,18 @@ class TestChatProfile:
         assert scores[0] == scores[1]  # 256 and up is the top tier
         assert scores[1] > scores[2] > scores[3] > scores[4]
 
+    def test_codec_aware_tiers(self):
+        # Opus 128 sounds like MP3 256 (top tier); AAC or Vorbis 128 like MP3 192 (good); MP3 128 stays fair.
+        assert _chat_score(_result("o", "opus", 8 * MB, bit_rate=128)) == _chat_score(_mp3("m", 8 * MB, 256))
+        assert _chat_score(_result("a", "aac", 8 * MB, bit_rate=128)) == _chat_score(_mp3("m", 8 * MB, 192))
+        assert _chat_score(_result("v", "ogg", 8 * MB, bit_rate=128)) == _chat_score(_mp3("m", 8 * MB, 192))
+        assert _chat_score(_result("a", "aac", 8 * MB, bit_rate=128)) > _chat_score(_mp3("m", 8 * MB, 128))
+        # The library profile tiers lossy copies the same way.
+        lib = ResultScorer().score_results(
+            [_result("o", "opus", 8 * MB, bit_rate=128), _mp3("m", 8 * MB, 128)], _make_track(), profile=PROFILE_LIBRARY
+        )
+        assert lib[0].extension == "opus" and lib[0].score > lib[1].score
+
     def test_lossless_and_256_share_the_top_tier(self):
         assert _chat_score(_flac("f", 8 * MB)) == _chat_score(_mp3("m", 8 * MB, 256))
 
@@ -329,6 +343,16 @@ class TestLossySave:
         wma.write_bytes(b"not really wma")
         assert embed_artwork_into_file(str(wma), JPEG) is False
         assert wma.read_bytes() == b"not really wma"
+
+    @pytest.mark.parametrize("ext,fmt", [("wav", "WAV"), ("aiff", "AIFF")])
+    def test_artwork_embeds_into_wav_and_aiff(self, tmp_path, ext, fmt):
+        np = pytest.importorskip("numpy")
+        sf = pytest.importorskip("soundfile")
+        path = tmp_path / f"a.{ext}"
+        sf.write(str(path), np.zeros(44100, dtype="float32"), 44100, format=fmt, subtype="PCM_16")
+        assert embed_artwork_into_file(str(path), JPEG) is True
+        assert len(mutagen.File(str(path)).tags.getall("APIC")) == 1
+        assert embed_artwork_into_file(str(path), JPEG) is False
 
     def test_artwork_embeds_into_ogg_vorbis(self, tmp_path):
         np = pytest.importorskip("numpy")
