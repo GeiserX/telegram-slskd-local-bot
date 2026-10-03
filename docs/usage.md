@@ -60,7 +60,9 @@ Search results are ranked by:
 
 1. **Duration match** (40 pts): Compared to Spotify duration. Within ±5s = perfect, ±10s = acceptable, >30s = excluded
 2. **Audio quality** (25 pts), which depends on where the track goes:
-    - **Library delivery**: every lossless copy is listed before every lossy one. A lossless copy scores by
+    - **Library delivery**: every lossless copy is listed before every lossy one, except a lossless copy of a
+      different version (more than 30 s off Spotify's length, kept only by the last-resort search), which ranks
+      among the lossy copies by score. A lossless copy scores by
       bit depth (24-bit 15, 16-bit 10) and sample rate (88.2 kHz and above 10, 48 kHz 7, 44.1 kHz 6). A lossy
       copy scores by bitrate: 256 kbps or more 25, 192 kbps 20, 128 kbps 10, under 128 kbps 1.
     - **Chat delivery**: no lossless-first split; the points measure quality for the size. A lossless file and
@@ -77,6 +79,7 @@ A lossless file downloaded from a song name, whether you picked the copy or `/au
 cutoff before it is offered to you: a spectrum that stops around 16 kHz means the file was most likely
 transcoded from MP3, and it is marked "Fake lossless". The check needs the analysis extra (installed in the
 Docker image; `pip install 'telegram-slskd-local-bot[analysis]'` elsewhere). It reads FLAC, WAV and AIFF; an APE,
-WavPack, TTA, TAK or ALAC file says "Lossless check: not checked", and a lossy file gets no check. Auto-mode saves the file
+WavPack, TTA, TAK or ALAC file says "Lossless check: not checked", and a lossy file gets no check. Without the
+analysis extra every lossless file says "not checked". Auto-mode saves the file
 without waiting for you, whatever the check says. Tracks from `/import` are downloaded and saved without
 the check.

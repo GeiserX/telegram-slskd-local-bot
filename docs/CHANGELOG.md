@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Lossless first, lossy below.** The search now keeps every audio format
-  from the start instead of only FLAC, with lossy copies used only when no
-  FLAC scored. In library delivery every lossless copy (FLAC, WAV, AIFF, ALAC,
-  APE, WavPack, TTA, TAK) is listed before every lossy one (MP3, AAC, M4A, Ogg,
-  Opus, WMA), so a song with no lossless copy still offers the best lossy
-  copies, ranked by bitrate. The list header counts both, for example "Found
+- **Lossless first, lossy below.** Before, the search kept FLAC only and fell
+  back to other formats when no FLAC scored. Now every audio format is kept
+  from the start. In library delivery every lossless copy (FLAC, WAV, AIFF,
+  ALAC, APE, WavPack, TTA, TAK) is listed before every lossy one (MP3, AAC,
+  M4A, Ogg, Opus, WMA), so a song with no lossless copy still offers the best
+  lossy copies, ranked by bitrate. A lossless copy of a different version,
+  more than 30 seconds off the Spotify length, does not jump ahead: it ranks
+  among the lossy copies by score. The list header counts both, for example "Found
   150 matches (142 lossless, 8 lossy)", and every line shows its format.
   Auto-mode still picks a lossless copy whenever there is one. A lossy file
   saves under its own extension with the cover art embedded (MP3, M4A, Ogg

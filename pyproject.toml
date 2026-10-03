@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "telegram-slskd-local-bot"
 version = "0.14.0"
-description = "Automated music discovery and download via Telegram bot. Resolves metadata from Spotify, searches and downloads lossless audio (lossy when there is none) from Soulseek (slskd), and organizes your library."
+description = "Automated music discovery and download via Telegram bot. Resolves metadata from Spotify, downloads the best copy from Soulseek (slskd): lossless first for the library, best quality for its size in chat delivery. Organizes your library."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "GPL-3.0-or-later"}
