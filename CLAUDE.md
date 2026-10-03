@@ -1,7 +1,7 @@
 # CLAUDE.md — telegram-slskd-local-bot
 
 ## Overview
-Telegram bot that automates music discovery and download. Resolves track metadata from Spotify, searches and downloads FLAC files from Soulseek via slskd, renames them to `Artist - Title.flac`, and places them in a music library directory.
+Telegram bot that automates music discovery and download. Resolves track metadata from Spotify, searches Soulseek via slskd, ranks lossless copies first (lossy ones listed below), downloads the pick, renames it to `Artist - Title.<ext>`, and places it in a music library directory. Chat delivery sends the track into Telegram instead and ranks by quality for size. The lossless and lossy extension sets live in `src/music_downloader/formats.py`; derive from them, never hardcode `flac` to mean lossless.
 
 ## Tech Stack
 - Python 3.11+
@@ -50,7 +50,9 @@ Configuration via `.env` (see `.env.example`).
 
 Search results are ranked by 4 factors (total 100 points):
 1. **Duration match** (40 pts): Compared to Spotify reference duration
-2. **Audio quality** (25 pts): Prefers 16-bit/44.1kHz CD quality
+2. **Audio quality** (25 pts): depends on the profile passed to `score_results(profile=...)`
+   - `library`: lossless scores by bit depth and sample rate (hi-res preferred); lossy scores by bitrate tier. `_rank_responses` then puts every lossless result before every lossy one, except a lossless result of a different version (length off by more than `SAME_VERSION_MAX_DIFF_SECS`), which stays among the lossy ones in score order.
+   - `chat` (chat delivery): perceived quality versus size, no lossless/lossy split. Lossless and lossy >= 256 kbps share the top tier, minus a size cost up to the 50 MB limit; files over the limit score as the Opus they become. Constants and their reasons are at the top of `search/scorer.py`.
 3. **Source reliability** (20 pts): Free slots, upload speed, queue
 4. **Filename relevance** (15 pts): Artist/title word matching
 
@@ -58,7 +60,7 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 
 ## Soulseek (slskd) Search Patterns
 
-- **Single query, local filtering**: Never append format keywords (e.g. "flac") to the slskd search query -- Soulseek matches keywords against full file paths, which is unreliable. Instead, search with `artist title` and filter results locally by file extension (`.flac` preferred, fall back to other audio formats)
+- **Single query, local filtering**: Never append format keywords (e.g. "flac") to the slskd search query -- Soulseek matches keywords against full file paths, which is unreliable. Instead, search with `artist title` and filter results locally by file extension (every format in `formats.AUDIO_EXTENSIONS`, lossless ranked first)
 - **Search lifecycle**: `search_text()` -> poll `state()` -> `stop()` on timeout -> grab partial results from `search_responses()` -> `delete()` cleanup
 - **Async wrapping**: All synchronous `slskd-api` calls must be wrapped with `asyncio.to_thread()` to avoid blocking the Telegram bot event loop
 - **Timeouts**: Hard timeout via `asyncio.wait_for()` around the entire search+poll loop; `searches.stop()` actively cancels the server-side search on timeout

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import requests.exceptions
 import slskd_api
 
+from music_downloader.formats import AUDIO_EXTENSIONS, is_lossless
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +49,11 @@ class SearchResult:
         return self.basename.rsplit(".", 1)[-1].lower() if "." in self.basename else ""
 
     @property
+    def is_lossless(self) -> bool:
+        """True for a lossless format (see music_downloader.formats)."""
+        return is_lossless(self.extension)
+
+    @property
     def duration_display(self) -> str:
         """Human-readable duration."""
         if not self.length:
@@ -67,7 +74,7 @@ class SearchResult:
             parts.append(f"{self.bit_depth}bit/{self.sample_rate / 1000:.1f}kHz")
         if self.bit_rate:
             parts.append(f"{self.bit_rate}kbps")
-        return ", ".join(parts) if parts else "FLAC"
+        return ", ".join(parts) if parts else (self.extension.upper() or "?")
 
     def __str__(self) -> str:
         return f"{self.basename} ({self.duration_display}, {self.quality_display}, {self.size_mb:.1f}MB)"
@@ -284,22 +291,20 @@ class SlskdClient:
             await asyncio.to_thread(self.client.searches.delete, id=search_id)
         return responses
 
-    # Audio formats accepted in fallback mode (lossless + common lossy)
-    AUDIO_EXTENSIONS = {"flac", "alac", "wav", "aiff", "mp3", "aac", "m4a", "ogg", "opus", "wma"}
-
-    def parse_results(self, responses: list[dict], flac_only: bool = True) -> list[SearchResult]:
+    def parse_results(self, responses: list[dict]) -> list[SearchResult]:
         """
         Parse raw slskd search responses into SearchResult objects.
 
+        Keeps every file whose extension is in music_downloader.formats.AUDIO_EXTENSIONS,
+        lossless and lossy alike; SearchResult.is_lossless tells them apart.
+
         Args:
             responses: Raw responses from slskd search API.
-            flac_only: If True, only include FLAC files. If False, include all audio formats.
 
         Returns:
             List of SearchResult objects.
         """
         results = []
-        allowed = {"flac"} if flac_only else self.AUDIO_EXTENSIONS
 
         for response in responses:
             username = response.get("username", "")
@@ -311,7 +316,7 @@ class SlskdClient:
                 filename = f.get("filename", "")
                 extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
-                if extension not in allowed:
+                if extension not in AUDIO_EXTENSIONS:
                     continue
 
                 results.append(
@@ -329,8 +334,11 @@ class SlskdClient:
                     )
                 )
 
-        label = "FLAC" if flac_only else "audio"
-        logger.info(f"Parsed {len(results)} {label} results from {len(responses)} responses")
+        lossless = sum(1 for r in results if r.is_lossless)
+        logger.info(
+            f"Parsed {len(results)} audio results ({lossless} lossless, {len(results) - lossless} lossy) "
+            f"from {len(responses)} responses"
+        )
         return results
 
     def enqueue_download(self, result: SearchResult) -> bool:

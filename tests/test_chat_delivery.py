@@ -117,7 +117,7 @@ def _setup_download(bot, source_path):
         return_value=DownloadStatus(username="u", filename="f", state="Completed, Succeeded")
     )
     bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
-    bot._analyze_flac = AsyncMock(return_value=None)
+    bot._analyze_lossless = AsyncMock(return_value=None)
 
 
 def _status_msg():
@@ -385,7 +385,7 @@ class TestRanking:
         bot.slskd.parse_results = MagicMock(return_value=results)
         bot.scorer = MagicMock()
         bot.scorer.score_results = MagicMock(return_value=list(results))
-        ranked, _ = bot._rank_responses([], _make_track(), chat_id=chat_id)
+        ranked = bot._rank_responses([], _make_track(), chat_id=chat_id)
         return [r.username for r in ranked]
 
     def test_chat_mode_puts_oversize_after_every_fit_stably(self):
@@ -413,7 +413,7 @@ class TestRanking:
         bot.slskd.parse_results = MagicMock(return_value=results)
         bot.scorer = MagicMock()
         bot.scorer.score_results = MagicMock(return_value=list(results))
-        ranked, _ = bot._rank_responses([], _make_track(), chat_id=CHAT)
+        ranked = bot._rank_responses([], _make_track(), chat_id=CHAT)
         assert [r.username for r in ranked] == ["user1", "user0"]
 
 
@@ -887,7 +887,7 @@ class TestChatImports:
 
 class TestConvertBitrate:
     def test_bitrate_reaches_ffmpeg(self, tmp_path):
-        from music_downloader.processor.flac_analyzer import convert_to_ogg
+        from music_downloader.processor.lossless_analyzer import convert_to_ogg
 
         def fake_run(cmd, **kwargs):
             with open(cmd[-1], "wb") as f:
@@ -900,7 +900,7 @@ class TestConvertBitrate:
         os.unlink(out)
 
     def test_default_bitrate_unchanged(self, tmp_path):
-        from music_downloader.processor.flac_analyzer import convert_to_ogg
+        from music_downloader.processor.lossless_analyzer import convert_to_ogg
 
         def fake_run(cmd, **kwargs):
             with open(cmd[-1], "wb") as f:

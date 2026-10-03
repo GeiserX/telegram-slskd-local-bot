@@ -1,6 +1,6 @@
 services:
   slskd-importer:
-    image: drumsergio/telegram-slskd-local-bot:0.13.1
+    image: drumsergio/telegram-slskd-local-bot:0.14.0
     build: .
     container_name: slskd_importer
     restart: unless-stopped
@@ -44,7 +44,7 @@ services:
       - ${SLSKD_DOWNLOAD_PATH:-./downloads}:/downloads
 
       # Mount output music directory (read-write)
-      # This is where renamed FLAC files are placed
+      # This is where renamed audio files are placed
       - ${MUSIC_OUTPUT_PATH:-./music}:/music
 
       # Persistent data (SQLite database for history + imports)

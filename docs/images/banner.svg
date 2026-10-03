@@ -9,7 +9,7 @@
   </defs>
   <rect width="1200" height="300" rx="18" fill="url(#abg)"/>
   <text x="600" y="118" text-anchor="middle" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="48" font-weight="700" fill="#F0F4FA">telegram<tspan fill="#566074">-</tspan>slskd<tspan fill="#566074">-</tspan>local<tspan fill="#566074">-</tspan>bot</text>
-  <text x="600" y="158" text-anchor="middle" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="19" fill="#8B95A7">Text a song. Get the FLAC.</text>
+  <text x="600" y="158" text-anchor="middle" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="19" fill="#8B95A7">Text a song. Get it lossless.</text>
   <g fill="url(#awave)">
         <rect x="24.0" y="255.1" width="8.0" height="16.9" rx="3.5"/>
     <rect x="40.0" y="247.9" width="8.0" height="24.1" rx="3.5"/>
