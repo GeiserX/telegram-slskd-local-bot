@@ -4,7 +4,7 @@ FROM python:3.14-slim
 WORKDIR /app
 
 # Install system dependencies
-# libsndfile1: FLAC spectral analysis (soundfile)
+# libsndfile1: the lossless check (soundfile reads FLAC, WAV, AIFF)
 # ffmpeg: audio trimming/conversion for Telegram previews
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends libsndfile1 ffmpeg && \

@@ -10,7 +10,7 @@ import pytest
 
 from music_downloader.bot.handlers import MusicBot, create_bot
 from music_downloader.metadata.spotify import TrackInfo
-from music_downloader.processor.flac_analyzer import FlacVerdict
+from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
 
@@ -122,16 +122,16 @@ class TestDoSlskdSearch:
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
     @pytest.mark.asyncio
-    async def test_non_flac_fallback(self, mock_slskd_cls, mock_spotify):
+    async def test_title_only_research_when_first_search_ranks_nothing(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
         bot.slskd = AsyncMock()
         bot.slskd.search = AsyncMock(return_value=[])
         call_count = 0
 
-        def parse_side_effect(responses, flac_only=True):
+        def parse_side_effect(responses):
             nonlocal call_count
             call_count += 1
-            if not flac_only and call_count >= 2:
+            if call_count >= 2:
                 return [_make_result(0, "mp3")]
             return []
 
@@ -283,8 +283,8 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.flac")
-            bot._analyze_flac = AsyncMock(
-                return_value=FlacVerdict(
+            bot._analyze_lossless = AsyncMock(
+                return_value=LosslessVerdict(
                     verdict="AUTHENTIC",
                     cutoff_khz=22.05,
                     nyquist_khz=22.05,
@@ -329,7 +329,7 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.flac")
-            bot._analyze_flac = AsyncMock(return_value=None)
+            bot._analyze_lossless = AsyncMock(return_value=None)
 
             status_msg = AsyncMock()
             status_msg.edit_text = AsyncMock()
@@ -365,7 +365,7 @@ class TestDoDownload:
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
     @pytest.mark.asyncio
-    async def test_non_flac_skips_analysis(self, mock_slskd_cls, mock_spotify):
+    async def test_lossy_skips_lossless_check(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
         bot.slskd = MagicMock()
         bot.slskd.enqueue_download = MagicMock(return_value=True)
@@ -380,7 +380,7 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.mp3")
-            bot._analyze_flac = AsyncMock()
+            bot._analyze_lossless = AsyncMock()
 
             status_msg = AsyncMock()
             status_msg.edit_text = AsyncMock()
@@ -393,7 +393,50 @@ class TestDoDownload:
 
             mp3_result = _make_result(ext="mp3")
             await bot._do_download(context, 123, _make_track(), mp3_result, status_msg)
-            bot._analyze_flac.assert_not_called()
+            bot._analyze_lossless.assert_not_called()
+        finally:
+            os.unlink(source_path)
+
+    @pytest.mark.parametrize(
+        ("ext", "checked"),
+        [("flac", True), ("wav", True), ("aiff", True), ("ape", False), ("wv", False), ("mp3", False)],
+    )
+    @patch("music_downloader.bot.handlers.SpotifyResolver")
+    @patch("music_downloader.bot.handlers.SlskdClient")
+    @pytest.mark.asyncio
+    async def test_lossless_check_runs_only_where_soundfile_reads(self, mock_slskd_cls, mock_spotify, ext, checked):
+        """flac/wav/aiff get the spectrum check; ape/wv say "not checked"; lossy says nothing."""
+        bot = MusicBot(_make_config())
+        bot.slskd = MagicMock()
+        bot.slskd.enqueue_download = MagicMock(return_value=True)
+        bot.slskd.wait_for_download = AsyncMock(
+            return_value=DownloadStatus(username="u", filename="f", state="Completed")
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
+            f.write(b"\x00" * 1000)
+            source_path = f.name
+
+        try:
+            bot.processor = MagicMock()
+            bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
+            bot.processor.build_filename = MagicMock(return_value=f"Artist - Song.{ext}")
+            bot._analyze_lossless = AsyncMock(return_value=None)
+
+            status_msg = AsyncMock()
+            status_msg.message_id = 1
+            context = _make_context()
+            context.bot.send_audio = AsyncMock(return_value=MagicMock(message_id=2))
+
+            await bot._do_download(context, 123, _make_track(), _make_result(ext=ext), status_msg)
+
+            assert bot._analyze_lossless.await_count == (1 if checked else 0)
+            caption = context.bot.send_audio.call_args.kwargs["caption"]
+            if ext == "mp3":
+                assert "Lossless check" not in caption
+            else:
+                # A failed or impossible check is reported, never silently dropped.
+                assert f"Lossless check: not checked ({ext.upper()})" in caption
         finally:
             os.unlink(source_path)
 
@@ -553,26 +596,26 @@ class TestAsyncHelpers:
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
     @pytest.mark.asyncio
-    async def test_analyze_flac_runs(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.analyze_flac") as mock_analyze:
-            mock_analyze.return_value = FlacVerdict(
+    async def test_analyze_lossless_runs(self, mock_slskd_cls, mock_spotify):
+        with patch("music_downloader.bot.handlers.analyze_lossless") as mock_analyze:
+            mock_analyze.return_value = LosslessVerdict(
                 verdict="AUTHENTIC",
                 cutoff_khz=22.05,
                 nyquist_khz=22.05,
                 sample_rate=44100,
                 bit_depth=16,
             )
-            result = await MusicBot._analyze_flac("/fake/path.flac")
+            result = await MusicBot._analyze_lossless("/fake/path.flac")
             assert result is not None
             assert result.verdict == "AUTHENTIC"
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")
     @pytest.mark.asyncio
-    async def test_analyze_flac_exception(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.analyze_flac") as mock_analyze:
+    async def test_analyze_lossless_exception(self, mock_slskd_cls, mock_spotify):
+        with patch("music_downloader.bot.handlers.analyze_lossless") as mock_analyze:
             mock_analyze.side_effect = Exception("read error")
-            result = await MusicBot._analyze_flac("/fake/path.flac")
+            result = await MusicBot._analyze_lossless("/fake/path.flac")
             assert result is None
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")

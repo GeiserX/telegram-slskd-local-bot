@@ -14,7 +14,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | `SLSKD_HOST` | Yes | — | slskd instance URL (e.g., `http://192.168.1.100:5030`) |
 | `SLSKD_API_KEY` | Yes | — | slskd API key (Settings > Security > API Keys) |
 | `DOWNLOAD_DIR` | No | `/downloads` | Where slskd stores completed downloads (container path) |
-| `OUTPUT_DIR` | No | `/music` | Where to place renamed FLAC files (container path) |
+| `OUTPUT_DIR` | No | `/music` | Where to place renamed audio files (container path) |
 | `DATA_DIR` | No | `/data` | Where the SQLite history and import state live (container path) |
 | `SLSKD_DOWNLOAD_PATH` | Compose only | `./downloads` | Host folder mounted at `/downloads`: slskd's completed-downloads folder |
 | `MUSIC_OUTPUT_PATH` | Compose only | `./music` | Host folder mounted at `/music`: your library |

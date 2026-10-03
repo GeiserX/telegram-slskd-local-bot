@@ -1,7 +1,7 @@
 """
-FLAC authenticity analyzer and audio preview utilities.
+Lossless check (spectral authenticity analyzer) and audio preview utilities.
 
-Spectral analysis detects fake FLAC files (transcoded from lossy sources) by
+Spectral analysis detects fake lossless files (transcoded from lossy sources) by
 examining high-frequency content.  True lossless audio has energy up to the
 Nyquist frequency (~22.05 kHz at 44.1 kHz sample rate).  Lossy-to-lossless
 transcodes show a sharp spectral energy cutoff between 16-20 kHz caused by
@@ -12,6 +12,9 @@ Verdicts:
     WARNING    - cutoff 19-20 kHz (might be high-quality MP3 320kbps or older recording)
     SUSPICIOUS - cutoff 17-19 kHz (likely MP3 192-256kbps source)
     FAKE       - cutoff <17 kHz (definitely transcoded from lossy)
+
+The check reads audio with soundfile, so it runs only on CHECKABLE_EXTENSIONS;
+other lossless formats (APE, WavPack, TTA, TAK, ALAC) are reported as not checked.
 """
 
 import contextlib
@@ -32,10 +35,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Lossless formats soundfile (libsndfile) can read for the spectrum check.
+CHECKABLE_EXTENSIONS = frozenset({"flac", "wav", "aiff", "aif"})
+
+
+def not_checked_display(extension: str) -> str:
+    """The line shown for a lossless file the spectrum check could not read."""
+    return f"\u2754 Lossless check: not checked ({extension.upper()})"  # ❔
+
 
 @dataclass
-class FlacVerdict:
-    """Result of FLAC authenticity analysis."""
+class LosslessVerdict:
+    """Result of the lossless check."""
 
     verdict: str  # AUTHENTIC, WARNING, SUSPICIOUS, FAKE
     cutoff_khz: float
@@ -65,19 +76,19 @@ class FlacVerdict:
         return f"{self.emoji} {label} (cutoff {self.cutoff_khz:.1f}kHz)"
 
 
-def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | None:
+def analyze_lossless(filepath: str, sample_duration: float = 30.0) -> LosslessVerdict | None:
     """
-    Analyze a FLAC file for losslessness via spectral cutoff detection.
+    Analyze a lossless file (FLAC, WAV, AIFF) for losslessness via spectral cutoff detection.
 
     Reads a 30-second segment from the middle of the file, computes the
     power spectral density, and looks for a sharp energy drop above 14 kHz.
 
     Args:
-        filepath: Path to a FLAC file on disk.
+        filepath: Path to a file in one of CHECKABLE_EXTENSIONS.
         sample_duration: Seconds of audio to analyze (from the middle).
 
     Returns:
-        FlacVerdict with the analysis result, or None on error.
+        LosslessVerdict with the analysis result, or None on error.
     """
     if not HAS_ANALYSIS:
         return None
@@ -105,7 +116,7 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
         # Skip near-silent files
         rms = np.sqrt(np.mean(data**2))
         if rms < 0.001:
-            return FlacVerdict(
+            return LosslessVerdict(
                 verdict="AUTHENTIC",
                 cutoff_khz=nyquist / 1000,
                 nyquist_khz=nyquist / 1000,
@@ -126,7 +137,7 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
         high_psd = psd_db[high_freq_mask]
 
         if len(high_freqs) < 10:
-            return FlacVerdict(
+            return LosslessVerdict(
                 verdict="AUTHENTIC",
                 cutoff_khz=nyquist / 1000,
                 nyquist_khz=nyquist / 1000,
@@ -168,7 +179,7 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
         else:
             verdict = "FAKE"
 
-        return FlacVerdict(
+        return LosslessVerdict(
             verdict=verdict,
             cutoff_khz=round(cutoff_khz, 2),
             nyquist_khz=round(nyquist_khz, 2),
@@ -177,7 +188,7 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
         )
 
     except Exception:
-        logger.exception("Failed to analyze FLAC: %s", filepath)
+        logger.exception("Lossless check failed: %s", filepath)
         return None
 
 

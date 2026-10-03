@@ -1211,7 +1211,7 @@ class TestRankResponses:
         bot.slskd.parse_results = MagicMock(return_value=[])
         bot.scorer.score_results = MagicMock(return_value=[])
         bot._rank_responses([], track)
-        bot.slskd.parse_results.assert_called_once_with([], flac_only=False)
+        bot.slskd.parse_results.assert_called_once_with([])
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")
     @patch("music_downloader.bot.handlers.SlskdClient")

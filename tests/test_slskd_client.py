@@ -77,6 +77,10 @@ class TestSearchResult:
         r = SearchResult(username="u", filename="f.flac", size=100)
         assert r.quality_display == "FLAC"
 
+    def test_quality_display_no_info_names_the_real_format(self):
+        r = SearchResult(username="u", filename="f.mp3", size=100)
+        assert r.quality_display == "MP3"
+
     def test_str(self):
         r = SearchResult(
             username="u",
@@ -168,7 +172,7 @@ class TestSlskdClientParseResults:
         with patch("slskd_api.SlskdClient"):
             return SlskdClient("http://localhost:5030", "test-key")
 
-    def test_parse_flac_only(self, client):
+    def test_parse_keeps_lossless_and_lossy(self, client):
         responses = [
             {
                 "username": "user1",
@@ -187,9 +191,8 @@ class TestSlskdClientParseResults:
                 ],
             }
         ]
-        results = client.parse_results(responses, flac_only=True)
-        assert len(results) == 1
-        assert results[0].extension == "flac"
+        results = client.parse_results(responses)
+        assert [(r.extension, r.is_lossless) for r in results] == [("flac", True), ("mp3", False)]
 
     def test_parse_all_audio(self, client):
         responses = [
@@ -206,13 +209,13 @@ class TestSlskdClientParseResults:
                 ],
             }
         ]
-        results = client.parse_results(responses, flac_only=False)
+        results = client.parse_results(responses)
         assert len(results) == 3
         exts = {r.extension for r in results}
         assert "jpg" not in exts
 
     def test_parse_empty_responses(self, client):
-        assert client.parse_results([], flac_only=True) == []
+        assert client.parse_results([]) == []
 
     def test_parse_preserves_user_info(self, client):
         responses = [
@@ -226,7 +229,7 @@ class TestSlskdClientParseResults:
                 ],
             }
         ]
-        results = client.parse_results(responses, flac_only=True)
+        results = client.parse_results(responses)
         assert results[0].username == "cooluser"
         assert results[0].has_free_slot is True
         assert results[0].upload_speed == 9_000_000
@@ -239,7 +242,7 @@ class TestSlskdClientParseResults:
                 "files": [{"filename": "\\Song.flac", "size": 0}],
             }
         ]
-        results = client.parse_results(responses, flac_only=True)
+        results = client.parse_results(responses)
         assert len(results) == 1
         assert results[0].has_free_slot is False
         assert results[0].upload_speed == 0

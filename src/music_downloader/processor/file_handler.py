@@ -1,6 +1,6 @@
 """
 File processor for renaming and placing downloaded files.
-Handles the final step: rename to 'Artist - Title.flac' and move to output directory.
+Handles the final step: rename to 'Artist - Title.<ext>' (the downloaded format) and move to output directory.
 """
 
 import contextlib

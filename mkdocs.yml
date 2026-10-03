@@ -1,6 +1,6 @@
 site_name: telegram-slskd-local-bot
 site_url: https://geiserx.github.io/telegram-slskd-local-bot/
-site_description: A Telegram bot next to your slskd that turns a song name into a FLAC in your library, after you hear it and read its lossless check.
+site_description: A Telegram bot next to your slskd that turns a song name into a lossless file in your library, after you hear it and read its lossless check.
 repo_url: https://github.com/GeiserX/telegram-slskd-local-bot
 repo_name: GeiserX/telegram-slskd-local-bot
 edit_uri: edit/main/docs/

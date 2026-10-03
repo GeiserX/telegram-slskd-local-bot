@@ -50,11 +50,13 @@ from music_downloader.persistence.import_repo import (
 )
 from music_downloader.persistence.settings_repo import SettingsRepository
 from music_downloader.processor.file_handler import FileProcessor
-from music_downloader.processor.flac_analyzer import (
-    FlacVerdict,
-    analyze_flac,
+from music_downloader.processor.lossless_analyzer import (
+    CHECKABLE_EXTENSIONS,
+    LosslessVerdict,
+    analyze_lossless,
     convert_to_ogg,
     create_preview_clip,
+    not_checked_display,
 )
 from music_downloader.search.scorer import CHAT_SIZE_LIMIT_BYTES, PROFILE_CHAT, PROFILE_LIBRARY, ResultScorer
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult, SlskdClient
@@ -508,7 +510,8 @@ class MusicBot:
 
         await update.message.reply_text(
             "Send me a song name (e.g., `Nancy Sinatra Bang Bang`) "
-            "and I'll find and download it in FLAC.\n\n"
+            "and I'll find the best copy on Soulseek: lossless first, or the best quality "
+            "for its size in chat delivery.\n\n"
             "Commands:\n"
             "/import — Import a Spotify playlist or album\n"
             "/cancel — Cancel the active import or search\n"
@@ -1094,7 +1097,7 @@ class MusicBot:
 
         searching_msg = await context.bot.send_message(
             chat_id=chat_id,
-            text="🔍 Searching slskd for FLAC...",
+            text="🔍 Searching slskd...",
             parse_mode=ParseMode.MARKDOWN,
         )
         generation = self._chat_generation.get(chat_id, 0)
@@ -1226,7 +1229,7 @@ class MusicBot:
         """
         chat = chat_id is not None and self._is_chat_delivery(chat_id, user_id)
         score_kwargs = {"max_duration_diff": max_duration_diff} if max_duration_diff else {}
-        results = self.slskd.parse_results(raw_responses, flac_only=False)
+        results = self.slskd.parse_results(raw_responses)
         ranked = self.scorer.score_results(
             results, track, profile=PROFILE_CHAT if chat else PROFILE_LIBRARY, **score_kwargs
         )
@@ -1328,7 +1331,7 @@ class MusicBot:
                 await self._add_history(track, result, "file_not_found")
                 return
 
-            flac_verdict = await self._analyze_flac(source_path) if result.extension == "flac" else None
+            verdict = await self._analyze_lossless(source_path) if result.extension in CHECKABLE_EXTENSIONS else None
 
             pending_dl = PendingDownload(
                 track=track,
@@ -1343,8 +1346,10 @@ class MusicBot:
             self.downloads[dl_id] = pending_dl
 
             quality_line = f"Quality: {result.quality_display} | {result.duration_display}"
-            if flac_verdict:
-                quality_line += f"\n{flac_verdict.display}"
+            if verdict:
+                quality_line += f"\n{verdict.display}"
+            elif result.is_lossless:
+                quality_line += f"\n{not_checked_display(result.extension)}"
 
             if self._is_chat_delivery(chat_id, user_id):
                 # Chat delivery decides WHERE the track goes (auto-mode only
@@ -2650,19 +2655,19 @@ class MusicBot:
         self._track_task(chat_id, task)
 
     # =========================================================================
-    # FLAC ANALYSIS
+    # LOSSLESS CHECK
     # =========================================================================
 
     @staticmethod
-    async def _analyze_flac(filepath: str) -> FlacVerdict | None:
-        """Run spectral analysis on a FLAC file in a thread to avoid blocking."""
+    async def _analyze_lossless(filepath: str) -> LosslessVerdict | None:
+        """Run the spectral lossless check in a thread to avoid blocking."""
         try:
-            verdict = await asyncio.to_thread(analyze_flac, filepath)
+            verdict = await asyncio.to_thread(analyze_lossless, filepath)
             if verdict:
-                logger.info("FLAC analysis for %s: %s (cutoff=%.1fkHz)", filepath, verdict.verdict, verdict.cutoff_khz)
+                logger.info("Lossless check for %s: %s (cutoff=%.1fkHz)", filepath, verdict.verdict, verdict.cutoff_khz)
             return verdict
         except Exception:
-            logger.exception("FLAC analysis failed for %s", filepath)
+            logger.exception("Lossless check failed for %s", filepath)
             return None
 
     @staticmethod

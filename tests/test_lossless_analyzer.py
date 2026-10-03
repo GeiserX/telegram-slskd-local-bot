@@ -1,43 +1,53 @@
-"""Tests for FLAC authenticity analyzer."""
+"""Tests for the lossless check (spectral authenticity analyzer)."""
 
+import importlib
 import os
 import tempfile
 
 import numpy as np
+import pytest
 import soundfile as sf
 
-from music_downloader.processor.flac_analyzer import FlacVerdict, analyze_flac, convert_to_ogg, create_preview_clip
+from music_downloader.formats import LOSSLESS_EXTENSIONS
+from music_downloader.processor.lossless_analyzer import (
+    CHECKABLE_EXTENSIONS,
+    LosslessVerdict,
+    analyze_lossless,
+    convert_to_ogg,
+    create_preview_clip,
+    not_checked_display,
+)
 
 
-class TestFlacVerdict:
-    """Test FlacVerdict display properties."""
+class TestLosslessVerdict:
+    """Test LosslessVerdict display properties."""
 
     def test_authentic_display(self):
-        v = FlacVerdict(verdict="AUTHENTIC", cutoff_khz=22.05, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
+        v = LosslessVerdict(verdict="AUTHENTIC", cutoff_khz=22.05, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
         assert "Lossless OK" in v.display
         assert "22.1kHz" in v.display
         assert v.emoji == "\u2705"
 
     def test_warning_display(self):
-        v = FlacVerdict(verdict="WARNING", cutoff_khz=19.5, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
+        v = LosslessVerdict(verdict="WARNING", cutoff_khz=19.5, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
         assert "Possible transcode" in v.display
         assert "19.5kHz" in v.display
         assert v.emoji == "\u26a0\ufe0f"
 
     def test_suspicious_display(self):
-        v = FlacVerdict(verdict="SUSPICIOUS", cutoff_khz=18.0, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
+        v = LosslessVerdict(verdict="SUSPICIOUS", cutoff_khz=18.0, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
         assert "Likely transcode" in v.display
         assert "18.0kHz" in v.display
 
     def test_fake_display(self):
-        v = FlacVerdict(verdict="FAKE", cutoff_khz=16.0, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
+        v = LosslessVerdict(verdict="FAKE", cutoff_khz=16.0, nyquist_khz=22.05, sample_rate=44100, bit_depth=16)
         assert "Fake lossless" in v.display
         assert "16.0kHz" in v.display
         assert v.emoji == "\u274c"
 
 
-class TestAnalyzeFlac:
-    """Test analyze_flac with synthetic FLAC files."""
+class TestAnalyzeLossless:
+    """Test analyze_lossless with synthetic FLAC files."""
 
     @staticmethod
     def _create_test_flac(
@@ -74,7 +84,7 @@ class TestAnalyzeFlac:
             path = f.name
         try:
             self._create_test_flac(path)  # no cutoff = broadband
-            result = analyze_flac(path, sample_duration=5.0)
+            result = analyze_lossless(path, sample_duration=5.0)
             assert result is not None
             assert result.verdict == "AUTHENTIC"
             assert result.sample_rate == 44100
@@ -88,7 +98,7 @@ class TestAnalyzeFlac:
             path = f.name
         try:
             self._create_test_flac(path, cutoff_hz=15000.0)
-            result = analyze_flac(path, sample_duration=5.0)
+            result = analyze_lossless(path, sample_duration=5.0)
             assert result is not None
             assert result.verdict in ("FAKE", "SUSPICIOUS")
         finally:
@@ -102,7 +112,7 @@ class TestAnalyzeFlac:
             n_samples = 44100 * 3
             data = np.zeros(n_samples, dtype=np.float32)
             sf.write(path, data, 44100, subtype="PCM_16")
-            result = analyze_flac(path, sample_duration=3.0)
+            result = analyze_lossless(path, sample_duration=3.0)
             assert result is not None
             assert result.verdict == "AUTHENTIC"
         finally:
@@ -110,7 +120,7 @@ class TestAnalyzeFlac:
 
     def test_nonexistent_file_returns_none(self):
         """Analyzing a non-existent file should return None."""
-        result = analyze_flac("/tmp/nonexistent_test_file.flac")
+        result = analyze_lossless("/tmp/nonexistent_test_file.flac")
         assert result is None
 
     def test_hi_res_authentic(self):
@@ -119,13 +129,41 @@ class TestAnalyzeFlac:
             path = f.name
         try:
             self._create_test_flac(path, sample_rate=96000)
-            result = analyze_flac(path, sample_duration=5.0)
+            result = analyze_lossless(path, sample_duration=5.0)
             assert result is not None
             assert result.verdict == "AUTHENTIC"
             assert result.sample_rate == 96000
             assert result.nyquist_khz == 48.0
         finally:
             os.unlink(path)
+
+
+class TestCheckableFormats:
+    """The spectrum check covers only what soundfile can read."""
+
+    def test_checkable_set(self):
+        assert {"flac", "wav", "aiff", "aif"} == CHECKABLE_EXTENSIONS
+        assert CHECKABLE_EXTENSIONS <= LOSSLESS_EXTENSIONS
+        assert not {"ape", "wv", "tta", "tak", "alac"} & CHECKABLE_EXTENSIONS
+
+    def test_not_checked_display(self):
+        assert not_checked_display("ape") == "\u2754 Lossless check: not checked (APE)"
+
+    def test_wav_is_analyzed(self):
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            path = f.name
+        try:
+            TestAnalyzeLossless._create_test_flac(path)
+            result = analyze_lossless(path, sample_duration=5.0)
+            assert result is not None
+            assert result.verdict == "AUTHENTIC"
+        finally:
+            os.unlink(path)
+
+    def test_old_module_name_is_gone(self):
+        assert importlib.import_module("music_downloader.processor.lossless_analyzer").analyze_lossless
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("music_downloader.processor.flac_analyzer")
 
 
 class TestCreatePreviewClip:

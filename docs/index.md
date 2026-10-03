@@ -18,7 +18,7 @@ hide:
 
 ---
 
-**telegram-slskd-local-bot** is a Telegram bot, run in Docker next to your [slskd](https://github.com/slskd/slskd), that turns a song name typed on your phone into a FLAC in your music library. It looks the song up on Spotify, searches Soulseek for lossless copies, ranks them by duration, bit depth and source, and sends you the file in the chat so you can listen to it and read its lossless check before it is saved as `Artist - Title.flac`. Doing the same by hand in the slskd web UI means reading file lists, guessing which copy is the studio version and finding out after the fact that the FLAC was an MP3. Start with [Getting started](getting-started.md), then [Usage](usage.md).
+**telegram-slskd-local-bot** is a Telegram bot, run in Docker next to your [slskd](https://github.com/slskd/slskd), that turns a song name typed on your phone into a lossless file in your music library. It looks the song up on Spotify, searches Soulseek, ranks the lossless copies by duration, bit depth and source with any lossy copies listed below them, and sends you the file in the chat so you can listen to it and read its lossless check before it is saved as `Artist - Title` in its own format. Doing the same by hand in the slskd web UI means reading file lists, guessing which copy is the studio version and finding out after the fact that the FLAC was an MP3. Start with [Getting started](getting-started.md), then [Usage](usage.md).
 
 <div class="grid cards" markdown>
 
@@ -50,16 +50,16 @@ hide:
 
 ## What the chat looks like
 
-You text the bot a song name. When Spotify returns more than one distinct track it shows them as buttons; you pick one. It searches Soulseek through your slskd, keeps the FLAC copies, ranks them, and shows the best ones with duration, bit depth, sample rate and size. You tap one, or Auto-pick best. The download shows its progress, then the file itself arrives in the chat, the FLAC when it is under Telegram's 50 MB limit and an Opus copy of the whole song when it is over, with a verdict line: `Lossless OK`, or `Possible transcode`, `Likely transcode` or `Fake lossless` with the frequency where the spectrum stops. You tap Save to library or Reject. [Usage](usage.md) walks through it step by step.
+You text the bot a song name. When Spotify returns more than one distinct track it shows them as buttons; you pick one. It searches Soulseek through your slskd, ranks the copies with every lossless one before every lossy one, and shows the best ones with format, duration, bit depth and sample rate or bitrate, and size. You tap one, or Auto-pick best. The download shows its progress, then the file itself arrives in the chat, as it is when it is under Telegram's 50 MB limit and an Opus copy of the whole song when it is over, with a verdict line: `Lossless OK`, or `Possible transcode`, `Likely transcode` or `Fake lossless` with the frequency where the spectrum stops. You tap Save to library or Reject. [Usage](usage.md) walks through it step by step.
 
 ## What it does
 
 - Resolves artist, title, album and duration on Spotify, and warns when similar files are already in your library before it searches.
-- Ranks the copies by duration against Spotify, bit depth and sample rate (hi-res first), the uploader's free slot, speed and queue, and the file name; drops live, remix and karaoke cuts unless the title has them.
-- Checks the spectrum of a FLAC found from a song name and flags an MP3-style cutoff before you save. `/import` skips the check.
-- Saves as `Artist - Title.flac` with the Spotify cover art embedded, in the folder your player or [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) watches.
+- Lists every lossless copy before every lossy one, so a song with no lossless copy still gets a lossy one. Within each group it ranks by duration against Spotify, bit depth and sample rate (hi-res first) or bitrate, the uploader's free slot, speed and queue, and the file name; drops live, remix and karaoke cuts unless the title has them.
+- Checks the spectrum of a lossless file (FLAC, WAV or AIFF) found from a song name and flags an MP3-style cutoff before you save. `/import` skips the check.
+- Saves as `Artist - Title` with its own extension (`.flac`, `.wav`, `.mp3`...) and the Spotify cover art embedded, in the folder your player or [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) watches.
 - `/import` a Spotify playlist or album and review each track or auto-save them all; `/auto` per chat saves the best match without a tap; a failed transfer gets Retry and Try next result.
-- Chat delivery (`/deliver`, or `TELEGRAM_CHAT_DELIVERY_USERS`) sends the track into the chat under 50 MB and saves nothing anywhere.
+- Chat delivery (`/deliver`, or `TELEGRAM_CHAT_DELIVERY_USERS`) sends the track into the chat under 50 MB and saves nothing anywhere, and ranks copies by quality for their size.
 - Sweeps abandoned downloads after `DOWNLOAD_CLEANUP_HOURS` and never touches a transfer in flight.
 
 ## How it runs

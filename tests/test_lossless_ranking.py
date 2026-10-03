@@ -129,7 +129,7 @@ class TestClassification:
             client = SlskdClient("http://localhost:5030", "test-key")
         exts = sorted(LOSSLESS_EXTENSIONS | LOSSY_EXTENSIONS)
         files = [{"filename": f"\\Music\\Song.{e}", "size": 1} for e in exts + ["jpg", "cue"]]
-        results = client.parse_results([{"username": "u", "files": files}], flac_only=False)
+        results = client.parse_results([{"username": "u", "files": files}])
         assert sorted(r.extension for r in results) == exts
 
 
