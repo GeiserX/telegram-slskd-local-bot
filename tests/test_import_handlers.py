@@ -37,6 +37,7 @@ async def _fake_to_thread(fn, *args, **kwargs):
 def _make_config():
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -615,7 +616,7 @@ class TestDoImportDownload:
         status = MagicMock()
         status.is_failed = False
         bot.slskd.wait_for_download = AsyncMock(return_value=status)
-        # Create a file larger than TELEGRAM_FILE_LIMIT
+        # Create a file larger than the upload cap
         with tempfile.NamedTemporaryFile(delete=False, suffix=".flac") as source:
             source.write(b"x" * 100)
         bot.processor = MagicMock()
@@ -626,8 +627,9 @@ class TestDoImportDownload:
         dl_id = "dl_3"
         bot.downloads[dl_id] = PendingDownload(track=_make_track(), result=result, chat_id=chat_id)
         context = _make_context()
-        # Patch TELEGRAM_FILE_LIMIT to be smaller than our file
-        with patch("music_downloader.bot.handlers.TELEGRAM_FILE_LIMIT", 50):
+        # Lower the upload cap below our file
+        bot.pipeline.upload_limit_bytes = 50
+        if True:
             await bot._do_import_download(
                 context,
                 chat_id,

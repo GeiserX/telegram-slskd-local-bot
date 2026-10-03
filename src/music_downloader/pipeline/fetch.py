@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from music_downloader.config import BYTES_PER_MB, DEFAULT_UPLOAD_LIMIT_BYTES
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.lossless_analyzer import (
     CHECKABLE_EXTENSIONS,
@@ -13,7 +14,6 @@ from music_downloader.processor.lossless_analyzer import (
     convert_to_ogg,
     create_preview_clip,
 )
-from music_downloader.search.scorer import CHAT_SIZE_LIMIT_BYTES
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult, SlskdClient
 
 logger = logging.getLogger(__name__)
@@ -84,18 +84,16 @@ async def fetch(
     return FetchOutcome(path=path, verdict=verdict, transfer_id=status.transfer_id)
 
 
-def opus_bitrates_that_fit(duration_secs: int) -> list[int]:
-    """The highest Opus bitrate whose estimated size fits, then one lower fallback.
+def opus_bitrates_that_fit(duration_secs: int, limit_bytes: int = DEFAULT_UPLOAD_LIMIT_BYTES) -> list[int]:
+    """The highest Opus bitrate whose estimated size fits *limit_bytes*, then one lower fallback.
 
-    Estimate = bitrate * duration * 5 % container overhead + 1 MiB headroom.
+    Estimate = bitrate * duration * 5 % container overhead + 1 MB headroom.
     With an unknown duration nothing can be estimated, so every bitrate is tried.
     """
     if duration_secs <= 0:
         return list(_OPUS_BITRATES_KBPS)
     fitting = [
-        kbps
-        for kbps in _OPUS_BITRATES_KBPS
-        if kbps * 1000 / 8 * duration_secs * 1.05 + 1024 * 1024 <= CHAT_SIZE_LIMIT_BYTES
+        kbps for kbps in _OPUS_BITRATES_KBPS if kbps * 1000 / 8 * duration_secs * 1.05 + BYTES_PER_MB <= limit_bytes
     ]
     return fitting[:2]
 

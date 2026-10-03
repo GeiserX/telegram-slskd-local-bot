@@ -25,6 +25,7 @@ USER = 12345
 def _make_config(td=None):
     td = td or tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"

@@ -1,10 +1,15 @@
 """Soulseek search queries and the ranking of what comes back."""
 
+import logging
 import re
+import unicodedata
 
+from music_downloader.config import DEFAULT_UPLOAD_LIMIT_BYTES
 from music_downloader.metadata.spotify import TrackInfo
-from music_downloader.search.scorer import CHAT_SIZE_LIMIT_BYTES, PROFILE_CHAT, ResultScorer
+from music_downloader.search.scorer import PROFILE_CHAT, ResultScorer
 from music_downloader.search.slskd_client import SearchResult, SlskdClient
+
+logger = logging.getLogger(__name__)
 
 # Noise keywords that Spotify appends to track titles but Soulseek users never use.
 # Named remixes (e.g. "Butch Vig Remix") are intentionally excluded — they
@@ -130,6 +135,66 @@ def extract_latin_keywords(title: str) -> list[str]:
     return [w for w in words if w.lower() not in _NOISE_WORDS]
 
 
+class RankedResults(list):
+    """A ranked result list that also says how many copies the title guard hid."""
+
+    def __init__(self, results=(), hidden: int = 0):
+        super().__init__(results)
+        self.hidden = hidden
+
+
+# Words too common to tell one title from another (title guard only).
+_GUARD_STOPWORDS = frozenset({"a", "the", "of", "and", "feat", "ft"})
+_BRACKETS_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+
+
+def _words(text: str) -> list[str]:
+    """Casefolded, accent-free words of *text*; punctuation and underscores separate words."""
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    plain = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return re.findall(r"[^\W_]+", plain)
+
+
+def title_tokens(title: str) -> set[str]:
+    """The words of *title* a copy of it must show somewhere in its name.
+
+    Version noise (" - Remastered 2009"), anything in parentheses or
+    brackets, and stopwords are dropped. A title made only of stopwords
+    ("The The") keeps them; a title made only of brackets keeps their words.
+    """
+    words = _words(_BRACKETS_RE.sub(" ", clean_search_title(title)))
+    if not words:
+        words = _words(title)
+    meaningful = [w for w in words if w not in _GUARD_STOPWORDS]
+    return set(meaningful or words)
+
+
+def _name_words(result: SearchResult) -> set[str]:
+    """Words of the copy's file name and of the folder it sits in."""
+    parts = result.filename.replace("/", "\\").split("\\")
+    parent = parts[-2] if len(parts) > 1 else ""
+    return set(_words(result.basename)) | set(_words(parent))
+
+
+def title_guard(results: list[SearchResult], track: TrackInfo) -> tuple[list[SearchResult], int]:
+    """Drop copies whose file and folder name share no word with the track title.
+
+    Returns the kept results and how many were hidden. Never empties the
+    list: when every copy would go, all are kept and the guard is skipped.
+    """
+    tokens = title_tokens(track.title)
+    if not tokens or not results:
+        return results, 0
+    kept = [r for r in results if tokens & _name_words(r)]
+    hidden = len(results) - len(kept)
+    if not kept:
+        logger.info("Title guard skipped for %r: it would hide all %d results", track.title, len(results))
+        return results, 0
+    if hidden:
+        logger.info("Title guard hid %d unrelated result(s) of %d for %r", hidden, len(results), track.title)
+    return kept, hidden
+
+
 def rank(
     slskd: SlskdClient,
     scorer: ResultScorer,
@@ -137,8 +202,15 @@ def rank(
     track: TrackInfo,
     profile: str,
     max_duration_diff: int | None = None,
-) -> list[SearchResult]:
+    upload_limit_bytes: int = DEFAULT_UPLOAD_LIMIT_BYTES,
+) -> RankedResults:
     """Parse raw slskd responses (every audio format) and rank them for *profile*.
+
+    First the title guard drops copies named after another track (skipped for
+    a direct search, whose track has no length: that path skips the filters).
+    A copy whose length is unknown even after estimating it never leads: it
+    ranks after every copy of known length (chat) or among the lossy results
+    (library), whatever its score.
 
     Library delivery: every lossless result before every lossy one, each
     group by score, so a lossy copy is offered only below the lossless ones.
@@ -151,13 +223,15 @@ def rank(
     """
     score_kwargs = {"max_duration_diff": max_duration_diff} if max_duration_diff else {}
     results = slskd.parse_results(raw_responses)
+    hidden = 0
+    if track.duration_secs:
+        results, hidden = title_guard(results, track)
     ranked = scorer.score_results(results, track, profile=profile, **score_kwargs)
     if profile == PROFILE_CHAT:
-        return [r for r in ranked if r.size <= CHAT_SIZE_LIMIT_BYTES] + [
-            r for r in ranked if r.size > CHAT_SIZE_LIMIT_BYTES
-        ]
+        ordered = sorted(ranked, key=lambda r: (ResultScorer.length_unknown(r, track), r.size > upload_limit_bytes))
+        return RankedResults(ordered, hidden)
 
     def leads(r: SearchResult) -> bool:
-        return r.is_lossless and not scorer.is_other_version(r, track)
+        return r.is_lossless and not scorer.is_other_version(r, track) and not ResultScorer.length_unknown(r, track)
 
-    return [r for r in ranked if leads(r)] + [r for r in ranked if not leads(r)]
+    return RankedResults([r for r in ranked if leads(r)] + [r for r in ranked if not leads(r)], hidden)

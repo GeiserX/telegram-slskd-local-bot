@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import requests.exceptions
 import slskd_api
 
+from music_downloader.config import BYTES_PER_MB
 from music_downloader.formats import AUDIO_EXTENSIONS, is_lossless
 
 logger = logging.getLogger(__name__)
@@ -63,8 +64,8 @@ class SearchResult:
 
     @property
     def size_mb(self) -> float:
-        """File size in MB."""
-        return self.size / (1024 * 1024)
+        """File size in MB of 1,000,000 bytes, the unit Telegram's upload cap uses."""
+        return self.size / BYTES_PER_MB
 
     @property
     def quality_display(self) -> str:

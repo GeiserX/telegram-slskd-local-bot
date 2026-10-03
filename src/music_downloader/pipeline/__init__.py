@@ -8,6 +8,7 @@ are plain dataclasses, so another front end can drive the same Pipeline.
 """
 
 import asyncio
+import logging
 import threading
 from collections.abc import Callable
 
@@ -17,6 +18,7 @@ from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.history_repo import HistoryRepository
 from music_downloader.persistence.import_repo import ImportRepository
+from music_downloader.persistence.library_index import LibraryIndex
 from music_downloader.persistence.pending_repo import PendingRepository
 from music_downloader.persistence.settings_repo import SettingsRepository
 from music_downloader.pipeline import fetch as _fetch
@@ -24,12 +26,18 @@ from music_downloader.pipeline import library as _library
 from music_downloader.pipeline import resolve as _resolve
 from music_downloader.pipeline import search as _search
 from music_downloader.pipeline.fetch import FetchOutcome, ProgressCallback
+from music_downloader.pipeline.search import RankedResults
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.scorer import ResultScorer
 from music_downloader.search.slskd_client import SearchResult, SlskdClient
 
-__all__ = ["FetchOutcome", "Pipeline", "SlskdClient", "SpotifyResolver"]
+__all__ = ["FetchOutcome", "Pipeline", "RankedResults", "SlskdClient", "SpotifyResolver"]
+
+logger = logging.getLogger(__name__)
+
+# How often the library index is rebuilt from OUTPUT_DIR (the first pass runs at startup).
+LIBRARY_RESCAN_SECS = 3600
 
 
 class Pipeline:
@@ -37,11 +45,15 @@ class Pipeline:
 
     def __init__(self, config: Config):
         self.config = config
+        # Largest file a chat send may be (TELEGRAM_MAX_UPLOAD_MB): the chat
+        # ranking, the Opus ladder and the send paths all read this one value.
+        self.upload_limit_bytes = config.telegram_upload_limit_bytes
         self.spotify = SpotifyResolver(config.spotify_client_id, config.spotify_client_secret)
         self.slskd = SlskdClient(config.slskd_host, config.slskd_api_key)
         self.scorer = ResultScorer(
             duration_tolerance_secs=config.duration_tolerance_secs,
             exclude_keywords=config.exclude_keywords,
+            chat_size_limit_bytes=self.upload_limit_bytes,
         )
         self.processor = FileProcessor(
             download_dir=config.download_dir,
@@ -53,6 +65,7 @@ class Pipeline:
         self.import_repo = ImportRepository(self.db)
         self.settings_repo = SettingsRepository(self.db)
         self.pending_repo = PendingRepository(self.db)
+        self.library_index = LibraryIndex(self.db, config.output_dir)
         self.playlist_resolver = PlaylistResolver(self.spotify)
 
     # ------------------------------------------------------------------ resolve
@@ -70,16 +83,21 @@ class Pipeline:
         profile: str,
         max_duration_diff: int | None = None,
         response_limit: int | None = None,
-    ) -> list[SearchResult]:
-        """Run one slskd search for *query* and rank the responses for *track* under *profile*."""
+    ) -> RankedResults:
+        """Run one slskd search for *query* and rank the responses for *track* under *profile*.
+
+        The returned list's ``hidden`` is how many copies the title guard dropped.
+        """
         kwargs = {"response_limit": response_limit} if response_limit else {}
         raw_responses = await self.slskd.search(query, timeout_secs=self.config.search_timeout_secs, **kwargs)
         return self.rank(raw_responses, track, profile, max_duration_diff)
 
     def rank(
         self, raw_responses, track: TrackInfo, profile: str, max_duration_diff: int | None = None
-    ) -> list[SearchResult]:
-        return _search.rank(self.slskd, self.scorer, raw_responses, track, profile, max_duration_diff)
+    ) -> RankedResults:
+        return _search.rank(
+            self.slskd, self.scorer, raw_responses, track, profile, max_duration_diff, self.upload_limit_bytes
+        )
 
     # -------------------------------------------------------------------- fetch
 
@@ -105,9 +123,26 @@ class Pipeline:
 
     # ------------------------------------------------------------------ library
 
-    def find_similar(self, query: str) -> list[str]:
-        """Library files that look like *query* (the duplicate check before a search)."""
-        return self.processor.find_similar(query)
+    async def find_similar(self, query: str) -> list[str]:
+        """Library files that look like *query* (the duplicate check before a search), from the index."""
+        return await asyncio.to_thread(self.library_index.find_similar, query)
+
+    async def library_index_loop(self) -> None:
+        """Build the library index now, then rebuild it every LIBRARY_RESCAN_SECS.
+
+        Runs whatever DOWNLOAD_CLEANUP_HOURS says: the duplicate check needs
+        the index even when the orphan sweep is off. Saves add their own row
+        in between, so the rescan only catches files changed by hand.
+        """
+        while True:
+            try:
+                await asyncio.to_thread(self.library_index.rebuild)
+            except Exception:
+                logger.exception("Library index rebuild failed")
+            await asyncio.sleep(LIBRARY_RESCAN_SECS)
+
+    def opus_bitrates_that_fit(self, duration_secs: int) -> list[int]:
+        return _fetch.opus_bitrates_that_fit(duration_secs, self.upload_limit_bytes)
 
     def target_filename(self, track: TrackInfo, extension: str, title: str | None = None) -> str:
         """The library file name for *track* in *extension*, also used when sending into a chat.
@@ -125,6 +160,10 @@ class Pipeline:
         """
         target_path = await asyncio.to_thread(self.processor.process_file, source_path, track.artist, track.title)
         if target_path:
+            try:
+                await asyncio.to_thread(self.library_index.add, target_path)
+            except Exception:
+                logger.warning("Could not add %s to the library index", target_path, exc_info=True)
             await self.discard(source_path, result.username, transfer_id)
             await self.embed_artwork(target_path, track)
             await self.record_history(track, result, "success")

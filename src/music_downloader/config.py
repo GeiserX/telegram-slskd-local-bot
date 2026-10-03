@@ -12,6 +12,14 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Telegram's bot upload cap is 50,000,000 bytes, python-telegram-bot's
+# constants.FileSizeLimit.FILESIZE_UPLOAD (tests pin the two together; this
+# module must not import telegram, the pipeline reads it). Telegram counts
+# 1 MB as 1,000,000 bytes, so TELEGRAM_MAX_UPLOAD_MB scales that unit.
+BYTES_PER_MB = 1_000_000
+DEFAULT_MAX_UPLOAD_MB = 50
+DEFAULT_UPLOAD_LIMIT_BYTES = DEFAULT_MAX_UPLOAD_MB * BYTES_PER_MB
+
 
 class Config:
     """Configuration settings loaded from environment variables."""
@@ -29,10 +37,15 @@ class Config:
         self.telegram_allowed_users = self._parse_id_set(allowed_users_str)
 
         # Comma-separated Telegram user IDs whose chats default to chat delivery:
-        # the track is sent into the chat (under 50 MB) and nothing is saved.
+        # the track is sent into the chat (under the upload cap) and nothing is saved.
         # /deliver overrides this per chat.
         chat_delivery_str = os.getenv("TELEGRAM_CHAT_DELIVERY_USERS", "")
         self.telegram_chat_delivery_users = self._parse_id_set(chat_delivery_str)
+
+        # Largest file the bot may send, in MB of 1,000,000 bytes. 50 is the
+        # cloud Bot API's cap; a local Bot API server raises it to 2000.
+        self.telegram_max_upload_mb = max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", str(DEFAULT_MAX_UPLOAD_MB))))
+        self.telegram_upload_limit_bytes = self.telegram_max_upload_mb * BYTES_PER_MB
 
         # =====================================================================
         # SPOTIFY API (Client Credentials flow — no user login needed)

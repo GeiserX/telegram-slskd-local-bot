@@ -95,7 +95,21 @@ CREATE TABLE IF NOT EXISTS pending_searches (
     page INTEGER NOT NULL DEFAULT 0,
     search_id TEXT NOT NULL DEFAULT '',
     profile TEXT NOT NULL DEFAULT '',
+    hidden INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL
+);
+
+-- Audio files under OUTPUT_DIR (subfolders included), for the duplicate
+-- check. Rebuilt by walking the folder at startup and hourly, and updated by
+-- every save. rel_path is relative to OUTPUT_DIR; stem is the file name
+-- without extension; norm_stem is the stem casefolded with accents removed
+-- (the LIKE prefilter); mtime is a Unix timestamp.
+CREATE TABLE IF NOT EXISTS library_index (
+    rel_path TEXT PRIMARY KEY,
+    stem TEXT NOT NULL,
+    norm_stem TEXT NOT NULL,
+    extension TEXT NOT NULL,
+    mtime REAL NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_import_tracks_job_status ON import_tracks(job_id, status);
@@ -131,6 +145,7 @@ def _is_corruption(exc: sqlite3.DatabaseError) -> bool:
 
 class Database:
     def __init__(self, db_path: str) -> None:
+        self.path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         try:
             self._conn = self._connect(db_path)

@@ -1,76 +1,75 @@
-"""Extended tests for file_handler - covering find_similar and edge cases."""
+"""Extended tests for file_handler edge cases, and the duplicate check it used to own."""
 
 import pytest
 
+from music_downloader.persistence.database import Database
+from music_downloader.persistence.library_index import LibraryIndex
 from music_downloader.processor.file_handler import FileProcessor
 
 
 class TestFindSimilar:
+    """The duplicate check, now served by the library index (persistence/library_index.py)."""
+
     @pytest.fixture
-    def processor(self, tmp_path):
-        download_dir = tmp_path / "downloads"
-        output_dir = tmp_path / "output"
-        download_dir.mkdir()
-        output_dir.mkdir()
-        return FileProcessor(str(download_dir), str(output_dir))
+    def index(self, tmp_path):
+        (tmp_path / "output").mkdir()
+        return LibraryIndex(Database(str(tmp_path / "data" / "importer.db")), str(tmp_path / "output"))
 
     def test_no_output_dir(self, tmp_path):
-        p = FileProcessor(str(tmp_path / "dl"), str(tmp_path / "nonexistent"))
-        result = p.find_similar("test")
-        assert result == []
+        idx = LibraryIndex(Database(str(tmp_path / "db" / "importer.db")), str(tmp_path / "nonexistent"))
+        assert idx.rebuild() == 0
+        assert idx.find_similar("test") == []
 
-    def test_finds_similar_files(self, processor, tmp_path):
+    def test_finds_similar_files(self, index, tmp_path):
         output_dir = tmp_path / "output"
         (output_dir / "Nancy Sinatra - Bang Bang.flac").write_text("data")
         (output_dir / "Nancy Sinatra - Summer Wine.flac").write_text("data")
-        result = processor.find_similar("Nancy Sinatra Bang Bang")
+        index.rebuild()
+        result = index.find_similar("Nancy Sinatra Bang Bang")
         assert len(result) > 0
         assert "Nancy Sinatra - Bang Bang.flac" in result
 
-    def test_no_similar_files(self, processor, tmp_path):
+    def test_no_similar_files(self, index, tmp_path):
         output_dir = tmp_path / "output"
         (output_dir / "Completely Different.flac").write_text("data")
-        result = processor.find_similar("Nancy Sinatra Bang Bang")
-        assert result == []
+        index.rebuild()
+        assert index.find_similar("Nancy Sinatra Bang Bang") == []
 
-    def test_ignores_non_audio(self, processor, tmp_path):
+    def test_ignores_non_audio(self, index, tmp_path):
         output_dir = tmp_path / "output"
         (output_dir / "Nancy Sinatra - Bang Bang.txt").write_text("data")
         (output_dir / "Nancy Sinatra - Bang Bang.jpg").write_text("data")
-        result = processor.find_similar("Nancy Sinatra Bang Bang")
-        assert result == []
+        index.rebuild()
+        assert index.find_similar("Nancy Sinatra Bang Bang") == []
 
-    def test_sorted_by_similarity(self, processor, tmp_path):
+    def test_sorted_by_similarity(self, index, tmp_path):
         output_dir = tmp_path / "output"
         (output_dir / "Nancy Sinatra - Bang Bang.flac").write_text("data")
         (output_dir / "Nancy Sinatra - Something Else.flac").write_text("data")
-        result = processor.find_similar("Nancy Sinatra Bang Bang")
+        index.rebuild()
+        result = index.find_similar("Nancy Sinatra Bang Bang")
         if len(result) >= 2:
             # Best match should be first
             assert "Bang Bang" in result[0]
 
-    def test_various_audio_extensions(self, processor, tmp_path):
+    def test_various_audio_extensions(self, index, tmp_path):
         output_dir = tmp_path / "output"
         (output_dir / "Song.mp3").write_text("data")
         (output_dir / "Song.ogg").write_text("data")
         (output_dir / "Song.wav").write_text("data")
-        result = processor.find_similar("Song")
-        assert len(result) == 3
+        index.rebuild()
+        assert len(index.find_similar("Song")) == 3
 
-    def test_empty_query(self, processor, tmp_path):
-        output_dir = tmp_path / "output"
-        (output_dir / "Song.flac").write_text("data")
-        result = processor.find_similar("")
-        # Empty query should not match well (low similarity)
-        # but should not crash
-        assert isinstance(result, list)
+    def test_empty_query(self, index, tmp_path):
+        (tmp_path / "output" / "Song.flac").write_text("data")
+        index.rebuild()
+        assert index.find_similar("") == []
 
-    def test_custom_threshold(self, processor, tmp_path):
-        output_dir = tmp_path / "output"
-        (output_dir / "Nancy Sinatra - Bang Bang.flac").write_text("data")
-        # High threshold should be stricter
-        result_high = processor.find_similar("Nancy Sinatra Bang Bang", threshold=0.9)
-        result_low = processor.find_similar("Nancy Sinatra Bang Bang", threshold=0.3)
+    def test_custom_threshold(self, index, tmp_path):
+        (tmp_path / "output" / "Nancy Sinatra - Bang Bang.flac").write_text("data")
+        index.rebuild()
+        result_high = index.find_similar("Nancy Sinatra Bang Bang", threshold=0.9)
+        result_low = index.find_similar("Nancy Sinatra Bang Bang", threshold=0.3)
         assert len(result_low) >= len(result_high)
 
 

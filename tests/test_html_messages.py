@@ -46,6 +46,7 @@ def _assert_html(text: str, *expected: str) -> None:
 def _make_config(chat_users=()):
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_allowed_users = {CHAT}
     config.telegram_chat_delivery_users = set(chat_users)
     config.auto_mode = False

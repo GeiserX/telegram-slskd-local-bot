@@ -48,7 +48,8 @@ class TestSearchResult:
         assert r.duration_display == "??:??"
 
     def test_size_mb(self):
-        r = SearchResult(username="u", filename="f.flac", size=52_428_800)
+        # Telegram's unit: 1 MB = 1,000,000 bytes, so its 50 MB cap reads as 50.
+        r = SearchResult(username="u", filename="f.flac", size=50_000_000)
         assert r.size_mb == 50.0
 
     def test_quality_display_full(self):

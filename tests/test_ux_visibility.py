@@ -22,6 +22,7 @@ from music_downloader.search.slskd_client import DownloadStatus, SlskdClient
 def _make_config():
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -175,7 +176,7 @@ class TestSupersededMessages:
     @pytest.mark.asyncio
     async def test_new_text_marks_old_search_message_superseded(self):
         bot = _make_bot()
-        bot.processor.find_similar = MagicMock(return_value=[])
+        bot.pipeline.find_similar = AsyncMock(return_value=[])
         bot.pending[67890] = PendingSearch(query="old song", track=_make_track(), message_id=555)
 
         update = _make_update(chat_id=67890, text="new song")

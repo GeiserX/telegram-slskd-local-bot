@@ -31,6 +31,7 @@ def _make_config():
     """Create a mock Config object with isolated DB per instance."""
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -895,8 +896,7 @@ class TestMusicBotHandleText:
     @pytest.mark.asyncio
     async def test_similar_files_found(self, mock_slskd, mock_spotify):
         bot = MusicBot(_make_config())
-        bot.processor = MagicMock()
-        bot.processor.find_similar = MagicMock(return_value=["Artist - Song.flac"])
+        bot.pipeline.find_similar = AsyncMock(return_value=["Artist - Song.flac"])
         update = _make_update(text="Artist Song")
         context = _make_context()
         await bot.handle_text(update, context)

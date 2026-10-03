@@ -39,6 +39,7 @@ from music_downloader.search.slskd_client import SearchResult, SlskdClient
 def _make_config():
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"

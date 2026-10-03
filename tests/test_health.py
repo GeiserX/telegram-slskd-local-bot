@@ -155,6 +155,7 @@ class TestPollTracking:
 
         health = HealthState()
         config = MagicMock()
+        config.telegram_upload_limit_bytes = 50_000_000
         config.data_dir = __import__("tempfile").mkdtemp()
         config.download_cleanup_hours = 24
         with (

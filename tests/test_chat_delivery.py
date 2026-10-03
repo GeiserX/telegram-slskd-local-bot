@@ -12,12 +12,12 @@ import pytest
 from telegram.error import BadRequest, NetworkError
 
 from music_downloader.bot.handlers import (
-    TELEGRAM_FILE_LIMIT,
     MusicBot,
     PendingDownload,
     PendingSearch,
 )
 from music_downloader.bot.keyboards import build_delivery_mode_keyboard
+from music_downloader.config import DEFAULT_UPLOAD_LIMIT_BYTES
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.import_repo import TrackStatus
@@ -34,6 +34,7 @@ GROUP = -100123
 def _make_config(td=None, chat_users=None):
     td = td or tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -356,8 +357,7 @@ class TestDeliverCommand:
     @pytest.mark.asyncio
     async def test_chat_mode_skips_library_duplicate_check(self):
         bot = _make_bot(_make_config(chat_users={CHAT}))
-        bot.processor = MagicMock()
-        bot.processor.find_similar = MagicMock(return_value=["Nancy Sinatra - Bang Bang.flac"])
+        bot.pipeline.find_similar = AsyncMock(return_value=["Nancy Sinatra - Bang Bang.flac"])
         update = MagicMock()
         update.effective_user.id = CHAT
         update.effective_chat.id = CHAT
@@ -365,7 +365,7 @@ class TestDeliverCommand:
         update.message.text = "Nancy Sinatra Bang Bang"
         with patch.object(bot, "_do_search", new_callable=AsyncMock) as mock_search:
             await bot.handle_text(update, _make_context())
-        bot.processor.find_similar.assert_not_called()
+        bot.pipeline.find_similar.assert_not_called()
         mock_search.assert_awaited_once()
 
 
@@ -376,7 +376,7 @@ class TestDeliverCommand:
 
 class TestRanking:
     def _ranked(self, bot, chat_id):
-        big = TELEGRAM_FILE_LIMIT + 10_000_000
+        big = DEFAULT_UPLOAD_LIMIT_BYTES + 10_000_000
         results = [
             _make_result(0, size=big),  # top score, hi-res, over the limit
             _make_result(1, size=40_000_000),
@@ -400,7 +400,8 @@ class TestRanking:
     def test_bitrate_choice(self):
         assert opus_bitrates_that_fit(162) == [192, 160]
         assert opus_bitrates_that_fit(2200) == [160, 128]
-        assert opus_bitrates_that_fit(3000) == [128, 96]
+        # 2915 s at 128 kbps fits only with a 1 MB headroom of 1,000,000 bytes.
+        assert opus_bitrates_that_fit(2915) == [128, 96]
         assert opus_bitrates_that_fit(3500) == [96]
         assert opus_bitrates_that_fit(5000) == []
 
@@ -410,7 +411,10 @@ class TestRanking:
 
     def test_result_exactly_at_the_limit_counts_as_fitting(self):
         bot = _make_bot(_make_config(chat_users={CHAT}))
-        results = [_make_result(0, size=TELEGRAM_FILE_LIMIT + 1), _make_result(1, size=TELEGRAM_FILE_LIMIT)]
+        results = [
+            _make_result(0, size=DEFAULT_UPLOAD_LIMIT_BYTES + 1),
+            _make_result(1, size=DEFAULT_UPLOAD_LIMIT_BYTES),
+        ]
         bot.slskd.parse_results = MagicMock(return_value=results)
         bot.scorer = MagicMock()
         bot.scorer.score_results = MagicMock(return_value=list(results))
@@ -467,7 +471,7 @@ class TestChatDownload:
     @pytest.mark.asyncio
     async def test_oversize_converted_at_best_fitting_bitrate(self, tmp_path):
         bot = _chat_bot()
-        source = _file(tmp_path, size=TELEGRAM_FILE_LIMIT + 11 * 1024 * 1024)
+        source = _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES + 11_000_000)
         _setup_download(bot, source)
         ogg = _file(tmp_path, "out.ogg", 5000)
         bot.pipeline.convert_to_opus = AsyncMock(return_value=ogg)
@@ -490,7 +494,7 @@ class TestChatDownload:
     @pytest.mark.asyncio
     async def test_file_exactly_at_the_limit_is_sent_as_is(self, tmp_path):
         bot = _chat_bot()
-        source = _file(tmp_path, size=TELEGRAM_FILE_LIMIT)
+        source = _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES)
         _setup_download(bot, source)
         bot.pipeline.convert_to_opus = AsyncMock()
         context = _make_context()
@@ -506,8 +510,8 @@ class TestChatDownload:
     @pytest.mark.asyncio
     async def test_oversize_retries_once_lower_when_output_still_too_big(self, tmp_path):
         bot = _chat_bot()
-        _setup_download(bot, _file(tmp_path, size=TELEGRAM_FILE_LIMIT + 1))
-        too_big = _file(tmp_path, "a.ogg", TELEGRAM_FILE_LIMIT + 1)
+        _setup_download(bot, _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES + 1))
+        too_big = _file(tmp_path, "a.ogg", DEFAULT_UPLOAD_LIMIT_BYTES + 1)
         fits = _file(tmp_path, "b.ogg", 5000)
         bot.pipeline.convert_to_opus = AsyncMock(side_effect=[too_big, fits])
         context = _make_context()
@@ -521,7 +525,7 @@ class TestChatDownload:
     @pytest.mark.asyncio
     async def test_nothing_fits_keeps_source_and_offers_retry(self, tmp_path):
         bot = _chat_bot()
-        source = _file(tmp_path, size=TELEGRAM_FILE_LIMIT + 1)
+        source = _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES + 1)
         _setup_download(bot, source)
         bot.pipeline.convert_to_opus = AsyncMock()
         bot.pipeline.preview_clip = AsyncMock()

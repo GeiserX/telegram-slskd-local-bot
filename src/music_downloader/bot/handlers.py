@@ -41,14 +41,14 @@ from music_downloader.bot.keyboards import (
     build_spotify_keyboard,
 )
 from music_downloader.bot.poll_request import PollTrackingRequest
-from music_downloader.config import Config
+from music_downloader.config import BYTES_PER_MB, Config
 from music_downloader.health import HealthState, slskd_probe_loop
 from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.import_repo import JobStatus, TrackStatus
 from music_downloader.persistence.pending_repo import PendingDownload, PendingSearch, WriteThroughDict
 from music_downloader.pipeline import Pipeline
-from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED, opus_bitrates_that_fit
+from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED
 from music_downloader.pipeline.resolve import parse_query_artist_title, synthetic_track
 from music_downloader.pipeline.search import (
     build_reduced_queries,
@@ -57,13 +57,10 @@ from music_downloader.pipeline.search import (
     has_non_latin_script,
 )
 from music_downloader.processor.lossless_analyzer import not_checked_display
-from music_downloader.search.scorer import CHAT_SIZE_LIMIT_BYTES, PROFILE_CHAT, PROFILE_LIBRARY
+from music_downloader.search.scorer import PROFILE_CHAT, PROFILE_LIBRARY
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
 logger = logging.getLogger(__name__)
-
-# Telegram bot API file size limit: 50 MB (one value, shared with the chat ranking profile)
-TELEGRAM_FILE_LIMIT = CHAT_SIZE_LIMIT_BYTES
 
 # Delivery modes: "library" saves to OUTPUT_DIR after approval; "chat" sends the
 # track into the chat as the deliverable and saves nothing anywhere.
@@ -269,6 +266,11 @@ class MusicBot:
             return RESTART_EXPIRED
         return default
 
+    @property
+    def _upload_mb(self) -> int:
+        """The upload cap in MB of 1,000,000 bytes, for messages."""
+        return self.pipeline.upload_limit_bytes // BYTES_PER_MB
+
     def _profile(self, chat_id: int | None, user_id: int | None = None) -> str:
         """Ranking profile for this chat: chat delivery weighs quality against size."""
         chat = chat_id is not None and self._is_chat_delivery(chat_id, user_id)
@@ -441,7 +443,7 @@ class MusicBot:
         if self._is_locked_to_chat(update.effective_chat.id, update.effective_user.id):
             await update.message.reply_text(
                 "Delivery mode for this account: <b>Chat</b> (fixed)\n\n"
-                "Tracks are sent here and nothing is saved anywhere. Over 50 MB they are converted to Opus to fit. "
+                f"Tracks are sent here and nothing is saved anywhere. Over {self._upload_mb} MB they are converted to Opus to fit. "
                 "This account cannot switch to the library.",
                 parse_mode=ParseMode.HTML,
             )
@@ -452,7 +454,7 @@ class MusicBot:
         await update.message.reply_text(
             f"Delivery mode for this chat: <b>{mode_str}</b>\n\n"
             "Library: the track is saved to the music library (after you approve the preview, unless /auto is on).\n"
-            "Chat: the track is sent here and nothing is saved anywhere. Over 50 MB it is "
+            f"Chat: the track is sent here and nothing is saved anywhere. Over {self._upload_mb} MB it is "
             "converted to Opus to fit. The setting survives restarts.",
             parse_mode=ParseMode.HTML,
             reply_markup=build_delivery_mode_keyboard(current),
@@ -587,7 +589,9 @@ class MusicBot:
         # Step 0: Check for similar files already in the library (meaningless
         # in chat delivery, which never uses the library)
         similar = (
-            None if self._is_chat_delivery(chat_id, update.effective_user.id) else self.pipeline.find_similar(query)
+            None
+            if self._is_chat_delivery(chat_id, update.effective_user.id)
+            else await self.pipeline.find_similar(query)
         )
         if similar:
             existing_list = "\n".join(f"• <code>{_esc(f)}</code>" for f in similar[:5])
@@ -767,9 +771,12 @@ class MusicBot:
                 message_id=searching_msg.message_id,
                 search_id=search_id,
                 profile=self._profile(chat_id, user_id),
+                hidden=getattr(ranked, "hidden", 0),
             )
 
-            results_text = self._format_results(track, ranked, page=0, page_size=self.config.max_results)
+            results_text = self._format_results(
+                track, ranked, page=0, page_size=self.config.max_results, hidden=self.pending[chat_id].hidden
+            )
 
             if self._is_auto(chat_id):
                 # Auto-mode: no picker, no approval — take the top-ranked match.
@@ -978,6 +985,7 @@ class MusicBot:
             pending.results,
             page=page,
             page_size=self.config.max_results,
+            hidden=pending.hidden,
         )
         await query.edit_message_text(
             results_text,
@@ -1190,7 +1198,7 @@ class MusicBot:
             file_size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
             caption = f"{label} {quality_line}\nSave to library?"
 
-            if file_size > TELEGRAM_FILE_LIMIT:
+            if file_size > self.pipeline.upload_limit_bytes:
                 await self._send_large_file(
                     context,
                     chat_id,
@@ -1325,23 +1333,26 @@ class MusicBot:
         (note = an HTML-safe reason).
         """
         size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
-        if size <= TELEGRAM_FILE_LIMIT:
+        if size <= self.pipeline.upload_limit_bytes:
             # The source is deleted right after sending, so tagging it is free.
             await self.pipeline.embed_artwork(source_path, track)
             size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
-        if size <= TELEGRAM_FILE_LIMIT:
+        if size <= self.pipeline.upload_limit_bytes:
             target_name = self.pipeline.target_filename(track, result.extension)
             error = await self._send_audio_file(context, chat_id, source_path, target_name, track, caption)
             return ("sent", target_name) if error is None else ("send_failed", error)
 
-        original = f"original {size / (1024 * 1024):.0f} MB {result.extension.upper()}"
-        too_large = ("too_large", f"Could not fit this track under 50 MB, even converted to Opus ({original}).")
-        for kbps in opus_bitrates_that_fit(track.duration_secs or result.length or 0):
+        original = f"original {size / BYTES_PER_MB:.0f} MB {result.extension.upper()}"
+        too_large = (
+            "too_large",
+            f"Could not fit this track under {self._upload_mb} MB, even converted to Opus ({original}).",
+        )
+        for kbps in self.pipeline.opus_bitrates_that_fit(track.duration_secs or result.length or 0):
             ogg_path = await self.pipeline.convert_to_opus(source_path, kbps)
             if not ogg_path:
-                return "convert_failed", f"Could not convert this track to fit under 50 MB ({original})."
+                return "convert_failed", f"Could not convert this track to fit under {self._upload_mb} MB ({original})."
             try:
-                if os.path.getsize(ogg_path) > TELEGRAM_FILE_LIMIT:
+                if os.path.getsize(ogg_path) > self.pipeline.upload_limit_bytes:
                     continue
                 target_name = self.pipeline.target_filename(track, "ogg")
                 converted_caption = f"{caption}\n\U0001f3a7 Converted to Opus {kbps} kbps, {original}"
@@ -1391,24 +1402,24 @@ class MusicBot:
         label: str,
         dl_id: str,
     ):
-        """Convert a >50 MB file to OGG and send.  Trim only as last resort.
+        """Convert a file over the upload cap to OGG and send.  Trim only as last resort.
 
         Strategy:
         1. Convert full song to OGG Opus (~128 kbps).
-        2. If OGG ≤ 50 MB → send the full song.
-        3. If OGG > 50 MB → trim to ~1 min and send that.
+        2. If OGG fits the cap → send the full song.
+        3. If OGG is still over → trim to ~1 min and send that.
         """
         # Step 1: full OGG conversion
         ogg_path = await self.pipeline.convert_to_opus(source_path)
 
         if ogg_path:
             ogg_size = os.path.getsize(ogg_path)
-            if ogg_size <= TELEGRAM_FILE_LIMIT:
+            if ogg_size <= self.pipeline.upload_limit_bytes:
                 try:
                     target_name = self.pipeline.target_filename(track, "ogg")
                     caption = (
                         f"🎧 {label} Converted to OGG "
-                        f"(original: {file_size / (1024 * 1024):.0f}MB {result.extension.upper()})\n"
+                        f"(original: {file_size / BYTES_PER_MB:.0f}MB {result.extension.upper()})\n"
                         f"{quality_line}\nSave to library?"
                     )
                     with open(ogg_path, "rb") as f:
@@ -1443,7 +1454,7 @@ class MusicBot:
                 chat_id=chat_id,
                 text=(
                     f"❌ {label} Could not create preview for "
-                    f"{file_size / (1024 * 1024):.0f}MB file.\n"
+                    f"{file_size / BYTES_PER_MB:.0f}MB file.\n"
                     f"{quality_line}\n\nSave to library anyway?"
                 ),
                 parse_mode=ParseMode.HTML,
@@ -1459,7 +1470,7 @@ class MusicBot:
             target_name = self.pipeline.target_filename(track, preview_ext, title=f"{track.title} (1min preview)")
             preview_caption = (
                 f"🎧 {label} ~1 min preview "
-                f"(full file: {file_size / (1024 * 1024):.0f}MB)\n"
+                f"(full file: {file_size / BYTES_PER_MB:.0f}MB)\n"
                 f"{quality_line}\n"
                 f"Save to library?"
             )
@@ -2191,11 +2202,11 @@ class MusicBot:
             quality_line = _esc(f"{result.quality_display} | {result.duration_display}")
             caption = f"\U0001f4cb Import: {_esc(track.artist)} - {_esc(track.title)}\n{quality_line}"
 
-            if file_size > TELEGRAM_FILE_LIMIT:
+            if file_size > self.pipeline.upload_limit_bytes:
                 # For large files, just show approve button without sending file
                 await _safe_edit(
                     status_msg,
-                    f"✅ Downloaded: <code>{_esc(result.basename)}</code> ({file_size / (1024 * 1024):.0f}MB)\n"
+                    f"✅ Downloaded: <code>{_esc(result.basename)}</code> ({file_size / BYTES_PER_MB:.0f}MB)\n"
                     f"{quality_line}\n\nFile too large to preview. Save to library?",
                     parse_mode=ParseMode.HTML,
                     reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
@@ -2567,8 +2578,12 @@ class MusicBot:
         results: list[SearchResult],
         page: int = 0,
         page_size: int = 10,
+        hidden: int = 0,
     ) -> str:
-        """Format search results for display in Telegram (one page)."""
+        """Format search results for display in Telegram (one page).
+
+        *hidden* is how many copies the title guard dropped as unrelated.
+        """
         total = len(results)
         start = page * page_size
         end = min(start + page_size, total)
@@ -2583,6 +2598,8 @@ class MusicBot:
             found = f"Found {matches}, all lossless:\n"
         else:
             found = f"Found {matches}, all lossy (no lossless copy found):\n"
+        if hidden:
+            found = f"{found[:-2]} ({hidden} unrelated hidden):\n"
 
         is_direct = track.duration_ms == 0
         if is_direct:
@@ -2678,13 +2695,16 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
                 f"Orphan sweep enabled: files older than {config.download_cleanup_hours}h "
                 f"are removed from the downloads dir hourly"
             )
+        # The duplicate check's index: built now in a thread, rebuilt hourly,
+        # whether or not the orphan sweep is on.
+        bot._index_task = asyncio.get_running_loop().create_task(bot.pipeline.library_index_loop())
         if health is not None:
             bot._probe_task = asyncio.get_running_loop().create_task(
                 slskd_probe_loop(lambda: bot.slskd.is_up(), health)
             )
 
     async def _post_shutdown(app: Application) -> None:
-        for name in ("_sweep_task", "_probe_task"):
+        for name in ("_sweep_task", "_index_task", "_probe_task"):
             task = getattr(bot, name, None)
             if task is not None:
                 task.cancel()
