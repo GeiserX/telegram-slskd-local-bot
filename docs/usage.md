@@ -37,12 +37,15 @@ Chat delivery is for someone who wants the song in Telegram and nowhere else. Yo
 as before, but nothing is written to the library or kept on disk: when the download finishes, the bot sends
 the track into the chat with no Save or Reject buttons and deletes the downloaded file.
 
-- A file of 50 MB or less is sent as it is, with the Spotify cover art embedded.
-- A bigger file is converted to Opus at the highest of 192, 160, 128 or 96 kbps that fits under 50 MB, and
+The upload cap is Telegram's 50 MB (50,000,000 bytes), set by `TELEGRAM_MAX_UPLOAD_MB` (see
+[Configuration](configuration.md)).
+
+- A file at or under the cap is sent as it is, with the Spotify cover art embedded.
+- A bigger file is converted to Opus at the highest of 192, 160, 128 or 96 kbps that fits under the cap, and
   the caption says so (for example "Converted to Opus 192 kbps, original 61 MB FLAC"). When even 96 kbps
   cannot fit, the bot says so and offers Retry and Try next result.
 - Copies are ranked by quality for their size, with no lossless-first split (see [Scoring](#scoring-algorithm)).
-- Copies that fit under 50 MB rank ahead of copies that would have to be converted.
+- Copies that fit under the cap rank ahead of copies that would have to be converted.
 - `/auto` still decides whether you pick first; with both on, the best match arrives in the chat with no taps.
 - `/import` sends every track of the playlist or album to the chat, one after another.
 
@@ -56,9 +59,22 @@ One bot token can only run one bot process, so both modes live in the same insta
 The bot keeps every audio format. Lossless means FLAC, WAV, AIFF, ALAC, APE, WavPack, TTA and TAK; lossy means
 MP3, AAC, M4A, Ogg, Opus and WMA. M4A counts as lossy because the extension cannot tell ALAC from AAC.
 
+Before scoring, the **title guard** drops copies named after another track. The track title is reduced to
+its words: version noise ("- 2011 Remaster"), anything in parentheses or brackets, punctuation and accents go,
+and so do the words a, the, of, and, feat and ft. A copy whose file name and parent folder name contain none of
+the remaining words is hidden, and the results header says how many, for example "Found 4 matches, all
+lossless (12 unrelated hidden)". A title of one word keeps that word, and a title made only of those common
+words keeps them. The guard never empties the list: when it would hide every copy, it is skipped and the log
+says so. A direct search skips it, as it skips the other filters.
+
 Search results are ranked by:
 
-1. **Duration match** (40 pts): Compared to Spotify duration. Within ±5s = perfect, ±10s = acceptable, >30s = excluded
+1. **Duration match** (40 pts): Compared to Spotify duration. Within ±5s = perfect, ±10s = acceptable, >30s = excluded.
+   Many peers share files without a length. For a lossy file with a known bitrate the length is estimated from
+   size and bitrate (size × 8 / (kbps × 1000)) and scored like a reported one, so a 4-minute MP3 is excluded from
+   a 23-minute search. A copy whose length stays unknown (a lossless file without one, or a lossy file without a
+   bitrate) earns no duration points and never leads the list: in library delivery it ranks among the lossy
+   copies, in chat delivery after every copy of known length.
 2. **Audio quality** (25 pts), which depends on where the track goes:
     - **Library delivery**: every lossless copy is listed before every lossy one, except a lossless copy of a
       different version (more than 30 s off Spotify's length, kept only by the last-resort search), which ranks
@@ -69,8 +85,9 @@ Search results are ranked by:
       (an Opus file at 128 kbps is top tier, an AAC one at 128 kbps is a step below).
     - **Chat delivery**: no lossless-first split; the points measure quality for the size. A lossless file and
       a lossy one at 256 kbps or more both start at 25 (192 kbps 20, 128 kbps 10, under 128 kbps 1), then lose
-      up to 5 points as the file grows from 5 MB to 50 MB. A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
-      FLAC of the same song, and a 20 MB FLAC beats a 20 MB MP3 at 128 kbps. A copy over 50 MB scores as the
+      up to 5 points as the file grows from 5 MB to the upload cap (50 MB unless `TELEGRAM_MAX_UPLOAD_MB` says
+      otherwise; 1 MB = 1,000,000 bytes, as Telegram counts). A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
+      FLAC of the same song, and a 20 MB FLAC beats a 20 MB MP3 at 128 kbps. A copy over the cap scores as the
       Opus it will be sent as: its tier minus 8.
 3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue
 4. **Filename relevance** (15 pts): Artist and title words found in the filename
