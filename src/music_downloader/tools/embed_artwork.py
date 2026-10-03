@@ -9,12 +9,14 @@ import logging
 
 import httpx
 import mutagen
+import mutagen.aiff
 import mutagen.flac
 import mutagen.id3
 import mutagen.mp3
 import mutagen.mp4
 import mutagen.oggopus
 import mutagen.oggvorbis
+import mutagen.wave
 import spotipy
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,7 @@ def _cover_picture(image_data: bytes) -> mutagen.flac.Picture:
 
 
 def embed_artwork_into_file(filepath: str, image_data: bytes) -> bool:
-    """Embed JPEG artwork into a FLAC, M4A, MP3, Ogg Vorbis or Opus file.
+    """Embed JPEG artwork into a FLAC, M4A, MP3, Ogg Vorbis, Opus, WAV or AIFF file.
 
     Returns True when artwork was written; False when the file already has
     artwork, the format has no artwork support here, or mutagen cannot read it.
@@ -76,6 +78,16 @@ def embed_artwork_into_file(filepath: str, image_data: bytes) -> bool:
             return True
         elif ext == "mp3":
             f = mutagen.mp3.MP3(filepath)
+            if f.tags is None:
+                f.add_tags()
+            if f.tags.getall("APIC"):
+                return False
+            f.tags.add(mutagen.id3.APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=image_data))
+            f.save()
+            return True
+        elif ext in ("wav", "aiff", "aif"):
+            # Both carry an ID3 chunk, the same APIC frame as MP3.
+            f = mutagen.wave.WAVE(filepath) if ext == "wav" else mutagen.aiff.AIFF(filepath)
             if f.tags is None:
                 f.add_tags()
             if f.tags.getall("APIC"):

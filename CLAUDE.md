@@ -52,7 +52,7 @@ Search results are ranked by 4 factors (total 100 points):
 1. **Duration match** (40 pts): Compared to Spotify reference duration
 2. **Audio quality** (25 pts): depends on the profile passed to `score_results(profile=...)`
    - `library`: lossless scores by bit depth and sample rate (hi-res preferred); lossy scores by bitrate tier. `_rank_responses` then puts every lossless result before every lossy one, except a lossless result of a different version (length off by more than `SAME_VERSION_MAX_DIFF_SECS`), which stays among the lossy ones in score order.
-   - `chat` (chat delivery): perceived quality versus size, no lossless/lossy split. Lossless and lossy >= 256 kbps share the top tier, minus a size cost up to the 50 MB limit; files over the limit score as the Opus they become. Constants and their reasons are at the top of `search/scorer.py`.
+   - `chat` (chat delivery): perceived quality versus size, no lossless/lossy split. Lossless and lossy >= 256 kbps share the top tier (lossy bitrates are scaled by codec first: Opus x2, AAC/Vorbis x1.5), minus a size cost up to the 50 MB limit; files over the limit score as the Opus they become. Constants and their reasons are at the top of `search/scorer.py`.
 3. **Source reliability** (20 pts): Free slots, upload speed, queue
 4. **Filename relevance** (15 pts): Artist/title word matching
 

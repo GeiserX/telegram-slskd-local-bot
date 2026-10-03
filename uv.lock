@@ -820,7 +820,7 @@ wheels = [
 
 [[package]]
 name = "telegram-slskd-local-bot"
-version = "0.14.1"
+version = "0.14.2"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

@@ -2539,7 +2539,8 @@ class MusicBot:
             target_name = os.path.basename(target_path)
             await _safe_edit(
                 status_msg,
-                f"\U0001f4cb *Import:* {track.artist} - {track.title}\n✅ Auto-saved: `{target_name}`",
+                f"\U0001f4cb *Import:* {_escape_md(track.artist)} - {_escape_md(track.title)}\n"
+                f"✅ Auto-saved: `{target_name}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
             await self._add_history(track, result, "success")
@@ -2547,7 +2548,8 @@ class MusicBot:
         else:
             await _safe_edit(
                 status_msg,
-                f"\U0001f4cb *Import:* {track.artist} - {track.title}\n❌ Failed to save — continuing.",
+                f"\U0001f4cb *Import:* {_escape_md(track.artist)} - {_escape_md(track.title)}\n"
+                f"❌ Failed to save — continuing.",
                 parse_mode=ParseMode.MARKDOWN,
             )
             await asyncio.to_thread(
