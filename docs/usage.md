@@ -26,9 +26,28 @@ lossless", with the frequency where it stops. Then you tap Save to library or Re
 | `/import <spotify url>` | Import a Spotify playlist or album — review each track or auto-save all |
 | `/cancel` | Cancel the active import or search |
 | `/auto` | Toggle auto-download per chat: best match is downloaded and saved without picking or approval (persists across restarts) |
+| `/deliver` | Switch this chat between library delivery (save after you approve) and chat delivery (the track is sent here, nothing is saved). Persists across restarts |
 | `/status` | Show active searches and downloads |
 | `/history` | Show recent download history |
 | `/help` | Show help message |
+
+## Chat delivery
+
+Chat delivery is for someone who wants the song in Telegram and nowhere else. You pick the song exactly
+as before, but nothing is written to the library or kept on disk: when the download finishes, the bot sends
+the track into the chat with no Save or Reject buttons and deletes the downloaded file.
+
+- A file of 50 MB or less is sent as it is, with the Spotify cover art embedded.
+- A bigger file is converted to Opus at the highest of 192, 160, 128 or 96 kbps that fits under 50 MB, and
+  the caption says so (for example "Converted to Opus 192 kbps, original 61 MB FLAC"). When even 96 kbps
+  cannot fit, the bot says so and offers Retry and Try next result.
+- Copies that fit under 50 MB rank ahead of copies that would have to be converted.
+- `/auto` still decides whether you pick first; with both on, the best match arrives in the chat with no taps.
+- `/import` sends every track of the playlist or album to the chat, one after another.
+
+Turn it on per chat with `/deliver`, or make it the default for some users with `TELEGRAM_CHAT_DELIVERY_USERS`.
+In a group chat without a `/deliver` setting, the user who started the search or import decides where that track goes.
+One bot token can only run one bot process, so both modes live in the same instance.
 
 ## Scoring Algorithm
 

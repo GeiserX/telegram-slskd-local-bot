@@ -116,6 +116,17 @@ def build_auto_mode_keyboard(current_mode: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("Enable auto-mode", callback_data="auto:on")]])
 
 
+def build_delivery_mode_keyboard(current_mode: str) -> InlineKeyboardMarkup:
+    """Build keyboard to switch between library and chat delivery."""
+    if current_mode == "chat":
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton("\U0001f4da Save to library instead", callback_data="deliver:library")]]
+        )
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\U0001f4e8 Send in chat instead", callback_data="deliver:chat")]]
+    )
+
+
 def build_direct_search_keyboard() -> InlineKeyboardMarkup:
     """Button to search Soulseek directly without Spotify resolution."""
     return InlineKeyboardMarkup(

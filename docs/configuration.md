@@ -8,6 +8,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
 | `TELEGRAM_ALLOWED_USERS` | Yes | *(deny all)* | Comma-separated Telegram user IDs allowed to use the bot. Empty means the bot denies everyone (fail-closed) — the denial reply shows you your ID |
+| `TELEGRAM_CHAT_DELIVERY_USERS` | No | *(empty)* | Comma-separated Telegram user IDs whose chats default to chat delivery: the track is sent into the chat (under Telegram's 50 MB limit, converted to Opus when bigger) and nothing is saved anywhere. In a group chat it matches the user who started the search or import. `/deliver` overrides it per chat |
 | `SPOTIFY_CLIENT_ID` | Yes | — | Spotify Developer app Client ID |
 | `SPOTIFY_CLIENT_SECRET` | Yes | — | Spotify Developer app Client Secret |
 | `SLSKD_HOST` | Yes | — | slskd instance URL (e.g., `http://192.168.1.100:5030`) |
@@ -18,7 +19,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | `SLSKD_DOWNLOAD_PATH` | Compose only | `./downloads` | Host folder mounted at `/downloads`: slskd's completed-downloads folder |
 | `MUSIC_OUTPUT_PATH` | Compose only | `./music` | Host folder mounted at `/music`: your library |
 | `DATA_PATH` | Compose only | `./data` | Host folder mounted at `/data` |
-| `AUTO_MODE` | No | `false` | Default auto-download state for chats that never toggled `/auto`: best match is downloaded and saved without asking |
+| `AUTO_MODE` | No | `false` | Default auto-download state for chats that never toggled `/auto`: best match is downloaded and saved without asking. Running `/deliver` in a chat that never toggled `/auto` fixes that chat's auto-download state at the current default, so a later change to `AUTO_MODE` no longer applies to it |
 | `MAX_RESULTS` | No | `10` | Maximum search results shown to user |
 | `DURATION_TOLERANCE_SECS` | No | `5` | Duration match tolerance in seconds |
 | `SEARCH_TIMEOUT_SECS` | No | `30` | slskd search timeout |

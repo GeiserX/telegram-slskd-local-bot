@@ -27,6 +27,7 @@ from telegram.ext import (
 from music_downloader.bot.keyboards import (
     build_approve_keyboard,
     build_auto_mode_keyboard,
+    build_delivery_mode_keyboard,
     build_direct_search_keyboard,
     build_duplicate_keyboard,
     build_import_confirm_keyboard,
@@ -63,6 +64,30 @@ logger = logging.getLogger(__name__)
 
 # Telegram bot API file size limit: 50 MB
 TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024
+
+# Delivery modes: "library" saves to OUTPUT_DIR after approval; "chat" sends the
+# track into the chat as the deliverable and saves nothing anywhere.
+DELIVERY_LIBRARY = "library"
+DELIVERY_CHAT = "chat"
+
+# Opus bitrates tried (highest first) when a chat-delivery track is over the limit.
+_OPUS_BITRATES_KBPS = (192, 160, 128, 96)
+
+
+def _opus_bitrates_that_fit(duration_secs: int) -> list[int]:
+    """The highest Opus bitrate whose estimated size fits, then one lower fallback.
+
+    Estimate = bitrate * duration * 5 % container overhead + 1 MiB headroom.
+    With an unknown duration nothing can be estimated, so every bitrate is tried.
+    """
+    if duration_secs <= 0:
+        return list(_OPUS_BITRATES_KBPS)
+    fitting = [
+        kbps
+        for kbps in _OPUS_BITRATES_KBPS
+        if kbps * 1000 / 8 * duration_secs * 1.05 + 1024 * 1024 <= TELEGRAM_FILE_LIMIT
+    ]
+    return fitting[:2]
 
 
 def _escape_md(text: str) -> str:
@@ -286,6 +311,9 @@ class PendingDownload:
     approval_message_id: int | None = None  # Message with approve/reject buttons
     result_index: int = 0  # Position in ranked results list
     search_id: str = ""  # Search this download came from (see PendingSearch)
+    # Who started it: TELEGRAM_CHAT_DELIVERY_USERS is keyed by user id, which
+    # differs from the chat id outside private chats.
+    user_id: int | None = None
 
 
 class MusicBot:
@@ -307,6 +335,8 @@ class MusicBot:
         # Per-chat auto-mode cache; the durable value lives in chat_settings
         # (config.auto_mode is only the default for chats that never toggled).
         self._auto_mode_cache: dict[int, bool] = {}
+        # Per-chat stored delivery mode cache (None = never set, env list decides).
+        self._delivery_cache: dict[int, str | None] = {}
 
         # Per-user pending searches (chat_id -> PendingSearch)
         self.pending: dict[int, PendingSearch] = {}
@@ -347,6 +377,8 @@ class MusicBot:
         self._import_pending: dict[int, PendingSearch] = {}
         # Import runs unattended for these chats (chosen on the confirm keyboard)
         self._import_auto: dict[int, bool] = {}
+        # Who started the import in each chat (decides the env-list delivery default)
+        self._import_user: dict[int, int] = {}
 
         # A restart cannot leave a genuinely running import behind, but it does
         # leave pending/active rows that would block /import for that chat forever.
@@ -364,6 +396,29 @@ class MusicBot:
     def _set_auto(self, chat_id: int, enabled: bool) -> None:
         self._auto_mode_cache[chat_id] = enabled
         self.settings_repo.set_auto_mode(chat_id, enabled)
+
+    def _delivery_mode(self, chat_id: int, user_id: int | None = None) -> str:
+        """Delivery mode for this chat: stored value, else the env user list, else library.
+
+        ``user_id`` is the user who started the operation; outside private chats
+        it, not the chat id, is what the env list matches.
+        """
+        if chat_id not in self._delivery_cache:
+            self._delivery_cache[chat_id] = self.settings_repo.get_delivery_mode(chat_id)
+        stored = self._delivery_cache[chat_id]
+        if stored in (DELIVERY_LIBRARY, DELIVERY_CHAT):
+            return stored
+        users = self.config.telegram_chat_delivery_users
+        if chat_id in users or (user_id is not None and user_id in users):
+            return DELIVERY_CHAT
+        return DELIVERY_LIBRARY
+
+    def _is_chat_delivery(self, chat_id: int, user_id: int | None = None) -> bool:
+        return self._delivery_mode(chat_id, user_id) == DELIVERY_CHAT
+
+    def _set_delivery(self, chat_id: int, mode: str) -> None:
+        self._delivery_cache[chat_id] = mode
+        self.settings_repo.set_delivery_mode(chat_id, mode, auto_mode=self._is_auto(chat_id))
 
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot (fail-closed)."""
@@ -407,6 +462,7 @@ class MusicBot:
         self.pending.pop(chat_id, None)
         self._import_pending.pop(chat_id, None)
         self._import_auto.pop(chat_id, None)
+        self._import_user.pop(chat_id, None)
         self._spotify_candidates.pop(chat_id, None)
         self._spotify_page.pop(chat_id, None)
         self._awaiting_direct_metadata.pop(chat_id, None)
@@ -450,6 +506,7 @@ class MusicBot:
             "/import — Import a Spotify playlist or album\n"
             "/cancel — Cancel the active import or search\n"
             "/auto — Toggle auto-download mode\n"
+            "/deliver — Toggle chat delivery (send tracks here instead of saving)\n"
             "/status — Show active downloads\n"
             "/history — Recent downloads\n"
             "/help — Show this message",
@@ -475,6 +532,22 @@ class MusicBot:
             "automatically — no picking, no approval step. The setting survives restarts.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=build_auto_mode_keyboard(current),
+        )
+
+    async def cmd_deliver(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /deliver command — switch between library and chat delivery."""
+        if not await self._check_auth(update):
+            return
+
+        current = self._delivery_mode(update.effective_chat.id, update.effective_user.id)
+        mode_str = "Chat" if current == DELIVERY_CHAT else "Library"
+        await update.message.reply_text(
+            f"Delivery mode for this chat: *{mode_str}*\n\n"
+            "Library: the track is saved to the music library (after you approve the preview, unless /auto is on).\n"
+            "Chat: the track is sent here and nothing is saved anywhere. Over 50 MB it is "
+            "converted to Opus to fit. The setting survives restarts.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_delivery_mode_keyboard(current),
         )
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -532,7 +605,7 @@ class MusicBot:
 
         lines = ["*Recent downloads:*\n"]
         for entry in records:
-            icon = {"success": "✅", "rejected": "🚫"}.get(entry.status, "❌")
+            icon = {"success": "✅", "delivered": "\U0001f4e8", "rejected": "🚫"}.get(entry.status, "❌")
             lines.append(f"{icon} `{entry.filename}`")
 
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
@@ -579,7 +652,13 @@ class MusicBot:
             )
 
             await self._do_direct_slskd_search(
-                context, chat_id, search_query, searching_msg, generation, display_track=synthetic_track
+                context,
+                chat_id,
+                search_query,
+                searching_msg,
+                generation,
+                display_track=synthetic_track,
+                user_id=update.effective_user.id,
             )
             return
 
@@ -603,8 +682,11 @@ class MusicBot:
                     chat_id=chat_id, message_id=message_id, text="⏹ Superseded by a newer request"
                 )
 
-        # Step 0: Check for similar files already in the library
-        similar = self.processor.find_similar(query)
+        # Step 0: Check for similar files already in the library (meaningless
+        # in chat delivery, which never uses the library)
+        similar = (
+            None if self._is_chat_delivery(chat_id, update.effective_user.id) else self.processor.find_similar(query)
+        )
         if similar:
             existing_list = "\n".join(f"• `{f}`" for f in similar[:5])
             await update.message.reply_text(
@@ -679,7 +761,9 @@ class MusicBot:
                         unique_tracks.append(t)
 
             if len(unique_tracks) == 1:
-                await self._do_slskd_search(context, chat_id, unique_tracks[0], searching_msg, generation)
+                await self._do_slskd_search(
+                    context, chat_id, unique_tracks[0], searching_msg, generation, user_id=update.effective_user.id
+                )
                 return
 
             self._spotify_candidates[chat_id] = unique_tracks
@@ -699,7 +783,9 @@ class MusicBot:
             self._spotify_page.pop(chat_id, None)
             await _safe_edit(searching_msg, "Something went wrong. Please try again.")
 
-    async def _do_slskd_search(self, context, chat_id: int, track: TrackInfo, searching_msg, generation: int):
+    async def _do_slskd_search(
+        self, context, chat_id: int, track: TrackInfo, searching_msg, generation: int, user_id: int | None = None
+    ):
         """Search slskd for a resolved Spotify track."""
         try:
             await _safe_edit(
@@ -717,7 +803,7 @@ class MusicBot:
             if self._is_stale(chat_id, generation):
                 return
 
-            ranked, is_fallback = self._rank_responses(raw_responses, track)
+            ranked, is_fallback = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
 
             # Fallback 2: title-only search
             if not ranked:
@@ -738,7 +824,7 @@ class MusicBot:
                 if self._is_stale(chat_id, generation):
                     return
 
-                ranked, is_fallback = self._rank_responses(raw_responses, track)
+                ranked, is_fallback = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
 
             # Fallback 3: keyword reduction + album year
             if not ranked and not _has_non_latin_script(clean_title):
@@ -762,7 +848,9 @@ class MusicBot:
                         raw_responses = await self.slskd.search(
                             fallback_query, timeout_secs=self.config.search_timeout_secs
                         )
-                        ranked, is_fallback = self._rank_responses(raw_responses, track)
+                        ranked, is_fallback = self._rank_responses(
+                            raw_responses, track, chat_id=chat_id, user_id=user_id
+                        )
                         if ranked:
                             logger.info("Keyword-reduction fallback hit: '%s'", fallback_query)
                             break
@@ -793,7 +881,9 @@ class MusicBot:
                 if self._is_stale(chat_id, generation):
                     return
 
-                ranked, is_fallback = self._rank_responses(raw_responses, track, max_duration_diff=120)
+                ranked, is_fallback = self._rank_responses(
+                    raw_responses, track, max_duration_diff=120, chat_id=chat_id, user_id=user_id
+                )
                 if ranked:
                     logger.info("Artist-keyword fallback hit: '%s'", fb4_query)
 
@@ -836,7 +926,7 @@ class MusicBot:
                     f"{results_text}\n\n\U0001f916 *Auto-mode:* downloading best match #1…",
                     parse_mode=ParseMode.MARKDOWN,
                 )
-                await self._launch_download(context, chat_id, track, best, 0, search_id)
+                await self._launch_download(context, chat_id, track, best, 0, search_id, user_id=user_id)
                 return
 
             await _safe_edit(
@@ -894,6 +984,17 @@ class MusicBot:
 
         if handler:
             await handler(update, context, chat_id, data)
+            return
+
+        # Delivery-mode toggle
+        if data in (f"deliver:{DELIVERY_LIBRARY}", f"deliver:{DELIVERY_CHAT}"):
+            mode = data.split(":", 1)[1]
+            self._set_delivery(chat_id, mode)
+            mode_str = "Chat" if mode == DELIVERY_CHAT else "Library"
+            await query.edit_message_text(
+                f"Delivery mode: *{mode_str}*",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
 
         # Auto-mode toggle (inline, no separate handler needed)
@@ -978,7 +1079,7 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
         )
         generation = self._chat_generation.get(chat_id, 0)
-        await self._do_slskd_search(context, chat_id, track, searching_msg, generation)
+        await self._do_slskd_search(context, chat_id, track, searching_msg, generation, user_id=query.from_user.id)
 
     @staticmethod
     def _split_search_callback(data: str) -> tuple[str, str]:
@@ -1056,10 +1157,20 @@ class MusicBot:
 
         result = pending.results[index]
         track = pending.track
-        await self._launch_download(context, chat_id, track, result, index, pending.search_id, update=update)
+        await self._launch_download(
+            context, chat_id, track, result, index, pending.search_id, update=update, user_id=query.from_user.id
+        )
 
     async def _launch_download(
-        self, context, chat_id: int, track: TrackInfo, result: SearchResult, index: int, search_id: str, update=None
+        self,
+        context,
+        chat_id: int,
+        track: TrackInfo,
+        result: SearchResult,
+        index: int,
+        search_id: str,
+        update=None,
+        user_id: int | None = None,
     ):
         """Send the download status message and start the download task."""
         status_msg = await context.bot.send_message(
@@ -1074,23 +1185,37 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, result, status_msg, index, search_id),
+            self._do_download(context, chat_id, track, result, status_msg, index, search_id, user_id=user_id),
             update=update,
         )
         self._track_task(chat_id, task)
 
     def _rank_responses(
-        self, raw_responses, track: TrackInfo, max_duration_diff: int | None = None
+        self,
+        raw_responses,
+        track: TrackInfo,
+        max_duration_diff: int | None = None,
+        chat_id: int | None = None,
+        user_id: int | None = None,
     ) -> tuple[list[SearchResult], bool]:
-        """Parse raw slskd responses and rank: try FLAC first, fall back to all audio."""
+        """Parse raw slskd responses and rank: try FLAC first, fall back to all audio.
+
+        In chat delivery, results over the Telegram upload limit sort after every
+        result that fits (stable), since those would have to be lossy-converted.
+        """
         score_kwargs = {"max_duration_diff": max_duration_diff} if max_duration_diff else {}
         flac_results = self.slskd.parse_results(raw_responses, flac_only=True)
         ranked = self.scorer.score_results(flac_results, track, **score_kwargs)
-        if ranked:
-            return ranked, False
-        all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
-        ranked = self.scorer.score_results(all_audio, track, **score_kwargs)
-        return ranked, bool(ranked)
+        is_fallback = False
+        if not ranked:
+            all_audio = self.slskd.parse_results(raw_responses, flac_only=False)
+            ranked = self.scorer.score_results(all_audio, track, **score_kwargs)
+            is_fallback = bool(ranked)
+        if chat_id is not None and ranked and self._is_chat_delivery(chat_id, user_id):
+            ranked = [r for r in ranked if r.size <= TELEGRAM_FILE_LIMIT] + [
+                r for r in ranked if r.size > TELEGRAM_FILE_LIMIT
+            ]
+        return ranked, is_fallback
 
     # =========================================================================
     # DOWNLOAD + PREVIEW + APPROVAL
@@ -1118,6 +1243,7 @@ class MusicBot:
         status_msg,
         result_index: int = 0,
         search_id: str = "",
+        user_id: int | None = None,
     ):
         """Download a file, send it to Telegram for preview, and ask for approval."""
         dl_id = self._next_dl_id()
@@ -1133,6 +1259,7 @@ class MusicBot:
                     status_message_id=status_msg.message_id,
                     result_index=result_index,
                     search_id=search_id,
+                    user_id=user_id,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -1162,6 +1289,7 @@ class MusicBot:
                     status_message_id=status_msg.message_id,
                     result_index=result_index,
                     search_id=search_id,
+                    user_id=user_id,
                 )
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index)
@@ -1191,12 +1319,24 @@ class MusicBot:
                 status_message_id=status_msg.message_id,
                 result_index=result_index,
                 search_id=search_id,
+                user_id=user_id,
             )
             self.downloads[dl_id] = pending_dl
 
             quality_line = f"Quality: {result.quality_display} | {result.duration_display}"
             if flac_verdict:
                 quality_line += f"\n{flac_verdict.display}"
+
+            if self._is_chat_delivery(chat_id, user_id):
+                # Chat delivery decides WHERE the track goes (auto-mode only
+                # decided whether to ask first): straight into the chat.
+                await _safe_edit(
+                    status_msg,
+                    f"✅ *{label} Downloaded!* Sending to this chat...\n`{result.basename}`\n{quality_line}",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                await self._deliver_download(context, chat_id, dl_id, pending_dl, status_msg, quality_line, label)
+                return
 
             if self._is_auto(chat_id):
                 await self._auto_save(chat_id, dl_id, pending_dl, status_msg, quality_line, label)
@@ -1291,6 +1431,112 @@ class MusicBot:
                 parse_mode=ParseMode.MARKDOWN,
             )
             await self._add_history(track, result, "process_failed")
+
+    async def _deliver_download(
+        self, context, chat_id: int, dl_id: str, pending_dl: PendingDownload, status_msg, quality_line: str, label: str
+    ) -> bool:
+        """Chat delivery: send the downloaded track into the chat, save nothing, delete the source.
+
+        Returns whether the track was sent.
+        """
+        track = pending_dl.track
+        result = pending_dl.result
+        source_path = pending_dl.source_path
+
+        outcome, note = await self._send_to_chat(
+            context, chat_id, track, result, source_path, f"{label} {quality_line}"
+        )
+        if outcome == "sent":
+            await asyncio.to_thread(self.processor.cleanup_download, source_path)
+            # Popped only after cleanup: the entry keeps the source protected
+            # from the orphan sweep until it is gone.
+            self.downloads.pop(dl_id, None)
+            await _safe_edit(
+                status_msg,
+                f"✅ *{label} Sent:* `{note}`\n{quality_line}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await self._add_history(track, result, "delivered", filename=note)
+            logger.info(f"Delivered to chat: {note}")
+            return True
+
+        # Keep the source for the orphan sweep (it is no longer protected) and
+        # keep the entry so Retry / Try next still work.
+        pending_dl.source_path = None
+        self.downloads[dl_id] = pending_dl
+        has_next = self._has_next_result(chat_id, pending_dl.result_index)
+        await _safe_edit(
+            status_msg,
+            f"❌ {label} {note}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
+        )
+        await self._add_history(track, result, outcome)
+        return False
+
+    async def _send_to_chat(
+        self, context, chat_id: int, track: TrackInfo, result: SearchResult, source_path: str, caption: str
+    ) -> tuple[str, str]:
+        """Send a finished download into the chat as the deliverable (chat delivery).
+
+        At or under the limit the file goes as-is (with Spotify artwork embedded
+        first, best effort). Over it, the file is converted to Opus at the
+        highest bitrate whose estimate fits, retrying once one step lower.
+
+        Returns (outcome, note): outcome is "sent" (note = sent filename) or
+        "too_large" / "convert_failed" / "send_failed" (note = Markdown-safe reason).
+        """
+        size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
+        if size <= TELEGRAM_FILE_LIMIT:
+            # The source is deleted right after sending, so tagging it is free.
+            await self._embed_spotify_artwork(source_path, track)
+            size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
+        if size <= TELEGRAM_FILE_LIMIT:
+            target_name = self.processor.build_filename(track.artist, track.title, result.extension)
+            error = await self._send_audio_file(context, chat_id, source_path, target_name, track, caption)
+            return ("sent", target_name) if error is None else ("send_failed", error)
+
+        original = f"original {size / (1024 * 1024):.0f} MB {result.extension.upper()}"
+        too_large = ("too_large", f"Could not fit this track under 50 MB, even converted to Opus ({original}).")
+        for kbps in _opus_bitrates_that_fit(track.duration_secs or result.length or 0):
+            ogg_path = await self._convert_to_ogg(source_path, kbps)
+            if not ogg_path:
+                return "convert_failed", f"Could not convert this track to fit under 50 MB ({original})."
+            try:
+                if os.path.getsize(ogg_path) > TELEGRAM_FILE_LIMIT:
+                    continue
+                target_name = self.processor.build_filename(track.artist, track.title, "ogg")
+                converted_caption = f"{caption}\n\U0001f3a7 Converted to Opus {kbps} kbps, {original}"
+                error = await self._send_audio_file(context, chat_id, ogg_path, target_name, track, converted_caption)
+                return ("sent", target_name) if error is None else ("send_failed", error)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(ogg_path)
+        return too_large
+
+    @staticmethod
+    async def _send_audio_file(context, chat_id: int, path: str, filename: str, track: TrackInfo, caption: str):
+        """Send *path* as audio (document on BadRequest). Returns None, or a Markdown-safe error."""
+        try:
+            try:
+                with open(path, "rb") as f:
+                    await context.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=f,
+                        filename=filename,
+                        title=track.title,
+                        performer=track.artist,
+                        duration=track.duration_secs,
+                        caption=caption,
+                    )
+            except BadRequest:
+                logger.info("send_audio failed, falling back to send_document for %s", filename)
+                with open(path, "rb") as f:
+                    await context.bot.send_document(chat_id=chat_id, document=f, filename=filename, caption=caption)
+        except Exception as exc:
+            logger.exception("Sending %s to chat %s failed", filename, chat_id)
+            return f"Could not send the file to Telegram: {_escape_md(str(exc))}"
+        return None
 
     async def _send_large_file(
         self,
@@ -1405,6 +1651,20 @@ class MusicBot:
 
         track = pending_dl.track
         result = pending_dl.result
+
+        if action == "approve" and pending_dl.source_path and self._is_chat_delivery(chat_id, pending_dl.user_id):
+            # A library-mode preview approved after switching to chat delivery:
+            # deliver it here instead of writing the library.
+            self.downloads[dl_id] = pending_dl
+            await self._edit_approval_message(query, "\U0001f4e8 Sending to this chat instead of saving...")
+            label = f"#{pending_dl.result_index + 1}"
+            status_msg = await context.bot.send_message(chat_id=chat_id, text=f"\U0001f4e8 {label} Sending...")
+            quality_line = f"Quality: {result.quality_display} | {result.duration_display}"
+            sent = await self._deliver_download(context, chat_id, dl_id, pending_dl, status_msg, quality_line, label)
+            await self._edit_approval_message(
+                query, "\U0001f4e8 Sent to this chat" if sent else "❌ Not sent, see the message below"
+            )
+            return
 
         if action == "approve":
             if pending_dl.source_path:
@@ -1543,7 +1803,14 @@ class MusicBot:
         )
 
     async def _do_direct_slskd_search(
-        self, context, chat_id: int, query: str, searching_msg, generation: int, display_track: TrackInfo | None = None
+        self,
+        context,
+        chat_id: int,
+        query: str,
+        searching_msg,
+        generation: int,
+        display_track: TrackInfo | None = None,
+        user_id: int | None = None,
     ):
         """Search slskd without Spotify metadata. Duration scoring gives flat 15 points."""
         try:
@@ -1572,7 +1839,7 @@ class MusicBot:
                     year="",
                 )
 
-            ranked, is_fallback = self._rank_responses(raw_responses, synthetic_track)
+            ranked, is_fallback = self._rank_responses(raw_responses, synthetic_track, chat_id=chat_id, user_id=user_id)
 
             if self._is_stale(chat_id, generation):
                 return
@@ -1744,7 +2011,11 @@ class MusicBot:
         if prefix == "ic":
             auto = len(parts) > 1 and parts[1] == "auto"
             self._import_auto[chat_id] = auto
-            mode_note = "auto-saving every track" if auto else "you review each track"
+            self._import_user[chat_id] = query.from_user.id
+            if self._is_chat_delivery(chat_id, query.from_user.id):
+                mode_note = "sending every track to this chat"
+            else:
+                mode_note = "auto-saving every track" if auto else "you review each track"
             await _safe_query_edit(query, f"✅ Import started — {mode_note}...")
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.active)
             self._active_import[chat_id] = job_id
@@ -1759,6 +2030,7 @@ class MusicBot:
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.cancelled)
             self._active_import.pop(chat_id, None)
             self._import_auto.pop(chat_id, None)
+            self._import_user.pop(chat_id, None)
             await _safe_query_edit(query, "❌ Import cancelled.")
 
         elif prefix == "ia":
@@ -1805,6 +2077,20 @@ class MusicBot:
         track = pending_dl.track
         result = pending_dl.result
 
+        if self._is_chat_delivery(chat_id, pending_dl.user_id):
+            # Preview sent in library mode, approved after switching to chat
+            # delivery: deliver it here instead of writing the library.
+            self.downloads[dl_id] = pending_dl
+            await self._edit_approval_message(query, "\U0001f4e8 Sending to this chat instead of saving...")
+            status_msg = await context.bot.send_message(
+                chat_id=chat_id, text=f"\U0001f4cb Import: {track.artist} - {track.title}\n\U0001f4e8 Sending..."
+            )
+            generation = self._chat_generation.get(chat_id, 0)
+            await self._import_deliver(
+                context, chat_id, job_id, track_id, dl_id, track, result, pending_dl.source_path, status_msg, generation
+            )
+            return
+
         target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
         if target_path:
             self.processor.cleanup_download(pending_dl.source_path)
@@ -1836,11 +2122,13 @@ class MusicBot:
             completed, failed, skipped, total = progress
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.completed)
             self._active_import.pop(chat_id, None)
+            done_word = "Sent" if self._is_chat_delivery(chat_id, self._import_user.get(chat_id)) else "Saved"
             self._import_auto.pop(chat_id, None)
+            self._import_user.pop(chat_id, None)
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"\U0001f3c1 *Import complete!*\n\n"
-                f"✅ Saved: {completed}\n"
+                f"✅ {done_word}: {completed}\n"
                 f"❌ Failed: {failed}\n"
                 f"⏭ Skipped: {skipped}\n"
                 f"\U0001f4ca Total: {total}",
@@ -1888,7 +2176,9 @@ class MusicBot:
             if self._is_stale(chat_id, generation):
                 return
 
-            ranked, is_fallback = self._rank_responses(raw_responses, track)
+            ranked, is_fallback = self._rank_responses(
+                raw_responses, track, chat_id=chat_id, user_id=self._import_user.get(chat_id)
+            )
 
             # Title-only fallback
             if not ranked:
@@ -1897,7 +2187,9 @@ class MusicBot:
                 raw_responses = await self.slskd.search(clean_title, timeout_secs=self.config.search_timeout_secs)
                 if self._is_stale(chat_id, generation):
                     return
-                ranked, is_fallback = self._rank_responses(raw_responses, track)
+                ranked, is_fallback = self._rank_responses(
+                    raw_responses, track, chat_id=chat_id, user_id=self._import_user.get(chat_id)
+                )
 
             if self._is_stale(chat_id, generation):
                 return
@@ -1934,6 +2226,7 @@ class MusicBot:
                 source_path=None,
                 status_message_id=searching_msg.message_id,
                 search_id=search_id,
+                user_id=self._import_user.get(chat_id),
             )
             self.downloads[dl_id] = pending_dl
 
@@ -2064,6 +2357,13 @@ class MusicBot:
             if dl_id in self.downloads:
                 self.downloads[dl_id].source_path = source_path
 
+            if self._is_chat_delivery(chat_id, self._import_user.get(chat_id)):
+                # Nothing to review: the track itself is the deliverable.
+                await self._import_deliver(
+                    context, chat_id, job_id, track_id, dl_id, track, result, source_path, status_msg, generation
+                )
+                return
+
             if self._import_auto.get(chat_id):
                 await self._import_auto_save(
                     context, chat_id, job_id, track_id, dl_id, track, result, source_path, status_msg, generation
@@ -2139,6 +2439,59 @@ class MusicBot:
         await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, reason)
         await self._process_next_import_track(context, chat_id, job_id, generation)
 
+    async def _import_deliver(
+        self,
+        context,
+        chat_id: int,
+        job_id: int,
+        track_id: int,
+        dl_id: str,
+        track: TrackInfo,
+        result: SearchResult,
+        source_path: str,
+        status_msg,
+        generation: int,
+    ):
+        """Chat delivery inside an import: send the track to the chat, save nothing, move on."""
+        heading = f"\U0001f4cb *Import:* {_escape_md(track.artist)} - {_escape_md(track.title)}"
+        caption = (
+            f"\U0001f4cb Import: {track.artist} - {track.title}\n{result.quality_display} | {result.duration_display}"
+        )
+        outcome, note = await self._send_to_chat(context, chat_id, track, result, source_path, caption)
+        if outcome == "sent":
+            await asyncio.to_thread(self.processor.cleanup_download, source_path)
+            # Popped only after cleanup (orphan-sweep protection, see _auto_save).
+            self.downloads.pop(dl_id, None)
+            await _safe_edit(status_msg, f"{heading}\n✅ Sent: `{note}`", parse_mode=ParseMode.MARKDOWN)
+            await self._add_history(track, result, "delivered", filename=note)
+            await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.completed)
+            await self._process_next_import_track(context, chat_id, job_id, generation)
+            return
+
+        await self._add_history(track, result, outcome)
+        if self._import_auto.get(chat_id):
+            # Source kept for the orphan sweep once the entry is gone.
+            await self._import_auto_fail(
+                context,
+                chat_id,
+                job_id,
+                track_id,
+                dl_id,
+                status_msg,
+                generation,
+                f"{heading}\n❌ {note} — continuing.",
+                outcome,
+            )
+            return
+        self.downloads.pop(dl_id, None)
+        await _safe_edit(
+            status_msg,
+            f"{heading}\n❌ {note}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_import_skip_keyboard(job_id, track_id),
+        )
+        await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
+
     async def _import_auto_save(
         self,
         context,
@@ -2212,7 +2565,16 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, result, status_msg, result_index, pending_dl.search_id),
+            self._do_download(
+                context,
+                chat_id,
+                track,
+                result,
+                status_msg,
+                result_index,
+                pending_dl.search_id,
+                user_id=pending_dl.user_id,
+            ),
             update=update,
         )
         self._track_task(chat_id, task)
@@ -2260,7 +2622,16 @@ class MusicBot:
         )
 
         task = context.application.create_task(
-            self._do_download(context, chat_id, track, next_result, status_msg, next_idx, pending.search_id),
+            self._do_download(
+                context,
+                chat_id,
+                track,
+                next_result,
+                status_msg,
+                next_idx,
+                pending.search_id,
+                user_id=pending_dl.user_id,
+            ),
             update=update,
         )
         self._track_task(chat_id, task)
@@ -2282,10 +2653,10 @@ class MusicBot:
             return None
 
     @staticmethod
-    async def _convert_to_ogg(filepath: str) -> str | None:
+    async def _convert_to_ogg(filepath: str, bitrate_kbps: int = 128) -> str | None:
         """Convert a full audio file to OGG Opus in a thread."""
         try:
-            return await asyncio.to_thread(convert_to_ogg, filepath)
+            return await asyncio.to_thread(convert_to_ogg, filepath, bitrate_kbps)
         except Exception:
             logger.exception("OGG conversion failed for %s", filepath)
             return None
@@ -2443,14 +2814,14 @@ class MusicBot:
             with contextlib.suppress(Exception):
                 await message.reply_text("⚠️ Something went wrong. Please try again.")
 
-    async def _add_history(self, track: TrackInfo, result: SearchResult, status: str):
+    async def _add_history(self, track: TrackInfo, result: SearchResult, status: str, filename: str | None = None):
         """Add an entry to download history (persisted in SQLite)."""
         await asyncio.to_thread(
             self.history_repo.add,
             artist=track.artist,
             title=track.title,
             album=track.album,
-            filename=f"{track.artist} - {track.title}.{result.extension}",
+            filename=filename or f"{track.artist} - {track.title}.{result.extension}",
             source_user=result.username,
             remote_path=result.filename,
             status=status,
@@ -2470,6 +2841,7 @@ async def _register_commands(app: Application) -> None:
             BotCommand("import", "Import a Spotify playlist or album"),
             BotCommand("cancel", "Cancel the active import or search"),
             BotCommand("auto", "Toggle auto-download mode"),
+            BotCommand("deliver", "Toggle chat delivery (send tracks here instead of saving)"),
             BotCommand("status", "Show active searches and downloads"),
             BotCommand("history", "Recent downloads"),
             BotCommand("help", "How to use the bot"),
@@ -2523,6 +2895,7 @@ def create_bot(config: Config) -> Application:
     app.add_handler(CommandHandler("start", bot.cmd_start, filters=new_messages))
     app.add_handler(CommandHandler("help", bot.cmd_help, filters=new_messages))
     app.add_handler(CommandHandler("auto", bot.cmd_auto, filters=new_messages))
+    app.add_handler(CommandHandler("deliver", bot.cmd_deliver, filters=new_messages))
     app.add_handler(CommandHandler("status", bot.cmd_status, filters=new_messages))
     app.add_handler(CommandHandler("history", bot.cmd_history, filters=new_messages))
     app.add_handler(CommandHandler("import", bot.cmd_import, filters=new_messages))

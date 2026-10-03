@@ -8,6 +8,8 @@
 
 **Save and sweep.** A saved file is renamed with `FILENAME_TEMPLATE` (`Artist - Title.flac` by default), tagged with the Spotify cover art and written to `OUTPUT_DIR`; the download in `DOWNLOAD_DIR` is deleted, and so is a rejected one. Every hour the bot also deletes files in `DOWNLOAD_DIR` that nobody picked up for `DOWNLOAD_CLEANUP_HOURS`, and never touches a transfer still in flight.
 
+In a chat-delivery chat (`/deliver`) the track itself is sent, converted to Opus when over 50 MB, and nothing is written to `OUTPUT_DIR`; the download is deleted once it is sent.
+
 ```
 ┌──────────────────┐     ┌──────────────┐     ┌──────────────────┐
 │  Telegram Bot    │────▶│  Spotify API │     │  slskd (Soulseek)│
