@@ -802,6 +802,29 @@ class TestChatImports:
         assert os.path.exists(source)
 
     @pytest.mark.asyncio
+    async def test_review_import_failure_heading_escapes_markdown(self, tmp_path):
+        """A name like *NSYNC must not break the Markdown edit that carries the Skip keyboard."""
+        bot = _import_bot()
+        source = _file(tmp_path)
+        context = _make_context()
+        context.bot.send_audio = AsyncMock(side_effect=NetworkError("down"))
+        track = TrackInfo(
+            artist="*NSYNC", title="Bye_Bye [Bye]", album="X", duration_ms=162_000, spotify_url="u", year="2000"
+        )
+        _setup_download(bot, source)
+        bot.downloads["dl1"] = PendingDownload(track=track, result=_make_result(), chat_id=CHAT)
+        status = _status_msg()
+
+        with patch.object(bot, "_process_next_import_track", new_callable=AsyncMock):
+            await bot._do_import_download(
+                context, CHAT, track, _make_result(), status, generation=0, job_id=1, track_id=2, dl_id="dl1"
+            )
+
+        text = _edits(status)[-1]
+        assert "\\*NSYNC" in text and "Bye\\_Bye \\[Bye\\]" in text
+        assert "*NSYNC" not in text.replace("\\*NSYNC", "")
+
+    @pytest.mark.asyncio
     async def test_import_approve_in_chat_mode_delivers_instead_of_saving(self, tmp_path):
         bot = _import_bot()
         source = _file(tmp_path)

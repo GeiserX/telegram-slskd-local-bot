@@ -2453,7 +2453,7 @@ class MusicBot:
         generation: int,
     ):
         """Chat delivery inside an import: send the track to the chat, save nothing, move on."""
-        heading = f"\U0001f4cb *Import:* {track.artist} - {track.title}"
+        heading = f"\U0001f4cb *Import:* {_escape_md(track.artist)} - {_escape_md(track.title)}"
         caption = (
             f"\U0001f4cb Import: {track.artist} - {track.title}\n{result.quality_display} | {result.duration_display}"
         )
