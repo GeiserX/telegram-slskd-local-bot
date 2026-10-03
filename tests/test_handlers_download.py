@@ -657,5 +657,5 @@ class TestCreateBot:
             app = create_bot(config)
             assert app is mock_app
             mock_app.add_handler.assert_called()
-            # Should have 7 command handlers + 1 callback + 1 message = 9
-            assert mock_app.add_handler.call_count == 9
+            # Should have 8 command handlers + 1 callback + 1 message = 10
+            assert mock_app.add_handler.call_count == 10

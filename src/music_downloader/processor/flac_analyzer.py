@@ -181,7 +181,7 @@ def analyze_flac(filepath: str, sample_duration: float = 30.0) -> FlacVerdict | 
         return None
 
 
-def convert_to_ogg(filepath: str) -> str | None:
+def convert_to_ogg(filepath: str, bitrate_kbps: int = 128) -> str | None:
     """
     Convert a full audio file to OGG Opus using ffmpeg.
 
@@ -191,6 +191,7 @@ def convert_to_ogg(filepath: str) -> str | None:
 
     Args:
         filepath: Path to the source audio file.
+        bitrate_kbps: Opus target bitrate in kbps (default 128).
 
     Returns:
         Path to the temporary ``.ogg`` file, or None on error.
@@ -212,7 +213,7 @@ def convert_to_ogg(filepath: str) -> str | None:
                 "-c:a",
                 "libopus",
                 "-b:a",
-                "128k",
+                f"{bitrate_kbps}k",
                 "-vn",
                 "-map_metadata",
                 "-1",

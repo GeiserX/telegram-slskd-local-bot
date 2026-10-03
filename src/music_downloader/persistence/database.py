@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS import_tracks (
 CREATE TABLE IF NOT EXISTS chat_settings (
     chat_id INTEGER PRIMARY KEY,
     auto_mode INTEGER NOT NULL DEFAULT 0,
+    delivery_mode TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -75,6 +76,20 @@ CREATE INDEX IF NOT EXISTS idx_download_history_created ON download_history(crea
 # corruption justifies replacing the database; everything else must
 # propagate so a transient condition can't destroy history.
 _CORRUPTION_MARKERS: tuple[str, ...] = ("malformed", "not a database", "file is encrypted")
+
+
+# Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS never
+# touches an existing table, so a database created by an older release gets
+# them here. Each must be nullable (or have a default) for ALTER TABLE ADD.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (("chat_settings", "delivery_mode", "TEXT"),)
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _ADDED_COLUMNS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            conn.commit()
 
 
 def _is_corruption(exc: sqlite3.DatabaseError) -> bool:
@@ -104,6 +119,7 @@ class Database:
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript(_SCHEMA)
+            _add_missing_columns(conn)
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         except Exception:
             with contextlib.suppress(Exception):

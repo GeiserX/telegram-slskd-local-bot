@@ -28,6 +28,12 @@ class Config:
         allowed_users_str = os.getenv("TELEGRAM_ALLOWED_USERS", "")
         self.telegram_allowed_users = self._parse_id_set(allowed_users_str)
 
+        # Comma-separated Telegram user IDs whose chats default to chat delivery:
+        # the track is sent into the chat (under 50 MB) and nothing is saved.
+        # /deliver overrides this per chat.
+        chat_delivery_str = os.getenv("TELEGRAM_CHAT_DELIVERY_USERS", "")
+        self.telegram_chat_delivery_users = self._parse_id_set(chat_delivery_str)
+
         # =====================================================================
         # SPOTIFY API (Client Credentials flow — no user login needed)
         # =====================================================================
@@ -106,6 +112,8 @@ class Config:
             logger.info(f"Bot restricted to {len(self.telegram_allowed_users)} allowed user(s)")
         else:
             logger.warning("TELEGRAM_ALLOWED_USERS is empty — bot will deny all commands until configured")
+        if self.telegram_chat_delivery_users:
+            logger.info(f"Chat delivery is the default for {len(self.telegram_chat_delivery_users)} user(s)")
 
     def _get_required_env(self, key: str) -> str:
         """Get a required environment variable."""
