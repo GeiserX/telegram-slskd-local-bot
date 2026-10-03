@@ -235,12 +235,20 @@ class TestPrecedence:
         assert bot._delivery_mode(CHAT) == "chat"
         assert bot._delivery_mode(12345) == "library"
 
-    def test_stored_value_beats_env_list(self, tmp_path):
+    def test_env_list_locks_chat_even_when_library_is_stored(self, tmp_path):
         config = _make_config(str(tmp_path), chat_users={CHAT})
         bot = _make_bot(config)
         bot._set_delivery(CHAT, "library")
-        assert bot._delivery_mode(CHAT) == "library"
-        assert _make_bot(config)._delivery_mode(CHAT) == "library"  # survives restart
+        assert bot._delivery_mode(CHAT) == "chat"
+        assert _make_bot(config)._delivery_mode(CHAT) == "chat"  # survives restart too
+        assert _make_bot(_make_config(str(tmp_path)))._delivery_mode(CHAT) == "library"  # off the list: stored wins
+
+    def test_locked_user_in_a_group_stays_chat_despite_stored_library(self, tmp_path):
+        config = _make_config(str(tmp_path), chat_users={CHAT})
+        bot = _make_bot(config)
+        bot._set_delivery(GROUP, "library")
+        assert bot._delivery_mode(GROUP, CHAT) == "chat"
+        assert bot._delivery_mode(GROUP, OTHER) == "library"
 
     def test_stored_chat_without_env_list(self, tmp_path):
         config = _make_config(str(tmp_path))
@@ -271,8 +279,9 @@ class TestDeliverCommand:
         assert build_delivery_mode_keyboard("library").inline_keyboard[0][0].callback_data == "deliver:chat"
 
     @pytest.mark.asyncio
-    async def test_cmd_deliver_shows_mode_and_toggle(self):
-        bot = _make_bot(_make_config(chat_users={CHAT}))
+    async def test_cmd_deliver_shows_mode_and_toggle(self, tmp_path):
+        bot = _make_bot(_make_config(str(tmp_path)))
+        bot._set_delivery(CHAT, "chat")
         update = MagicMock()
         update.effective_user.id = CHAT
         update.effective_chat.id = CHAT
@@ -281,6 +290,32 @@ class TestDeliverCommand:
         kwargs = update.message.reply_text.call_args.kwargs
         assert "*Chat*" in update.message.reply_text.call_args.args[0]
         assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "deliver:library"
+
+    @pytest.mark.asyncio
+    async def test_cmd_deliver_for_a_locked_account_has_no_toggle(self):
+        bot = _make_bot(_make_config(chat_users={CHAT}))
+        update = MagicMock()
+        update.effective_user.id = CHAT
+        update.effective_chat.id = CHAT
+        update.message = AsyncMock()
+        await bot.cmd_deliver(update, _make_context())
+        args, kwargs = update.message.reply_text.call_args
+        assert "fixed" in args[0] and "*Chat*" in args[0]
+        assert "reply_markup" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_callback_cannot_unlock_a_listed_account(self, tmp_path):
+        config = _make_config(str(tmp_path), chat_users={CHAT})
+        bot = _make_bot(config)
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        update.callback_query.data = "deliver:library"
+        update.effective_chat.id = CHAT
+        await bot.handle_callback(update, _make_context())
+        assert SettingsRepository(bot.db).get_delivery_mode(CHAT) is None
+        assert _make_bot(config)._delivery_mode(CHAT) == "chat"
+        assert "fixed" in update.callback_query.edit_message_text.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_callback_persists_mode(self, tmp_path):
