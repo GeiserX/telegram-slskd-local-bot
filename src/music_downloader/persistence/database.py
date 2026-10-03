@@ -94,7 +94,6 @@ CREATE TABLE IF NOT EXISTS pending_searches (
     message_id INTEGER,
     page INTEGER NOT NULL DEFAULT 0,
     search_id TEXT NOT NULL DEFAULT '',
-    profile TEXT NOT NULL DEFAULT '',
     hidden INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL
 );

@@ -197,6 +197,10 @@ class MusicBot:
         self._chat_generation: dict[int, int] = {}
         # Background tasks (downloads) tracked per chat for cancellation.
         self._active_tasks: dict[int, set[asyncio.Task]] = {}
+        # Downloads whose fetch is still running: the hourly prune never expires them.
+        self._fetching: set[str] = set()
+        # Downloads whose Save is running: a second tap must not save twice.
+        self._saving: set[str] = set()
         # Orphan-sweep loop handle; owned here and cancelled on shutdown.
         self._sweep_task: asyncio.Task | None = None
         # slskd health probe loop (only when create_bot got a HealthState).
@@ -235,13 +239,15 @@ class MusicBot:
         """Drop pending entries older than DOWNLOAD_CLEANUP_HOURS, deleting their files.
 
         At *startup* also drop what a restart killed: an import's downloads
-        (their job was just cancelled) and entries whose file is gone.
+        (their job was just cancelled) and entries whose file is gone, plus
+        result lists older than the cutoff. While running, result lists never
+        expire (they hold no file), and a download still fetching is kept.
         Runs at startup and before every hourly orphan sweep.
         """
         hours = self.config.download_cleanup_hours
         cutoff = time.time() - hours * 3600 if hours > 0 else None
         for dl_id, dl in list(self.downloads.items()):
-            expired = cutoff is not None and dl.created_at < cutoff
+            expired = cutoff is not None and dl.created_at < cutoff and dl_id not in self._fetching
             dead = startup and (
                 dl.job_id is not None or (dl.source_path is not None and not os.path.isfile(dl.source_path))
             )
@@ -249,7 +255,7 @@ class MusicBot:
                 del self.downloads[dl_id]
                 self._remove_download(dl)
                 logger.info("Dropped pending download %s (%s)", dl_id, "expired" if expired else "gone after restart")
-        if cutoff is not None:
+        if startup and cutoff is not None:
             for chat_id, search in list(self.pending.items()):
                 if search.created_at < cutoff:
                     del self.pending[chat_id]
@@ -367,9 +373,11 @@ class MusicBot:
         self._spotify_page.pop(chat_id, None)
         self._awaiting_direct_metadata.pop(chat_id, None)
 
-        stale_ids = [k for k, v in self.downloads.items() if v.chat_id == chat_id]
-        for dl_id in stale_ids:
+        stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
+        for dl_id, dl in stale:
             del self.downloads[dl_id]
+            # The file is left to the orphan sweep; the finished transfer goes now.
+            self.pipeline.forget_transfer(dl.result.username, dl.transfer_id)
 
         return had_work
 
@@ -770,7 +778,6 @@ class MusicBot:
                 results=ranked,
                 message_id=searching_msg.message_id,
                 search_id=search_id,
-                profile=self._profile(chat_id, user_id),
                 hidden=getattr(ranked, "hidden", 0),
             )
 
@@ -1498,13 +1505,15 @@ class MusicBot:
         query = update.callback_query
         action, dl_id = data.split(":", 1)
 
-        pending_dl = self.downloads.pop(dl_id, None)
+        # Read, not popped: the entry (and its SQLite row) stays until the save
+        # has finished, so a restart mid-save keeps the button and the orphan
+        # sweep keeps the source.
+        pending_dl = self.downloads.get(dl_id)
         if not pending_dl:
             await self._edit_approval_message(query, self._expired_text(query, "⏹ Cancelled"))
             return
 
-        if pending_dl.chat_id != chat_id:
-            self.downloads[dl_id] = pending_dl
+        if pending_dl.chat_id != chat_id or dl_id in self._saving:
             return
 
         track = pending_dl.track
@@ -1513,7 +1522,6 @@ class MusicBot:
         if action == "approve" and pending_dl.source_path and self._is_chat_delivery(chat_id, pending_dl.user_id):
             # A library-mode preview approved after switching to chat delivery:
             # deliver it here instead of writing the library.
-            self.downloads[dl_id] = pending_dl
             await self._edit_approval_message(query, "\U0001f4e8 Sending to this chat instead of saving...")
             label = f"#{pending_dl.result_index + 1}"
             status_msg = await context.bot.send_message(
@@ -1528,7 +1536,14 @@ class MusicBot:
 
         if action == "approve":
             if pending_dl.source_path:
-                target_path = await self.pipeline.save(pending_dl.source_path, track, result, pending_dl.transfer_id)
+                self._saving.add(dl_id)
+                try:
+                    target_path = await self.pipeline.save(
+                        pending_dl.source_path, track, result, pending_dl.transfer_id
+                    )
+                finally:
+                    self._saving.discard(dl_id)
+                self.downloads.pop(dl_id, None)
                 if target_path:
                     target_name = os.path.basename(target_path)
                     await self._edit_approval_message(query, f"✅ Saved: <code>{_esc(target_name)}</code>")
@@ -1539,10 +1554,12 @@ class MusicBot:
                 else:
                     await self._edit_approval_message(query, "❌ Failed to save file. Check logs.")
             else:
+                self.downloads.pop(dl_id, None)
                 await self._edit_approval_message(query, "❌ Source file not found.")
                 await self.pipeline.record_history(track, result, "file_not_found")
 
         elif action == "reject":
+            self.downloads.pop(dl_id, None)
             self._remove_download(pending_dl)
             await self._edit_approval_message(query, f"🚫 Rejected: {_esc(track.artist)} - {_esc(track.title)}")
             await self.pipeline.record_history(track, result, "rejected")
@@ -1688,7 +1705,6 @@ class MusicBot:
                 results=ranked,
                 message_id=searching_msg.message_id,
                 search_id=search_id,
-                profile=self._profile(chat_id, user_id),
             )
 
             results_text = self._format_results(track, ranked, page=0, page_size=self.config.max_results)
@@ -1885,10 +1901,13 @@ class MusicBot:
     async def _handle_import_approve(self, update, context, chat_id: int, job_id: int, track_id: int, dl_id: str):
         """Approve a download within an import flow."""
         query = update.callback_query
-        pending_dl = self.downloads.pop(dl_id, None)
+        # Read, not popped: popped only after the save (see _handle_approval).
+        pending_dl = self.downloads.get(dl_id)
 
         if not pending_dl:
             await self._edit_approval_message(query, self._expired_text(query, "⏹ Download expired"))
+            return
+        if dl_id in self._saving:
             return
 
         if not pending_dl.source_path:
@@ -1899,7 +1918,6 @@ class MusicBot:
                 "❌ Source file not ready. Download may still be in progress — try again in a moment.",
                 reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
             )
-            self.downloads[dl_id] = pending_dl
             return
 
         track = pending_dl.track
@@ -1908,7 +1926,6 @@ class MusicBot:
         if self._is_chat_delivery(chat_id, pending_dl.user_id):
             # Preview sent in library mode, approved after switching to chat
             # delivery: deliver it here instead of writing the library.
-            self.downloads[dl_id] = pending_dl
             await self._edit_approval_message(query, "\U0001f4e8 Sending to this chat instead of saving...")
             status_msg = await context.bot.send_message(
                 chat_id=chat_id,
@@ -1921,7 +1938,12 @@ class MusicBot:
             )
             return
 
-        target_path = await self.pipeline.save(pending_dl.source_path, track, result, pending_dl.transfer_id)
+        self._saving.add(dl_id)
+        try:
+            target_path = await self.pipeline.save(pending_dl.source_path, track, result, pending_dl.transfer_id)
+        finally:
+            self._saving.discard(dl_id)
+        self.downloads.pop(dl_id, None)
         if target_path:
             target_name = os.path.basename(target_path)
             await self._edit_approval_message(query, f"✅ Saved: <code>{_esc(target_name)}</code>")
@@ -2037,7 +2059,6 @@ class MusicBot:
                 results=ranked,
                 message_id=searching_msg.message_id,
                 search_id=search_id,
-                profile=profile,
             )
 
             dl_id = self._next_dl_id()
@@ -2094,16 +2115,20 @@ class MusicBot:
     ):
         """Download a file within an import flow."""
         try:
-            outcome = await self.pipeline.fetch(
-                result,
-                self._make_progress_reporter(
-                    status_msg,
-                    f"\U0001f4cb <b>Import track:</b> {_esc(track.artist)} - {_esc(track.title)}\n"
-                    f"⬇️ Downloading: <code>{_esc(result.basename)}</code>\n"
-                    f"From: <code>{_esc(result.username)}</code>",
-                ),
-                analyze=False,
-            )
+            self._fetching.add(dl_id)
+            try:
+                outcome = await self.pipeline.fetch(
+                    result,
+                    self._make_progress_reporter(
+                        status_msg,
+                        f"\U0001f4cb <b>Import track:</b> {_esc(track.artist)} - {_esc(track.title)}\n"
+                        f"⬇️ Downloading: <code>{_esc(result.basename)}</code>\n"
+                        f"From: <code>{_esc(result.username)}</code>",
+                    ),
+                    analyze=False,
+                )
+            finally:
+                self._fetching.discard(dl_id)
             if outcome.error == ENQUEUE_FAILED:
                 if self._import_auto.get(chat_id):
                     await self._import_auto_fail(
@@ -2180,6 +2205,8 @@ class MusicBot:
             if dl_id in self.downloads:
                 self.downloads[dl_id].source_path = source_path
                 self.downloads[dl_id].transfer_id = outcome.transfer_id
+                # The review window starts when the file lands, as in the plain flow.
+                self.downloads[dl_id].created_at = time.time()
                 self.downloads.save(dl_id)
 
             if self._is_chat_delivery(chat_id, self._import_user.get(chat_id)):
@@ -2397,8 +2424,10 @@ class MusicBot:
         generation: int,
     ):
         """Unattended import: save the track straight to the library, no preview upload."""
-        entry = self.downloads.pop(dl_id, None)
+        entry = self.downloads.get(dl_id)
         target_path = await self.pipeline.save(source_path, track, result, entry.transfer_id if entry else "")
+        # Popped only after saving (orphan-sweep protection, see _auto_save).
+        self.downloads.pop(dl_id, None)
         if target_path:
             target_name = os.path.basename(target_path)
             await _safe_edit(

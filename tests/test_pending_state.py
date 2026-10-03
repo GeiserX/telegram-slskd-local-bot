@@ -16,6 +16,7 @@ from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.pending_repo import PendingRepository, WriteThroughDict
 from music_downloader.pipeline import library
+from music_downloader.pipeline.fetch import FetchOutcome
 from music_downloader.search.slskd_client import SearchResult
 
 CHAT = 67890
@@ -142,7 +143,6 @@ class TestRepository:
             message_id=5,
             page=1,
             search_id="s9",
-            profile="chat",
             created_at=99.0,
         )
         repo.save_search(CHAT, search)
@@ -298,3 +298,133 @@ class TestPrune:
         assert "old" not in bot.downloads
         assert not os.path.exists(path)
         processor.sweep_orphans.assert_called_once()
+
+    def test_hourly_prune_keeps_result_lists(self):
+        # A result list holds no file: while running it stays valid, as before the state table.
+        bot = _make_bot(_make_config())
+        bot.pending[CHAT] = PendingSearch(query="q", created_at=time.time() - 25 * 3600)
+        bot._prune_pending()
+        assert CHAT in bot.pending
+
+    async def test_hourly_prune_keeps_an_import_download_still_fetching(self):
+        config = _make_config()
+        bot = _make_bot(config)
+        bot._import_auto[CHAT] = True
+        old = time.time() - 25 * 3600
+        bot.downloads["d1"] = PendingDownload(
+            track=_track(), result=_result(), chat_id=CHAT, job_id=1, track_id=2, created_at=old
+        )
+        source = _source(config)
+        survived = []
+
+        async def fetch(*args, **kwargs):
+            bot._prune_pending()  # the hourly pass lands while the peer still holds the file
+            survived.append("d1" in bot.downloads)
+            return FetchOutcome(path=source, transfer_id="t1")
+
+        bot.pipeline.fetch = fetch
+        bot._import_auto_save = AsyncMock()
+        await bot._do_import_download(
+            _context(), CHAT, _track(), _result(), AsyncMock(), 0, job_id=1, track_id=2, dl_id="d1"
+        )
+        assert survived == [True]
+        assert bot._fetching == set()
+        entry = bot.downloads["d1"]
+        assert (entry.source_path, entry.transfer_id) == (source, "t1")
+        assert entry.created_at > old, "the review window starts when the file lands"
+
+    def test_new_message_forgets_the_finished_transfers_it_drops(self):
+        bot = _make_bot(_make_config())
+        bot.downloads["d1"] = PendingDownload(
+            track=_track(), result=_result(), chat_id=CHAT, source_path="/downloads/x.flac", transfer_id="t1"
+        )
+        bot._cancel_chat_operations(CHAT)
+        assert "d1" not in bot.downloads
+        bot.pipeline.forget_transfer.assert_called_once_with("user0", "t1")
+
+
+class TestSaveOrder:
+    """The entry (and its row) outlives the save: a restart mid-save keeps the
+    button, and the source stays protected from the orphan sweep."""
+
+    def _bot_with_entry(self, **extra):
+        config = _make_config()
+        bot = _make_bot(config)
+        source = _source(config)
+        bot.downloads["d1"] = PendingDownload(
+            track=_track(), result=_result(), chat_id=CHAT, source_path=source, user_id=USER, transfer_id="t1", **extra
+        )
+        repo = PendingRepository(Database(os.path.join(config.data_dir, "importer.db")))
+        seen = []
+
+        async def save(*args):
+            seen.append(("d1" in bot.downloads, "d1" in repo.load_downloads()))
+            return "/music/Nancy Sinatra - Bang Bang.flac"
+
+        bot.pipeline.save = AsyncMock(side_effect=save)
+        return bot, source, seen
+
+    async def test_auto_save(self):
+        bot, _, seen = self._bot_with_entry()
+        await bot._auto_save(CHAT, "d1", bot.downloads["d1"], AsyncMock(), "q", "#1")
+        assert seen == [(True, True)]
+        assert "d1" not in bot.downloads
+
+    async def test_approve(self):
+        bot, _, seen = self._bot_with_entry()
+        await bot.handle_callback(_tap("approve:d1"), _context())
+        assert seen == [(True, True)]
+        assert "d1" not in bot.downloads
+
+    async def test_import_approve(self):
+        bot, _, seen = self._bot_with_entry(job_id=1, track_id=2)
+        bot._process_next_import_track = AsyncMock()
+        await bot._handle_import_approve(_tap("x"), _context(), CHAT, 1, 2, "d1")
+        assert seen == [(True, True)]
+        assert "d1" not in bot.downloads
+
+    async def test_import_auto_save(self):
+        bot, source, seen = self._bot_with_entry(job_id=1, track_id=2)
+        bot._process_next_import_track = AsyncMock()
+        await bot._import_auto_save(_context(), CHAT, 1, 2, "d1", _track(), _result(), source, AsyncMock(), 0)
+        assert seen == [(True, True)]
+        assert "d1" not in bot.downloads
+
+    async def test_a_second_tap_during_the_save_does_not_save_twice(self):
+        bot, _, _ = self._bot_with_entry()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_save(*args):
+            entered.set()
+            await release.wait()
+            return "/music/Nancy Sinatra - Bang Bang.flac"
+
+        bot.pipeline.save = AsyncMock(side_effect=slow_save)
+        first = asyncio.ensure_future(bot.handle_callback(_tap("approve:d1"), _context()))
+        await entered.wait()
+        second = asyncio.ensure_future(bot.handle_callback(_tap("approve:d1"), _context()))
+        for _ in range(20):  # let the second tap run as far as it goes
+            await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(first, second)
+        bot.pipeline.save.assert_awaited_once()
+
+    async def test_import_approve_second_tap(self):
+        bot, _, _ = self._bot_with_entry(job_id=1, track_id=2)
+        bot._process_next_import_track = AsyncMock()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_save(*args):
+            entered.set()
+            await release.wait()
+            return "/music/Nancy Sinatra - Bang Bang.flac"
+
+        bot.pipeline.save = AsyncMock(side_effect=slow_save)
+        first = asyncio.ensure_future(bot._handle_import_approve(_tap("x"), _context(), CHAT, 1, 2, "d1"))
+        await entered.wait()
+        second = asyncio.ensure_future(bot._handle_import_approve(_tap("x"), _context(), CHAT, 1, 2, "d1"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(first, second)
+        bot.pipeline.save.assert_awaited_once()

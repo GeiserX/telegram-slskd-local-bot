@@ -629,18 +629,17 @@ class TestDoImportDownload:
         context = _make_context()
         # Lower the upload cap below our file
         bot.pipeline.upload_limit_bytes = 50
-        if True:
-            await bot._do_import_download(
-                context,
-                chat_id,
-                _make_track(),
-                result,
-                status_msg,
-                generation=0,
-                job_id=1,
-                track_id=5,
-                dl_id=dl_id,
-            )
+        await bot._do_import_download(
+            context,
+            chat_id,
+            _make_track(),
+            result,
+            status_msg,
+            generation=0,
+            job_id=1,
+            track_id=5,
+            dl_id=dl_id,
+        )
         mock_edit.assert_awaited()
         assert "too large" in mock_edit.call_args[0][1]
         os.unlink(source.name)

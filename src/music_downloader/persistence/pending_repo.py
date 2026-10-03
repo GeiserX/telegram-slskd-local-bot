@@ -33,8 +33,6 @@ class PendingSearch:
     # Unique id binding result keyboards to this search; stale buttons from an
     # earlier search must never resolve against a newer result list.
     search_id: str = ""
-    # Ranking profile the results were ranked under ("library" or "chat").
-    profile: str = ""
     # Copies the title guard dropped as unrelated (shown in the results header).
     hidden: int = 0
     created_at: float = field(default_factory=time.time)
@@ -126,8 +124,8 @@ class PendingRepository:
     def save_search(self, chat_id: int, search: PendingSearch) -> None:
         self._conn.execute(
             """INSERT OR REPLACE INTO pending_searches
-            (chat_id, query, track, results, message_id, page, search_id, profile, hidden, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (chat_id, query, track, results, message_id, page, search_id, hidden, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 chat_id,
                 search.query,
@@ -136,7 +134,6 @@ class PendingRepository:
                 search.message_id,
                 search.page,
                 search.search_id,
-                search.profile,
                 search.hidden,
                 search.created_at,
             ),
