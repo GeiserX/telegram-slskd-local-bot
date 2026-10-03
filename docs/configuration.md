@@ -24,9 +24,9 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | `DURATION_TOLERANCE_SECS` | No | `5` | Duration match tolerance in seconds |
 | `SEARCH_TIMEOUT_SECS` | No | `30` | slskd search timeout |
 | `DOWNLOAD_TIMEOUT_SECS` | No | `600` | Download completion timeout |
-| `DOWNLOAD_CLEANUP_HOURS` | No | `24` | Hours before abandoned files in `DOWNLOAD_DIR` are auto-deleted (hourly sweep; `0` disables). In-flight transfers are never touched |
+| `DOWNLOAD_CLEANUP_HOURS` | No | `24` | Hours before abandoned files in `DOWNLOAD_DIR` are auto-deleted (hourly sweep; `0` disables). In-flight transfers are never touched. Downloads still waiting on a button (Save, Reject, Retry) survive a restart for this long, then expire with their file |
 | `EXCLUDE_KEYWORDS` | No | `live,remix,...` | Comma-separated keywords to filter out |
 | `FILENAME_TEMPLATE` | No | `{artist} - {title}` | Output filename template |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
-| `HEALTH_PORT` | No | `8080` | Health check HTTP port |
+| `HEALTH_PORT` | No | `8080` | Health check HTTP port. `GET /health` answers 200 only while the bot is polling Telegram (a successful poll in the last 120 s) and slskd answered in the last 60 s; otherwise 503 with a JSON body naming the failed check. `GET /ready` is a constant 200 |
 

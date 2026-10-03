@@ -4,12 +4,13 @@ Telegram bot handlers for music search and download.
 
 import asyncio
 import contextlib
+import dataclasses
 import datetime
 import html
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from uuid import uuid4
 
 from telegram import BotCommand, Message, Update
@@ -31,6 +32,7 @@ from music_downloader.bot.keyboards import (
     build_direct_search_keyboard,
     build_duplicate_keyboard,
     build_import_confirm_keyboard,
+    build_import_retry_keyboard,
     build_import_skip_keyboard,
     build_import_track_keyboard,
     build_results_keyboard,
@@ -38,10 +40,13 @@ from music_downloader.bot.keyboards import (
     build_retry_next_keyboard,
     build_spotify_keyboard,
 )
+from music_downloader.bot.poll_request import PollTrackingRequest
 from music_downloader.config import Config
+from music_downloader.health import HealthState, slskd_probe_loop
 from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.import_repo import JobStatus, TrackStatus
+from music_downloader.persistence.pending_repo import PendingDownload, PendingSearch, WriteThroughDict
 from music_downloader.pipeline import Pipeline
 from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED, opus_bitrates_that_fit
 from music_downloader.pipeline.resolve import parse_query_artist_title, synthetic_track
@@ -64,6 +69,9 @@ TELEGRAM_FILE_LIMIT = CHAT_SIZE_LIMIT_BYTES
 # track into the chat as the deliverable and saves nothing anywhere.
 DELIVERY_LIBRARY = "library"
 DELIVERY_CHAT = "chat"
+
+# Shown when a button from before a restart points at state that no longer exists.
+RESTART_EXPIRED = "⌛ This button expired after a restart. Send a new search."
 
 
 def _esc(text) -> str:
@@ -141,37 +149,6 @@ async def _safe_query_edit(query, text: str, **kwargs) -> bool:
     return False
 
 
-@dataclass
-class PendingSearch:
-    """Holds state for an active search session."""
-
-    query: str
-    track: TrackInfo | None = None
-    results: list[SearchResult] = field(default_factory=list)
-    message_id: int | None = None
-    page: int = 0
-    # Unique id binding result keyboards to this search; stale buttons from an
-    # earlier search must never resolve against a newer result list.
-    search_id: str = ""
-
-
-@dataclass
-class PendingDownload:
-    """Tracks a single file download waiting for approval."""
-
-    track: TrackInfo
-    result: SearchResult
-    chat_id: int
-    source_path: str | None = None  # Path in /downloads
-    status_message_id: int | None = None
-    approval_message_id: int | None = None  # Message with approve/reject buttons
-    result_index: int = 0  # Position in ranked results list
-    search_id: str = ""  # Search this download came from (see PendingSearch)
-    # Who started it: TELEGRAM_CHAT_DELIVERY_USERS is keyed by user id, which
-    # differs from the chat id outside private chats.
-    user_id: int | None = None
-
-
 def _component(name: str) -> property:
     """A pipeline component exposed on the bot, so assigning ``bot.slskd`` replaces it in the pipeline too."""
     return property(
@@ -193,12 +170,21 @@ class MusicBot:
         # Per-chat stored delivery mode cache (None = never set, env list decides).
         self._delivery_cache: dict[int, str | None] = {}
 
-        # Per-user pending searches (chat_id -> PendingSearch)
-        self.pending: dict[int, PendingSearch] = {}
+        # When this process started: a button on an older message whose state
+        # is gone expired with the restart (see _expired_text).
+        self._started_at = time.time()
 
-        # Active downloads keyed by short unique ID
-        # download_id -> PendingDownload
-        self.downloads: dict[str, PendingDownload] = {}
+        # Per-chat pending searches (chat_id -> PendingSearch) and downloads
+        # waiting on a tap (download_id -> PendingDownload). Both are written
+        # through to SQLite on every change and loaded back here, so a Save,
+        # Reject, Retry or pick button survives a restart.
+        repo = self.pending_repo
+        self.pending: dict[int, PendingSearch] = WriteThroughDict(
+            repo.load_searches(), repo.save_search, repo.delete_search
+        )
+        self.downloads: dict[str, PendingDownload] = WriteThroughDict(
+            repo.load_downloads(), repo.save_download, repo.delete_download
+        )
 
         # Per-chat Spotify candidates when multiple tracks match (chat_id -> list[TrackInfo])
         self._spotify_candidates: dict[int, list[TrackInfo]] = {}
@@ -216,6 +202,8 @@ class MusicBot:
         self._active_tasks: dict[int, set[asyncio.Task]] = {}
         # Orphan-sweep loop handle; owned here and cancelled on shutdown.
         self._sweep_task: asyncio.Task | None = None
+        # slskd health probe loop (only when create_bot got a HealthState).
+        self._probe_task: asyncio.Task | None = None
 
         # Active import tracking (chat_id -> job_id)
         self._active_import: dict[int, int] = {}
@@ -231,6 +219,7 @@ class MusicBot:
         stale_jobs = self.import_repo.cancel_stale_jobs()
         if stale_jobs:
             logger.warning("Cancelled %d stale import job(s) left over from a previous run", stale_jobs)
+        self._prune_pending(startup=True)
 
     # The pipeline's components, reachable (and replaceable) through the bot:
     # /status, /history and the import flow read them here.
@@ -242,7 +231,43 @@ class MusicBot:
     history_repo = _component("history_repo")
     import_repo = _component("import_repo")
     settings_repo = _component("settings_repo")
+    pending_repo = _component("pending_repo")
     playlist_resolver = _component("playlist_resolver")
+
+    def _prune_pending(self, startup: bool = False) -> None:
+        """Drop pending entries older than DOWNLOAD_CLEANUP_HOURS, deleting their files.
+
+        At *startup* also drop what a restart killed: an import's downloads
+        (their job was just cancelled) and entries whose file is gone.
+        Runs at startup and before every hourly orphan sweep.
+        """
+        hours = self.config.download_cleanup_hours
+        cutoff = time.time() - hours * 3600 if hours > 0 else None
+        for dl_id, dl in list(self.downloads.items()):
+            expired = cutoff is not None and dl.created_at < cutoff
+            dead = startup and (
+                dl.job_id is not None or (dl.source_path is not None and not os.path.isfile(dl.source_path))
+            )
+            if expired or dead:
+                del self.downloads[dl_id]
+                self._remove_download(dl)
+                logger.info("Dropped pending download %s (%s)", dl_id, "expired" if expired else "gone after restart")
+        if cutoff is not None:
+            for chat_id, search in list(self.pending.items()):
+                if search.created_at < cutoff:
+                    del self.pending[chat_id]
+
+    def _remove_download(self, dl: PendingDownload) -> None:
+        """Delete a download's file and remove its finished transfer from slskd."""
+        self.pipeline.remove_file(dl.source_path)
+        self.pipeline.forget_transfer(dl.result.username, dl.transfer_id)
+
+    def _expired_text(self, query, default: str) -> str:
+        """*default*, or RESTART_EXPIRED when the tapped message predates this process."""
+        date = getattr(query.message, "date", None)
+        if isinstance(date, datetime.datetime) and date.timestamp() < self._started_at:
+            return RESTART_EXPIRED
+        return default
 
     def _profile(self, chat_id: int | None, user_id: int | None = None) -> str:
         """Ranking profile for this chat: chat delivery weighs quality against size."""
@@ -741,6 +766,7 @@ class MusicBot:
                 results=ranked,
                 message_id=searching_msg.message_id,
                 search_id=search_id,
+                profile=self._profile(chat_id, user_id),
             )
 
             results_text = self._format_results(track, ranked, page=0, page_size=self.config.max_results)
@@ -864,7 +890,9 @@ class MusicBot:
         query = update.callback_query
         candidates = self._spotify_candidates.get(chat_id)
         if not candidates:
-            await query.edit_message_text("Search expired. Send a new query.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(
+                self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
+            )
             return
 
         try:
@@ -889,7 +917,8 @@ class MusicBot:
         self._spotify_page.pop(chat_id, None)
 
         if action == "cancel" or not candidates:
-            await query.edit_message_text("Cancelled.", parse_mode=ParseMode.HTML)
+            text = "Cancelled." if action == "cancel" else self._expired_text(query, "Cancelled.")
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML)
             return
 
         try:
@@ -927,7 +956,9 @@ class MusicBot:
         query = update.callback_query
         pending = self.pending.get(chat_id)
         if not pending or not pending.track:
-            await query.edit_message_text("Search expired. Send a new query.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(
+                self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
+            )
             return
 
         search_id, action = self._split_search_callback(data)
@@ -941,6 +972,7 @@ class MusicBot:
             return
 
         pending.page = page
+        self.pending.save(chat_id)
         results_text = self._format_results(
             pending.track,
             pending.results,
@@ -960,7 +992,9 @@ class MusicBot:
         query = update.callback_query
         pending = self.pending.get(chat_id)
         if not pending:
-            await query.edit_message_text("Search expired. Send a new query.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(
+                self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
+            )
             return
 
         search_id, action = self._split_search_callback(data)
@@ -1123,6 +1157,7 @@ class MusicBot:
                 result_index=result_index,
                 search_id=search_id,
                 user_id=user_id,
+                transfer_id=outcome.transfer_id,
             )
             self.downloads[dl_id] = pending_dl
 
@@ -1195,6 +1230,7 @@ class MusicBot:
                         )
                 if dl_id in self.downloads:
                     self.downloads[dl_id].approval_message_id = sent.message_id
+                    self.downloads.save(dl_id)
 
         except asyncio.CancelledError:
             logger.info("Download cancelled for %s", result.basename)
@@ -1214,7 +1250,7 @@ class MusicBot:
         track = pending_dl.track
         result = pending_dl.result
 
-        target_path = await self.pipeline.save(pending_dl.source_path, track, result)
+        target_path = await self.pipeline.save(pending_dl.source_path, track, result, pending_dl.transfer_id)
         # Popped only after saving: the entry keeps the source protected
         # from the orphan sweep until it is gone.
         self.downloads.pop(dl_id, None)
@@ -1248,7 +1284,7 @@ class MusicBot:
             context, chat_id, track, result, source_path, f"{label} {quality_line}"
         )
         if outcome == "sent":
-            await self.pipeline.discard(source_path)
+            await self.pipeline.discard(source_path, result.username, pending_dl.transfer_id)
             # Popped only after cleanup: the entry keeps the source protected
             # from the orphan sweep until it is gone.
             self.downloads.pop(dl_id, None)
@@ -1389,6 +1425,7 @@ class MusicBot:
                         )
                     if dl_id in self.downloads:
                         self.downloads[dl_id].approval_message_id = sent.message_id
+                        self.downloads.save(dl_id)
                     return
                 finally:
                     with contextlib.suppress(OSError):
@@ -1414,6 +1451,7 @@ class MusicBot:
             )
             if dl_id in self.downloads:
                 self.downloads[dl_id].approval_message_id = sent.message_id
+                self.downloads.save(dl_id)
             return
 
         try:
@@ -1439,6 +1477,7 @@ class MusicBot:
                 )
             if dl_id in self.downloads:
                 self.downloads[dl_id].approval_message_id = sent.message_id
+                self.downloads.save(dl_id)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(preview_path)
@@ -1450,7 +1489,7 @@ class MusicBot:
 
         pending_dl = self.downloads.pop(dl_id, None)
         if not pending_dl:
-            await self._edit_approval_message(query, "⏹ Cancelled")
+            await self._edit_approval_message(query, self._expired_text(query, "⏹ Cancelled"))
             return
 
         if pending_dl.chat_id != chat_id:
@@ -1478,7 +1517,7 @@ class MusicBot:
 
         if action == "approve":
             if pending_dl.source_path:
-                target_path = await self.pipeline.save(pending_dl.source_path, track, result)
+                target_path = await self.pipeline.save(pending_dl.source_path, track, result, pending_dl.transfer_id)
                 if target_path:
                     target_name = os.path.basename(target_path)
                     await self._edit_approval_message(query, f"✅ Saved: <code>{_esc(target_name)}</code>")
@@ -1493,7 +1532,7 @@ class MusicBot:
                 await self.pipeline.record_history(track, result, "file_not_found")
 
         elif action == "reject":
-            self.pipeline.remove_file(pending_dl.source_path)
+            self._remove_download(pending_dl)
             await self._edit_approval_message(query, f"🚫 Rejected: {_esc(track.artist)} - {_esc(track.title)}")
             await self.pipeline.record_history(track, result, "rejected")
             logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
@@ -1513,7 +1552,7 @@ class MusicBot:
         stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
-            self.pipeline.remove_file(dl.source_path)
+            self._remove_download(dl)
             if dl.approval_message_id:
                 try:
                     await context.bot.edit_message_caption(
@@ -1581,7 +1620,9 @@ class MusicBot:
 
         pending = self.pending.get(chat_id)
         if not pending:
-            await query.edit_message_text("Search expired. Send a new query.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(
+                self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
+            )
             return
 
         search_query = pending.query
@@ -1636,6 +1677,7 @@ class MusicBot:
                 results=ranked,
                 message_id=searching_msg.message_id,
                 search_id=search_id,
+                profile=self._profile(chat_id, user_id),
             )
 
             results_text = self._format_results(track, ranked, page=0, page_size=self.config.max_results)
@@ -1813,6 +1855,7 @@ class MusicBot:
 
         elif prefix == "ir":
             track_id = int(parts[1])
+            self._drop_import_entries(job_id, track_id)
             await asyncio.to_thread(
                 self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, "Rejected by user"
             )
@@ -1822,6 +1865,7 @@ class MusicBot:
 
         elif prefix == "is":
             track_id = int(parts[1])
+            self._drop_import_entries(job_id, track_id)
             await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.skipped)
             await _safe_query_edit(query, "⏭ Track skipped.")
             generation = self._chat_generation.get(chat_id, 0)
@@ -1833,7 +1877,7 @@ class MusicBot:
         pending_dl = self.downloads.pop(dl_id, None)
 
         if not pending_dl:
-            await self._edit_approval_message(query, "⏹ Download expired")
+            await self._edit_approval_message(query, self._expired_text(query, "⏹ Download expired"))
             return
 
         if not pending_dl.source_path:
@@ -1866,7 +1910,7 @@ class MusicBot:
             )
             return
 
-        target_path = await self.pipeline.save(pending_dl.source_path, track, result)
+        target_path = await self.pipeline.save(pending_dl.source_path, track, result, pending_dl.transfer_id)
         if target_path:
             target_name = os.path.basename(target_path)
             await self._edit_approval_message(query, f"✅ Saved: <code>{_esc(target_name)}</code>")
@@ -1982,6 +2026,7 @@ class MusicBot:
                 results=ranked,
                 message_id=searching_msg.message_id,
                 search_id=search_id,
+                profile=profile,
             )
 
             dl_id = self._next_dl_id()
@@ -1993,6 +2038,9 @@ class MusicBot:
                 status_message_id=searching_msg.message_id,
                 search_id=search_id,
                 user_id=self._import_user.get(chat_id),
+                job_id=job_id,
+                track_id=track_id,
+                generation=generation,
             )
             self.downloads[dl_id] = pending_dl
 
@@ -2089,7 +2137,7 @@ class MusicBot:
                     status_msg,
                     f"❌ Download failed: {_esc(state)}\n<code>{_esc(result.basename)}</code>",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=build_retry_keyboard(dl_id),
+                    reply_markup=self._import_retry_keyboard(chat_id, job_id, track_id, dl_id),
                 )
                 await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
@@ -2120,6 +2168,8 @@ class MusicBot:
             # Update PendingDownload with source path
             if dl_id in self.downloads:
                 self.downloads[dl_id].source_path = source_path
+                self.downloads[dl_id].transfer_id = outcome.transfer_id
+                self.downloads.save(dl_id)
 
             if self._is_chat_delivery(chat_id, self._import_user.get(chat_id)):
                 # Nothing to review: the track itself is the deliverable.
@@ -2207,6 +2257,64 @@ class MusicBot:
         await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.failed, reason)
         await self._process_next_import_track(context, chat_id, job_id, generation)
 
+    def _import_retry_keyboard(self, chat_id: int, job_id: int, track_id: int, dl_id: str):
+        """Retry (and Try next while a next copy exists) plus Mark failed / Skip, for a review import."""
+        entry = self.downloads.get(dl_id)
+        pending = self._import_pending.get(chat_id)
+        has_next = (
+            entry is not None
+            and pending is not None
+            and pending.search_id == entry.search_id
+            and entry.result_index + 1 < len(pending.results)
+        )
+        return build_import_retry_keyboard(job_id, track_id, dl_id, has_next)
+
+    def _drop_import_entries(self, job_id: int, track_id: int) -> None:
+        """Forget a finished import track's downloads, deleting any file still waiting on review."""
+        for dl_id, dl in list(self.downloads.items()):
+            if dl.job_id == job_id and dl.track_id == track_id:
+                del self.downloads[dl_id]
+                self._remove_download(dl)
+
+    async def _retry_import_download(
+        self, update, context, chat_id: int, dl_id: str, base: PendingDownload, result: SearchResult, index: int
+    ) -> None:
+        """Re-enter the import download for *base*'s track with *result* (Retry, or Try next)."""
+        query = update.callback_query
+        job_id, track_id = base.job_id, base.track_id
+        if self._is_stale(chat_id, base.generation):
+            # /cancel (or a newer request) ended this import; a stale button starts nothing.
+            await _safe_query_edit(query, self._expired_text(query, "⏹ This import is no longer running."))
+            return
+
+        self.downloads[dl_id] = dataclasses.replace(
+            base,
+            result=result,
+            result_index=index,
+            source_path=None,
+            transfer_id="",
+            approval_message_id=None,
+            created_at=time.time(),
+        )
+        verb = "\U0001f504 Retrying" if index == base.result_index else "⏭ Trying next result"
+        await _safe_query_edit(query, f"{verb}: <code>{_esc(result.basename)}</code>", parse_mode=ParseMode.HTML)
+        await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.searching)
+        track = base.track
+        status_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"\U0001f4cb <b>Import track:</b> {_esc(track.artist)} - {_esc(track.title)}\n"
+            f"⬇️ Downloading: <code>{_esc(result.basename)}</code>\n"
+            f"From: <code>{_esc(result.username)}</code> | {_esc(result.quality_display)}",
+            parse_mode=ParseMode.HTML,
+        )
+        task = context.application.create_task(
+            self._do_import_download(
+                context, chat_id, track, result, status_msg, base.generation, job_id, track_id, dl_id
+            ),
+            update=update,
+        )
+        self._track_task(chat_id, task)
+
     async def _import_deliver(
         self,
         context,
@@ -2226,9 +2334,10 @@ class MusicBot:
             f"\U0001f4cb Import: {_esc(track.artist)} - {_esc(track.title)}\n"
             f"{_esc(result.quality_display)} | {result.duration_display}"
         )
+        entry = self.downloads.get(dl_id)
         outcome, note = await self._send_to_chat(context, chat_id, track, result, source_path, caption)
         if outcome == "sent":
-            await self.pipeline.discard(source_path)
+            await self.pipeline.discard(source_path, result.username, entry.transfer_id if entry else "")
             # Popped only after cleanup (orphan-sweep protection, see _auto_save).
             self.downloads.pop(dl_id, None)
             await _safe_edit(status_msg, f"{heading}\n✅ Sent: <code>{_esc(note)}</code>", parse_mode=ParseMode.HTML)
@@ -2252,13 +2361,15 @@ class MusicBot:
                 outcome,
             )
             return
-        self.downloads.pop(dl_id, None)
-        await _safe_edit(
-            status_msg,
-            f"{heading}\n❌ {note}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=build_import_skip_keyboard(job_id, track_id),
-        )
+        if entry is not None:
+            # Keep the entry so Retry / Try next work, as after a plain download.
+            # The source is no longer protected: the orphan sweep removes it.
+            entry.source_path = None
+            self.downloads[dl_id] = entry
+            markup = self._import_retry_keyboard(chat_id, job_id, track_id, dl_id)
+        else:
+            markup = build_import_skip_keyboard(job_id, track_id)
+        await _safe_edit(status_msg, f"{heading}\n❌ {note}", parse_mode=ParseMode.HTML, reply_markup=markup)
         await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
 
     async def _import_auto_save(
@@ -2275,8 +2386,8 @@ class MusicBot:
         generation: int,
     ):
         """Unattended import: save the track straight to the library, no preview upload."""
-        self.downloads.pop(dl_id, None)
-        target_path = await self.pipeline.save(source_path, track, result)
+        entry = self.downloads.pop(dl_id, None)
+        target_path = await self.pipeline.save(source_path, track, result, entry.transfer_id if entry else "")
         if target_path:
             target_name = os.path.basename(target_path)
             await _safe_edit(
@@ -2309,11 +2420,17 @@ class MusicBot:
 
         pending_dl = self.downloads.pop(dl_id, None)
         if not pending_dl:
-            await _safe_query_edit(query, "⏹ Download expired. Send a new search.")
+            await _safe_query_edit(query, self._expired_text(query, "⏹ Download expired. Send a new search."))
             return
 
         if pending_dl.chat_id != chat_id:
             self.downloads[dl_id] = pending_dl
+            return
+
+        if pending_dl.job_id is not None:
+            await self._retry_import_download(
+                update, context, chat_id, dl_id, pending_dl, pending_dl.result, pending_dl.result_index
+            )
             return
 
         result = pending_dl.result
@@ -2352,30 +2469,43 @@ class MusicBot:
         query = update.callback_query
         dl_id = data.split(":", 1)[1]
 
-        pending = self.pending.get(chat_id) or self._import_pending.get(chat_id)
         pending_dl = self.downloads.pop(dl_id, None)
+        is_import = pending_dl is not None and pending_dl.job_id is not None
+        if is_import:
+            pending = self._import_pending.get(chat_id)
+            # The import must still be able to move on when there is nothing next.
+            markup = build_import_skip_keyboard(pending_dl.job_id, pending_dl.track_id)
+        else:
+            pending = self.pending.get(chat_id) or self._import_pending.get(chat_id)
+            markup = None
 
-        if not pending or not pending.results or not pending_dl:
-            await _safe_query_edit(query, "⏹ No more results available. Try a new search.")
+        if not pending_dl:
+            await _safe_query_edit(query, self._expired_text(query, "⏹ No more results available. Try a new search."))
             return
 
         if pending_dl.chat_id != chat_id:
             self.downloads[dl_id] = pending_dl
             return
 
-        if pending.search_id != pending_dl.search_id:
+        if not pending or not pending.results or pending.search_id != pending_dl.search_id:
             # The failed download belongs to an older search; indexing into the
             # current result list would fetch an unrelated file.
-            await _safe_query_edit(query, "⏹ No more results available. Try a new search.")
+            await _safe_query_edit(query, "⏹ No more results available. Try a new search.", reply_markup=markup)
             return
 
         next_idx = pending_dl.result_index + 1
         if next_idx >= len(pending.results):
-            await _safe_query_edit(query, "⏹ No more results to try.")
+            await _safe_query_edit(query, "⏹ No more results to try.", reply_markup=markup)
             return
 
         next_result = pending.results[next_idx]
         track = pending_dl.track
+
+        if is_import:
+            await self._retry_import_download(
+                update, context, chat_id, self._next_dl_id(), pending_dl, next_result, next_idx
+            )
+            return
 
         await _safe_query_edit(
             query,
@@ -2488,7 +2618,8 @@ class MusicBot:
     async def _orphan_sweep_loop(self) -> None:
         """The pipeline's hourly orphan sweep, with this bot's in-flight downloads protected."""
         await self.pipeline.orphan_sweep_loop(
-            lambda: {dl.source_path for dl in self.downloads.values() if dl.source_path}
+            lambda: {dl.source_path for dl in self.downloads.values() if dl.source_path},
+            prune=self._prune_pending,
         )
 
     async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2523,12 +2654,14 @@ async def _register_commands(app: Application) -> None:
     )
 
 
-def create_bot(config: Config) -> Application:
+def create_bot(config: Config, health: HealthState | None = None) -> Application:
     """
     Create and configure the Telegram bot application.
 
     Args:
         config: Application configuration.
+        health: When given, every successful getUpdates poll and a background
+            slskd probe are recorded in it (GET /health reads them).
 
     Returns:
         Configured telegram Application ready to run.
@@ -2545,21 +2678,25 @@ def create_bot(config: Config) -> Application:
                 f"Orphan sweep enabled: files older than {config.download_cleanup_hours}h "
                 f"are removed from the downloads dir hourly"
             )
+        if health is not None:
+            bot._probe_task = asyncio.get_running_loop().create_task(
+                slskd_probe_loop(lambda: bot.slskd.is_up(), health)
+            )
 
     async def _post_shutdown(app: Application) -> None:
-        task = getattr(bot, "_sweep_task", None)
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        for name in ("_sweep_task", "_probe_task"):
+            task = getattr(bot, name, None)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
-    app = (
-        Application.builder()
-        .token(config.telegram_bot_token)
-        .post_init(_post_init)
-        .post_shutdown(_post_shutdown)
-        .build()
-    )
+    builder = Application.builder().token(config.telegram_bot_token).post_init(_post_init).post_shutdown(_post_shutdown)
+    if health is not None:
+        builder = builder.get_updates_request(PollTrackingRequest(health.mark_poll))
+    app = builder.build()
+    if health is not None:
+        health.telegram_running = lambda: app.running and app.updater is not None and app.updater.running
 
     # Only react to NEW messages: an edited message arrives with
     # update.message=None and would crash every handler that replies.

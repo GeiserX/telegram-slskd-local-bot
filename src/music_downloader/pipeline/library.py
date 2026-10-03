@@ -69,17 +69,23 @@ async def record_history(
 
 
 async def orphan_sweep_loop(
-    processor: FileProcessor, max_age_hours: int, protected_paths: Callable[[], set[str]]
+    processor: FileProcessor,
+    max_age_hours: int,
+    protected_paths: Callable[[], set[str]],
+    prune: Callable[[], None] | None = None,
 ) -> None:
     """Hourly TTL sweep of abandoned files in the downloads dir.
 
     Runs once at startup (catching leftovers from before a restart) and
     then every hour. *protected_paths* names the in-flight downloads, which
     are protected explicitly on top of the mtime-based safety in
-    FileProcessor.sweep_orphans.
+    FileProcessor.sweep_orphans. *prune*, when given, runs first on every
+    pass (the caller drops its expired pending entries and their files).
     """
     while True:
         try:
+            if prune is not None:
+                prune()
             deleted, freed = await asyncio.to_thread(processor.sweep_orphans, max_age_hours, protected_paths())
             if deleted:
                 logger.info(f"Orphan sweep: removed {deleted} abandoned file(s), freed {freed / (1024 * 1024):.0f} MB")

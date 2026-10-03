@@ -91,6 +91,7 @@ class DownloadStatus:
     bytes_transferred: int = 0
     size: int = 0
     average_speed: float = 0.0
+    transfer_id: str = ""  # slskd's id for this transfer (removes it from slskd later)
 
     @property
     def is_complete(self) -> bool:
@@ -389,6 +390,7 @@ class SlskdClient:
                             bytes_transferred=transfer.get("bytesTransferred", 0),
                             size=transfer.get("size", 0),
                             average_speed=transfer.get("averageSpeed", 0),
+                            transfer_id=transfer.get("id", ""),
                         )
 
             return None
@@ -449,6 +451,29 @@ class SlskdClient:
 
         logger.warning(f"Download timed out after {timeout_secs}s: {filename}")
         return None
+
+    def remove_transfer(self, username: str, transfer_id: str) -> bool:
+        """Remove a finished download from slskd's transfer list (the file itself is not touched).
+
+        Best effort: returns False instead of raising, logging at INFO.
+        """
+        try:
+            ok = self.client.transfers.cancel_download(username, transfer_id, remove=True)
+        except Exception as exc:
+            logger.info("Could not remove transfer %s from %s in slskd: %s", transfer_id, username, exc)
+            return False
+        if not ok:
+            logger.info("slskd refused to remove transfer %s from %s", transfer_id, username)
+        return bool(ok)
+
+    def is_up(self) -> bool:
+        """Whether slskd answers application/state (the health probe)."""
+        try:
+            self.client.application.state()
+        except Exception as exc:
+            logger.debug("slskd health probe failed: %s", exc)
+            return False
+        return True
 
     def get_downloads_directory(self) -> list[dict]:
         """Get the contents of the slskd downloads directory."""

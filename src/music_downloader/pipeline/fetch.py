@@ -41,6 +41,8 @@ class FetchOutcome:
     error: str | None = None
     # slskd transfer state behind DOWNLOAD_FAILED ("Timeout" when it never finished).
     state: str = ""
+    # slskd's id for the finished transfer (see Pipeline.forget_transfer).
+    transfer_id: str = ""
 
     @property
     def ok(self) -> bool:
@@ -79,7 +81,7 @@ async def fetch(
         return FetchOutcome(error=FILE_NOT_FOUND)
 
     verdict = await analyze(path) if analyze is not None and result.extension in CHECKABLE_EXTENSIONS else None
-    return FetchOutcome(path=path, verdict=verdict)
+    return FetchOutcome(path=path, verdict=verdict, transfer_id=status.transfer_id)
 
 
 def opus_bitrates_that_fit(duration_secs: int) -> list[int]:

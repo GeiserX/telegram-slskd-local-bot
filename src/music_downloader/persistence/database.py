@@ -66,6 +66,38 @@ CREATE TABLE IF NOT EXISTS chat_settings (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Buttons that must keep working across a restart: one row per download
+-- waiting on a Save/Reject/Retry tap, one row per chat with a result list.
+-- track/result are JSON; created_at is a Unix timestamp (pruned by age).
+CREATE TABLE IF NOT EXISTS pending_downloads (
+    dl_id TEXT PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER,
+    track TEXT NOT NULL,
+    result TEXT NOT NULL,
+    source_path TEXT,
+    status_message_id INTEGER,
+    approval_message_id INTEGER,
+    result_index INTEGER NOT NULL DEFAULT 0,
+    search_id TEXT NOT NULL DEFAULT '',
+    transfer_id TEXT NOT NULL DEFAULT '',
+    job_id INTEGER,
+    track_id INTEGER,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_searches (
+    chat_id INTEGER PRIMARY KEY,
+    query TEXT NOT NULL,
+    track TEXT,
+    results TEXT NOT NULL DEFAULT '[]',
+    message_id INTEGER,
+    page INTEGER NOT NULL DEFAULT 0,
+    search_id TEXT NOT NULL DEFAULT '',
+    profile TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_import_tracks_job_status ON import_tracks(job_id, status);
 CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_download_history_created ON download_history(created_at);

@@ -8,6 +8,7 @@ are plain dataclasses, so another front end can drive the same Pipeline.
 """
 
 import asyncio
+import threading
 from collections.abc import Callable
 
 from music_downloader.config import Config
@@ -16,6 +17,7 @@ from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.history_repo import HistoryRepository
 from music_downloader.persistence.import_repo import ImportRepository
+from music_downloader.persistence.pending_repo import PendingRepository
 from music_downloader.persistence.settings_repo import SettingsRepository
 from music_downloader.pipeline import fetch as _fetch
 from music_downloader.pipeline import library as _library
@@ -50,6 +52,7 @@ class Pipeline:
         self.history_repo = HistoryRepository(self.db)
         self.import_repo = ImportRepository(self.db)
         self.settings_repo = SettingsRepository(self.db)
+        self.pending_repo = PendingRepository(self.db)
         self.playlist_resolver = PlaylistResolver(self.spotify)
 
     # ------------------------------------------------------------------ resolve
@@ -113,15 +116,16 @@ class Pipeline:
         """
         return self.processor.build_filename(track.artist, title or track.title, extension)
 
-    async def save(self, source_path: str, track: TrackInfo, result: SearchResult) -> str | None:
+    async def save(self, source_path: str, track: TrackInfo, result: SearchResult, transfer_id: str = "") -> str | None:
         """Move a fetched file into the library, embed artwork, record the history row.
 
         Returns the library path, or None when processing failed (recorded as
-        "process_failed"; the source is left in place).
+        "process_failed"; the source is left in place). *transfer_id* is
+        slskd's id for the download, removed from slskd once the source is gone.
         """
         target_path = await asyncio.to_thread(self.processor.process_file, source_path, track.artist, track.title)
         if target_path:
-            await self.discard(source_path)
+            await self.discard(source_path, result.username, transfer_id)
             await self.embed_artwork(target_path, track)
             await self.record_history(track, result, "success")
         else:
@@ -131,16 +135,37 @@ class Pipeline:
     async def embed_artwork(self, path: str, track: TrackInfo) -> None:
         await _library.embed_artwork(self.spotify.sp, path, track)
 
-    async def discard(self, path: str) -> None:
-        """Delete a source file from the downloads dir once it has been saved or sent."""
+    async def discard(self, path: str, username: str = "", transfer_id: str = "") -> None:
+        """Delete a source file from the downloads dir once it has been saved or sent.
+
+        With a *transfer_id* the finished transfer is also removed from slskd.
+        """
         await asyncio.to_thread(self.processor.cleanup_download, path)
+        self.forget_transfer(username, transfer_id)
 
     remove_file = staticmethod(_library.remove_file)
+
+    def forget_transfer(self, username: str, transfer_id: str) -> threading.Thread | None:
+        """Remove a finished transfer from slskd's list once its file is gone.
+
+        Best effort and fire-and-forget: runs in a daemon thread (no event loop
+        needed, so it also works at startup), failures are logged at INFO.
+        Returns the thread, or None when there is no transfer to remove.
+        """
+        if not username or not transfer_id:
+            return None
+        thread = threading.Thread(
+            target=self.slskd.remove_transfer, args=(username, transfer_id), daemon=True, name="slskd-forget"
+        )
+        thread.start()
+        return thread
 
     async def record_history(
         self, track: TrackInfo, result: SearchResult, status: str, filename: str | None = None
     ) -> None:
         await _library.record_history(self.history_repo, track, result, status, filename)
 
-    async def orphan_sweep_loop(self, protected_paths: Callable[[], set[str]]) -> None:
-        await _library.orphan_sweep_loop(self.processor, self.config.download_cleanup_hours, protected_paths)
+    async def orphan_sweep_loop(
+        self, protected_paths: Callable[[], set[str]], prune: Callable[[], None] | None = None
+    ) -> None:
+        await _library.orphan_sweep_loop(self.processor, self.config.download_cleanup_hours, protected_paths, prune)
