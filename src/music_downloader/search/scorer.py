@@ -23,6 +23,10 @@ SAMPLE_RATE_CD_POINTS = 5.0
 SLOT_AVAILABLE_POINTS = 7.5
 SPEED_MAX_POINTS = 7.5
 QUEUE_MAX_POINTS = 5.0
+# A result further than this from the track's length is a different version
+# (live, extended, radio edit). It earns no duration points, is kept only when
+# a caller passes max_duration_diff, and never jumps the lossless-first order.
+SAME_VERSION_MAX_DIFF_SECS = 30
 
 # Ranking profiles. "library" keeps the original hi-res preference; "chat" (chat
 # delivery, files sent into Telegram) trades the 25 audio-quality points for
@@ -155,7 +159,7 @@ class ResultScorer:
                 score += DURATION_MAX_POINTS - (diff * 2)
             elif diff <= 10:
                 score += DURATION_CLOSE_POINTS - (diff - self.duration_tolerance) * 3
-            elif diff <= 30:
+            elif diff <= SAME_VERSION_MAX_DIFF_SECS:
                 score += max(0.0, 10.0 - (diff - 10) * 0.5)
             elif max_duration_diff is not None and diff <= max_duration_diff:
                 pass  # 0 duration points — different version, still acceptable
@@ -253,6 +257,14 @@ class ResultScorer:
         """
         points = cls._perceived_points(result)
         if result.size > CHAT_SIZE_LIMIT_BYTES:
-            return points - CHAT_OPUS_CONVERSION_POINTS
+            return max(0.0, points - CHAT_OPUS_CONVERSION_POINTS)
         over_free = max(0, result.size - CHAT_SIZE_FREE_BYTES)
-        return points - CHAT_SIZE_PENALTY_MAX_POINTS * over_free / (CHAT_SIZE_LIMIT_BYTES - CHAT_SIZE_FREE_BYTES)
+        cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / (CHAT_SIZE_LIMIT_BYTES - CHAT_SIZE_FREE_BYTES)
+        return max(0.0, points - cost)
+
+    @staticmethod
+    def is_other_version(result: SearchResult, track: TrackInfo) -> bool:
+        """True when both lengths are known and differ by more than SAME_VERSION_MAX_DIFF_SECS."""
+        if not track.duration_secs or not result.length:
+            return False
+        return abs(result.length - track.duration_secs) > SAME_VERSION_MAX_DIFF_SECS

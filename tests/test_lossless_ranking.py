@@ -16,6 +16,8 @@ from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.search.scorer import (
     CHAT_OPUS_CONVERSION_POINTS,
     CHAT_SIZE_PENALTY_MAX_POINTS,
+    PERCEIVED_GOOD_POINTS,
+    PERCEIVED_UNKNOWN_POINTS,
     PROFILE_CHAT,
     ResultScorer,
 )
@@ -70,7 +72,7 @@ def _make_track(duration_ms=162_000):
     )
 
 
-def _result(name, ext, size, bit_rate=None, bit_depth=None, sample_rate=44100, slot=True, speed=1_000_000):
+def _result(name, ext, size, bit_rate=None, bit_depth=None, sample_rate=44100, slot=True, speed=1_000_000, length=162):
     return SearchResult(
         username=name,
         filename=f"\\Music\\Nancy Sinatra - Bang Bang {name}.{ext}",
@@ -78,7 +80,7 @@ def _result(name, ext, size, bit_rate=None, bit_depth=None, sample_rate=44100, s
         bit_rate=bit_rate,
         bit_depth=bit_depth,
         sample_rate=sample_rate,
-        length=162,
+        length=length,
         has_free_slot=slot,
         upload_speed=speed,
         queue_length=0,
@@ -167,6 +169,22 @@ class TestLibraryRanking:
         ranked = self._ranked([_mp3("a", 5 * MB, 128), _mp3("b", 10 * MB, 320)])
         assert [r.username for r in ranked] == ["b", "a"]  # 320 above 128 inside the lossy group
 
+    def test_other_version_lossless_does_not_lead(self):
+        # The last-resort search keeps copies up to 120 s off. A lossless copy 90 s
+        # longer is a different version: it ranks among the lossy copies by score.
+        far = _result("far", "flac", 40 * MB, bit_depth=16, length=162 + 90, speed=10_000_000)
+        near = _flac("near", 30 * MB, slot=False, speed=0)
+        exact320 = _mp3("exact320", 10 * MB, 320)
+        bot = _make_bot()
+        bot.slskd.parse_results = MagicMock(return_value=[far, exact320, near])
+        ranked = bot._rank_responses([], _make_track(), max_duration_diff=120, chat_id=CHAT)
+        assert [r.username for r in ranked] == ["near", "exact320", "far"]
+
+    def test_unknown_length_lossless_still_leads(self):
+        unknown = _result("unknown", "flac", 30 * MB, bit_depth=16, length=None, slot=False, speed=0)
+        ranked = self._ranked([_mp3("m", 10 * MB, 320), unknown])
+        assert [r.username for r in ranked] == ["unknown", "m"]
+
 
 class TestResultsHeader:
     def _text(self, results):
@@ -183,7 +201,13 @@ class TestResultsHeader:
 
     def test_all_lossy(self):
         text = self._text([_mp3("c", 10 * MB, 320)])
-        assert "Found 1 matches, all lossy (no lossless copy found):" in text
+        assert "Found 1 match, all lossy (no lossless copy found):" in text
+
+    def test_format_named_once_when_no_quality_reported(self):
+        ape = _result("a", "ape", 30 * MB, sample_rate=None)
+        assert ape.quality_display == "APE"
+        text = self._text([ape])
+        assert "| APE | 30MB" in text and "[APE]" not in text
 
     def test_direct_search_counts_too(self):
         track = _make_track(duration_ms=0)
@@ -222,6 +246,23 @@ class TestChatProfile:
         # 10 MB over 162 s is about 518 kbps: top tier, not "unknown".
         unknown = _result("m", "mp3", 10 * MB)
         assert _chat_score(unknown) == _chat_score(_mp3("m", 10 * MB, 320))
+
+    def test_unknown_bitrate_gets_the_unknown_tier(self):
+        # No bitrate and no length to estimate one from (None or 0).
+        for length in (None, 0):
+            r = _result("m", "mp3", 8 * MB, sample_rate=None, length=length)
+            assert ResultScorer._perceived_points(r) == PERCEIVED_UNKNOWN_POINTS
+        assert PERCEIVED_UNKNOWN_POINTS < PERCEIVED_GOOD_POINTS
+        unknown = _result("m", "mp3", 8 * MB, length=None)
+        assert _chat_score(unknown) == _chat_score(_result("m", "mp3", 8 * MB, bit_rate=128, length=None))
+        assert _chat_score(unknown) < _chat_score(_result("m", "mp3", 8 * MB, bit_rate=192, length=None))
+
+    def test_quality_points_never_negative(self):
+        # Under-128 kbps files: oversize (1 - 8) and right at the limit (1 - 5) clamp to 0.
+        oversize96 = _mp3("o", 52 * MB, 96)
+        limit96 = _mp3("l", TELEGRAM_FILE_LIMIT, 96)
+        assert ResultScorer._chat_quality_points(oversize96) == 0.0
+        assert ResultScorer._chat_quality_points(limit96) == 0.0
 
     def test_oversize_scores_as_opus_regardless_of_size(self):
         big, huge = _flac("big", 60 * MB), _flac("huge", 200 * MB)

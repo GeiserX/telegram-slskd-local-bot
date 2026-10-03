@@ -808,7 +808,7 @@ class TestMusicBotHelpers:
         mp3 = _make_search_result()
         mp3.filename = "\\Music\\Nancy Sinatra - Bang Bang.mp3"
         text = bot._format_results(track, [mp3])
-        assert "Found 1 matches, all lossy (no lossless copy found)" in text
+        assert "Found 1 match, all lossy (no lossless copy found)" in text
         assert "[MP3]" in text
 
     @patch("music_downloader.bot.handlers.SpotifyResolver")

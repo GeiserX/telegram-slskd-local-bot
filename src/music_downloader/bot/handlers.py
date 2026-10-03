@@ -1223,6 +1223,9 @@ class MusicBot:
 
         Library delivery: every lossless result before every lossy one, each
         group by score, so a lossy copy is offered only below the lossless ones.
+        A lossless copy of a different version (length off by more than
+        SAME_VERSION_MAX_DIFF_SECS) does not lead: it ranks among the lossy
+        results by score, so an exact-length lossy copy can beat it.
         Chat delivery: one list scored by the chat profile (perceived quality
         versus size); results over the Telegram upload limit sort after every
         result that fits (stable), since those would have to be converted.
@@ -1237,7 +1240,11 @@ class MusicBot:
             return [r for r in ranked if r.size <= TELEGRAM_FILE_LIMIT] + [
                 r for r in ranked if r.size > TELEGRAM_FILE_LIMIT
             ]
-        return [r for r in ranked if r.is_lossless] + [r for r in ranked if not r.is_lossless]
+
+        def leads(r: SearchResult) -> bool:
+            return r.is_lossless and not self.scorer.is_other_version(r, track)
+
+        return [r for r in ranked if leads(r)] + [r for r in ranked if not leads(r)]
 
     # =========================================================================
     # DOWNLOAD + PREVIEW + APPROVAL
@@ -2741,12 +2748,13 @@ class MusicBot:
 
         lossless = sum(1 for r in results if r.is_lossless)
         lossy = total - lossless
+        matches = f"{total} match" if total == 1 else f"{total} matches"
         if lossless and lossy:
-            found = f"Found {total} matches ({lossless} lossless, {lossy} lossy):\n"
+            found = f"Found {matches} ({lossless} lossless, {lossy} lossy):\n"
         elif lossless:
-            found = f"Found {total} matches, all lossless:\n"
+            found = f"Found {matches}, all lossless:\n"
         else:
-            found = f"Found {total} matches, all lossy (no lossless copy found):\n"
+            found = f"Found {matches}, all lossy (no lossless copy found):\n"
 
         is_direct = track.duration_ms == 0
         if is_direct:
@@ -2768,10 +2776,12 @@ class MusicBot:
         for i in range(start, end):
             r = results[i]
             slot_icon = "🟢" if r.has_free_slot else "🔴"
+            # quality_display falls back to the format name when slskd reports no
+            # quality; name the format once in that case ("APE", not "APE [APE]").
+            ext_tag = r.extension.upper()
+            quality = r.quality_display if r.quality_display == ext_tag else f"{r.quality_display} [{ext_tag}]"
             lines.append(
-                f"*#{i + 1}* {slot_icon} `{r.duration_display}` | "
-                f"{r.quality_display} [{r.extension.upper()}] | {r.size_mb:.0f}MB\n"
-                f"    `{r.basename}`"
+                f"*#{i + 1}* {slot_icon} `{r.duration_display}` | {quality} | {r.size_mb:.0f}MB\n    `{r.basename}`"
             )
 
         return "\n".join(lines)
