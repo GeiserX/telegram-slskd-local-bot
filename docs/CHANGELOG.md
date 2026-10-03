@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-10-03
+
+### Changed
+
+- **Lossless first, lossy below.** The search now keeps every audio format
+  from the start instead of only FLAC, with lossy copies used only when no
+  FLAC scored. In library delivery every lossless copy (FLAC, WAV, AIFF, ALAC,
+  APE, WavPack, TTA, TAK) is listed before every lossy one (MP3, AAC, M4A, Ogg,
+  Opus, WMA), so a song with no lossless copy still offers the best lossy
+  copies, ranked by bitrate. The list header counts both, for example "Found
+  150 matches (142 lossless, 8 lossy)", and every line shows its format.
+  Auto-mode still picks a lossless copy whenever there is one. A lossy file
+  saves under its own extension with the cover art embedded (MP3, M4A, Ogg
+  Vorbis and Opus).
+- **Chat delivery ranks by quality for the size.** A chat in chat delivery no
+  longer prefers hi-res: a lossless file that fits under 50 MB and a lossy one
+  at 256 kbps or more count the same, 192 kbps a step below, 128 kbps well
+  below, and every file then loses a few points as it grows toward 50 MB. A
+  10 MB MP3 at 320 kbps now beats a 35 MB FLAC of the same song. Copies over
+  50 MB still come after every copy that fits, ranked as the Opus they will be
+  sent as.
+- **"Lossless" where the project said "FLAC".** Messages, docs and code now say
+  lossless when they mean any lossless format, and FLAC only for the codec.
+  The spectrum check, now called the lossless check, also reads WAV and AIFF;
+  APE, WavPack, TTA, TAK and ALAC files say "Lossless check: not checked"
+  instead of nothing. The module `processor/flac_analyzer.py` is now
+  `processor/lossless_analyzer.py`, and `SlskdClient.parse_results` no longer
+  takes `flac_only`: it always returns every audio format.
+
 ## [0.13.1] - 2026-10-03
 
 ### Changed
