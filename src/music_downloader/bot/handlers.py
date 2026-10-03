@@ -2700,6 +2700,22 @@ async def _register_commands(app: Application) -> None:
     )
 
 
+def _configure_api_server(builder, config: Config) -> None:
+    """Point the builder at a local Bot API server and raise the request timeouts.
+
+    TELEGRAM_API_BASE_URL empty: Telegram's cloud API with PTB's base urls.
+    TELEGRAM_UPLOAD_TIMEOUT_SECS unset: PTB's default timeouts. The builder's
+    setters return the builder itself, so nothing is reassigned here.
+    """
+    if config.telegram_api_base_url:
+        builder.base_url(f"{config.telegram_api_base_url}/bot")
+        builder.base_file_url(f"{config.telegram_api_base_url}/file/bot")
+    if config.telegram_upload_timeout_secs is not None:
+        builder.read_timeout(config.telegram_upload_timeout_secs)
+        builder.write_timeout(config.telegram_upload_timeout_secs)
+        builder.media_write_timeout(config.telegram_upload_timeout_secs)
+
+
 def create_bot(config: Config, health: HealthState | None = None) -> Application:
     """
     Create and configure the Telegram bot application.
@@ -2741,6 +2757,13 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
                     await task
 
     builder = Application.builder().token(config.telegram_bot_token).post_init(_post_init).post_shutdown(_post_shutdown)
+    _configure_api_server(builder, config)
+    api = (
+        f"local Bot API server at {config.telegram_api_base_url}"
+        if config.telegram_api_base_url
+        else "Telegram's cloud Bot API"
+    )
+    logger.info("Talking to %s; upload cap %d MB", api, bot._upload_mb)
     if health is not None:
         builder = builder.get_updates_request(PollTrackingRequest(health.mark_poll))
     app = builder.build()

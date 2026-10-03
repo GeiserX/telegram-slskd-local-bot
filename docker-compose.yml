@@ -10,7 +10,11 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
       TELEGRAM_CHAT_DELIVERY_USERS: ${TELEGRAM_CHAT_DELIVERY_USERS:-}
-      TELEGRAM_MAX_UPLOAD_MB: ${TELEGRAM_MAX_UPLOAD_MB:-50}
+      # Empty: 50 MB, or 2000 MB when TELEGRAM_API_BASE_URL names a local Bot API server
+      TELEGRAM_MAX_UPLOAD_MB: ${TELEGRAM_MAX_UPLOAD_MB:-}
+      # Optional local Bot API server for files up to 2000 MB, e.g. the
+      # telegram-bot-api service below: http://telegram-bot-api:8081
+      TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-}
 
       # Spotify API (required)
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
@@ -64,3 +68,22 @@ services:
       options:
         max-size: "50m"
         max-file: "3"
+
+  # Optional: a local Telegram Bot API server, so the bot can send files up to
+  # 2000 MB instead of 50 MB. Start it with `docker compose --profile bigfiles up -d`
+  # and set TELEGRAM_API_BASE_URL=http://telegram-bot-api:8081 in .env.
+  # TELEGRAM_API_ID and TELEGRAM_API_HASH come from https://my.telegram.org (API development tools).
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:10.3
+    container_name: telegram_bot_api
+    restart: unless-stopped
+    profiles: ["bigfiles"]
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_LOCAL: 1
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+
+volumes:
+  telegram-bot-api-data:

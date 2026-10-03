@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 BYTES_PER_MB = 1_000_000
 DEFAULT_MAX_UPLOAD_MB = 50
 DEFAULT_UPLOAD_LIMIT_BYTES = DEFAULT_MAX_UPLOAD_MB * BYTES_PER_MB
+# A local Bot API server (TELEGRAM_API_BASE_URL) accepts uploads up to 2000 MB,
+# and a 2 GB upload needs far longer than PTB's default timeouts allow.
+LOCAL_SERVER_MAX_UPLOAD_MB = 2000
+LOCAL_SERVER_UPLOAD_TIMEOUT_SECS = 600
 
 
 class Config:
@@ -42,10 +46,24 @@ class Config:
         chat_delivery_str = os.getenv("TELEGRAM_CHAT_DELIVERY_USERS", "")
         self.telegram_chat_delivery_users = self._parse_id_set(chat_delivery_str)
 
+        # A local Bot API server (e.g. http://telegram-bot-api:8081); empty
+        # means Telegram's cloud API.
+        self.telegram_api_base_url = os.getenv("TELEGRAM_API_BASE_URL", "").strip().rstrip("/")
+
         # Largest file the bot may send, in MB of 1,000,000 bytes. 50 is the
-        # cloud Bot API's cap; a local Bot API server raises it to 2000.
-        self.telegram_max_upload_mb = max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", str(DEFAULT_MAX_UPLOAD_MB))))
+        # cloud Bot API's cap; a local Bot API server raises it to 2000, which
+        # becomes the default when TELEGRAM_API_BASE_URL is set. Empty = default.
+        default_mb = LOCAL_SERVER_MAX_UPLOAD_MB if self.telegram_api_base_url else DEFAULT_MAX_UPLOAD_MB
+        self.telegram_max_upload_mb = max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB") or default_mb))
         self.telegram_upload_limit_bytes = self.telegram_max_upload_mb * BYTES_PER_MB
+
+        # Read/write timeouts (seconds) for requests to Telegram, uploads
+        # included. None keeps python-telegram-bot's defaults (the cloud API
+        # case); with a local server the default fits a 2 GB upload on a LAN.
+        timeout = os.getenv("TELEGRAM_UPLOAD_TIMEOUT_SECS") or (
+            LOCAL_SERVER_UPLOAD_TIMEOUT_SECS if self.telegram_api_base_url else None
+        )
+        self.telegram_upload_timeout_secs = None if timeout is None else max(1, int(timeout))
 
         # =====================================================================
         # SPOTIFY API (Client Credentials flow — no user login needed)

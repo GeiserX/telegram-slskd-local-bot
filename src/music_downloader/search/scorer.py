@@ -54,7 +54,11 @@ CODEC_MP3_EQUIVALENT = {"opus": 2.0, "aac": 1.5, "m4a": 1.5, "ogg": 1.5, "wma": 
 # Chat profile size cost, inside the range that fits Telegram's upload limit
 # (ResultScorer's chat_size_limit_bytes, TELEGRAM_MAX_UPLOAD_MB in config).
 CHAT_SIZE_FREE_BYTES = 5 * BYTES_PER_MB  # files this small cost nothing
-CHAT_SIZE_PENALTY_MAX_POINTS = 5.0  # cost at the limit, linear from the free size
+CHAT_SIZE_PENALTY_MAX_POINTS = 5.0  # cost at the end of the curve, linear from the free size
+# The curve ends at the upload limit or at 50 MB, whichever is lower. A local
+# Bot API server raises the limit to 2000 MB; a fitting file above 50 MB then
+# pays the full cost instead of a near-zero slice of a 2000 MB curve.
+CHAT_SIZE_PENALTY_FULL_BYTES = 50 * BYTES_PER_MB
 # A file over the limit is sent as Opus converted from it: scored as its own
 # tier minus this, with no size cost (the Opus that goes out fits).
 CHAT_OPUS_CONVERSION_POINTS = 8.0
@@ -261,14 +265,16 @@ class ResultScorer:
         """Chat profile: perceived quality minus a size cost ("best bang for buck").
 
         A fitting file pays up to CHAT_SIZE_PENALTY_MAX_POINTS, growing linearly
-        from CHAT_SIZE_FREE_BYTES to the limit. A file over the limit will be
-        converted to Opus, so it scores as its tier minus the conversion.
+        from CHAT_SIZE_FREE_BYTES to the limit or CHAT_SIZE_PENALTY_FULL_BYTES,
+        whichever is lower, and the full cost above that. A file over the limit
+        will be converted to Opus, so it scores as its tier minus the conversion.
         """
         points = self._perceived_points(result)
         if result.size > self.chat_size_limit:
             return max(0.0, points - CHAT_OPUS_CONVERSION_POINTS)
-        over_free = max(0, result.size - CHAT_SIZE_FREE_BYTES)
-        cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / max(1, self.chat_size_limit - CHAT_SIZE_FREE_BYTES)
+        curve_end = min(self.chat_size_limit, CHAT_SIZE_PENALTY_FULL_BYTES)
+        over_free = max(0, min(result.size, curve_end) - CHAT_SIZE_FREE_BYTES)
+        cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / max(1, curve_end - CHAT_SIZE_FREE_BYTES)
         return max(0.0, points - cost)
 
     @staticmethod
