@@ -26,6 +26,8 @@ from music_downloader.persistence.settings_repo import SettingsRepository
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
 CHAT = 67890
+OTHER = 12345  # allowed, not in the chat-delivery list
+GROUP = -100123
 
 
 def _make_config(td=None, chat_users=None):
@@ -245,12 +247,11 @@ class TestPrecedence:
         _make_bot(config)._set_delivery(CHAT, "chat")
         assert _make_bot(config)._delivery_mode(CHAT) == "chat"
 
-    def test_group_chat_uses_sender_id(self):
+    def test_group_chat_uses_the_starting_users_id(self):
         bot = _make_bot(_make_config(chat_users={CHAT}))
-        group = -100123
-        assert bot._delivery_mode(group) == "library"
-        bot._chat_sender[group] = CHAT
-        assert bot._delivery_mode(group) == "chat"
+        assert bot._delivery_mode(GROUP) == "library"
+        assert bot._delivery_mode(GROUP, CHAT) == "chat"
+        assert bot._delivery_mode(GROUP, OTHER) == "library"
 
     def test_setting_delivery_keeps_effective_auto(self, tmp_path):
         config = _make_config(str(tmp_path))
@@ -367,6 +368,19 @@ class TestRanking:
         assert _opus_bitrates_that_fit(3500) == [96]
         assert _opus_bitrates_that_fit(5000) == []
 
+    def test_unknown_duration_tries_every_bitrate(self):
+        # Nothing can be estimated, so a long mix must still reach 128 and 96.
+        assert _opus_bitrates_that_fit(0) == [192, 160, 128, 96]
+
+    def test_result_exactly_at_the_limit_counts_as_fitting(self):
+        bot = _make_bot(_make_config(chat_users={CHAT}))
+        results = [_make_result(0, size=TELEGRAM_FILE_LIMIT + 1), _make_result(1, size=TELEGRAM_FILE_LIMIT)]
+        bot.slskd.parse_results = MagicMock(return_value=results)
+        bot.scorer = MagicMock()
+        bot.scorer.score_results = MagicMock(return_value=list(results))
+        ranked, _ = bot._rank_responses([], _make_track(), chat_id=CHAT)
+        assert [r.username for r in ranked] == ["user1", "user0"]
+
 
 # ---------------------------------------------------------------------------
 # _do_download in chat delivery
@@ -435,6 +449,23 @@ class TestChatDownload:
         assert not os.path.exists(ogg)
         assert not os.path.exists(source)
         bot._embed_spotify_artwork.assert_not_awaited()
+        assert bot.history_repo.get_recent(1)[0].filename == "Nancy Sinatra - Bang Bang.ogg"
+
+    @pytest.mark.asyncio
+    async def test_file_exactly_at_the_limit_is_sent_as_is(self, tmp_path):
+        bot = _chat_bot()
+        source = _file(tmp_path, size=TELEGRAM_FILE_LIMIT)
+        _setup_download(bot, source)
+        bot._convert_to_ogg = AsyncMock()
+        context = _make_context()
+
+        await bot._do_download(context, CHAT, _make_track(), _make_result(), _status_msg())
+
+        bot._convert_to_ogg.assert_not_awaited()
+        bot._embed_spotify_artwork.assert_awaited_once()
+        context.bot.send_audio.assert_awaited_once()
+        assert context.bot.send_audio.call_args.kwargs["filename"] == "Nancy Sinatra - Bang Bang.flac"
+        assert bot.history_repo.get_recent(1)[0].status == "delivered"
 
     @pytest.mark.asyncio
     async def test_oversize_retries_once_lower_when_output_still_too_big(self, tmp_path):
@@ -543,6 +574,144 @@ class TestChatDownload:
         context.bot.send_audio.assert_awaited_once()
         assert not os.path.exists(source)
         assert bot.downloads == {}
+        # The preview under the user's finger ends with the outcome, not "Sending..."
+        assert "Sent to this chat" in update.callback_query.edit_message_caption.call_args.kwargs["caption"]
+
+
+# ---------------------------------------------------------------------------
+# Group chats: the user who started an operation decides its delivery
+# ---------------------------------------------------------------------------
+
+
+def _group_bot():
+    """GROUP has no stored mode; CHAT (a user) is in the chat-delivery list, OTHER is not."""
+    bot = _chat_bot()
+    bot.config.telegram_allowed_users = {CHAT, OTHER}
+    return bot
+
+
+async def _someone_else_speaks(bot, user_id):
+    update = MagicMock()
+    update.effective_user.id = user_id
+    update.effective_chat.id = GROUP
+    update.effective_message = AsyncMock()
+    assert await bot._check_auth(update)
+
+
+class TestGroupChats:
+    @pytest.mark.asyncio
+    async def test_another_member_speaking_mid_download_does_not_flip_delivery(self, tmp_path):
+        bot = _group_bot()
+        source = _file(tmp_path)
+        _setup_download(bot, source)
+        context = _make_context()
+        await _someone_else_speaks(bot, OTHER)
+
+        await bot._do_download(context, GROUP, _make_track(), _make_result(), _status_msg(), user_id=CHAT)
+
+        bot.processor.process_file.assert_not_called()
+        assert "reply_markup" not in context.bot.send_audio.call_args.kwargs
+        assert not os.path.exists(source)
+
+    @pytest.mark.asyncio
+    async def test_library_users_download_stays_library_after_a_chat_user_speaks(self, tmp_path):
+        bot = _group_bot()
+        source = _file(tmp_path)
+        _setup_download(bot, source)
+        context = _make_context()
+        await _someone_else_speaks(bot, CHAT)
+
+        await bot._do_download(context, GROUP, _make_track(), _make_result(), _status_msg(), user_id=OTHER)
+
+        assert context.bot.send_audio.call_args.kwargs["reply_markup"] is not None
+        bot.processor.cleanup_download.assert_not_called()
+        assert os.path.exists(source)
+
+    @pytest.mark.asyncio
+    async def test_picking_a_result_starts_the_download_as_the_picker(self):
+        bot = _group_bot()
+        bot.pending[GROUP] = PendingSearch(query="q", track=_make_track(), results=[_make_result()], search_id="s1")
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        context = _make_context()
+
+        with patch.object(bot, "_do_download", new_callable=AsyncMock) as mock_dl:
+            await bot._handle_download_selection(update, context, GROUP, "dl:s1:0")
+            await asyncio.sleep(0)
+
+        assert mock_dl.call_args.kwargs["user_id"] == CHAT
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("prefix", ["retry", "next"])
+    async def test_retry_and_next_keep_the_original_starter(self, prefix):
+        bot = _group_bot()
+        bot.pending[GROUP] = PendingSearch(
+            query="q", track=_make_track(), results=[_make_result(0), _make_result(1)], search_id="s1"
+        )
+        bot.downloads["d1"] = PendingDownload(
+            track=_make_track(), result=_make_result(), chat_id=GROUP, search_id="s1", user_id=CHAT
+        )
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = OTHER  # someone else taps the button
+        context = _make_context()
+        handler = bot._handle_retry if prefix == "retry" else bot._handle_next_result
+
+        with patch.object(bot, "_do_download", new_callable=AsyncMock) as mock_dl:
+            await handler(update, context, GROUP, f"{prefix}:d1")
+            await asyncio.sleep(0)
+
+        assert mock_dl.call_args.kwargs["user_id"] == CHAT
+
+    @pytest.mark.asyncio
+    async def test_old_preview_approval_follows_the_downloads_starter(self, tmp_path):
+        bot = _group_bot()
+        source = _file(tmp_path)
+        bot.downloads["d1"] = PendingDownload(
+            track=_make_track(), result=_make_result(), chat_id=GROUP, source_path=source, user_id=CHAT
+        )
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        context = _make_context()
+        await _someone_else_speaks(bot, OTHER)
+
+        await bot._handle_approval(update, context, GROUP, "approve:d1")
+
+        bot.processor.process_file.assert_not_called()
+        context.bot.send_audio.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_import_follows_the_user_who_confirmed_it(self, tmp_path):
+        bot = _group_bot()
+        bot.import_repo = MagicMock()
+        bot.import_repo.get_job_for_chat = MagicMock(return_value=MagicMock())
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        context = _make_context()
+        with patch.object(bot, "_process_next_import_track", new_callable=AsyncMock):
+            await bot._handle_import_callback(update, context, GROUP, "ic:1")
+        await _someone_else_speaks(bot, OTHER)
+
+        source = _file(tmp_path)
+        _setup_download(bot, source)
+        bot.downloads["dl1"] = PendingDownload(track=_make_track(), result=_make_result(), chat_id=GROUP)
+        with patch.object(bot, "_process_next_import_track", new_callable=AsyncMock):
+            await bot._do_import_download(
+                context,
+                GROUP,
+                _make_track(),
+                _make_result(),
+                _status_msg(),
+                generation=0,
+                job_id=1,
+                track_id=2,
+                dl_id="dl1",
+            )
+
+        bot.processor.process_file.assert_not_called()
+        assert "reply_markup" not in context.bot.send_audio.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------
