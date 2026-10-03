@@ -39,6 +39,7 @@ from music_downloader.search.slskd_client import SearchResult, SlskdClient
 def _make_config():
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -181,8 +182,8 @@ class TestImportJobRecovery:
         """An abandoned confirm screen leaves a pending row with no in-memory state;
         /cancel must still clear it instead of reporting 'Nothing to cancel.'"""
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
         ):
             bot = MusicBot(_make_config())
         job_id = bot.import_repo.create_job(chat_id=67890, spotify_url="u", name="stuck", total_tracks=5)
@@ -204,8 +205,8 @@ class TestImportJobRecovery:
 class TestStatusCommand:
     def _bot(self):
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
         ):
             return MusicBot(_make_config())
 
@@ -243,8 +244,8 @@ class TestGuardedDownloadCleanup:
     @pytest.mark.asyncio
     async def test_reject_survives_undeletable_file(self, tmp_path):
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
         ):
             bot = MusicBot(_make_config())
 
@@ -277,8 +278,8 @@ class TestGuardedDownloadCleanup:
 class TestStaleResultsKeyboard:
     def _bot_with_search(self, search_id="newsrch1"):
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
         ):
             bot = MusicBot(_make_config())
         bot.pending[67890] = PendingSearch(

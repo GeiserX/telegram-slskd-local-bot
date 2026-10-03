@@ -1,6 +1,7 @@
 from .database import Database
 from .history_repo import HistoryRecord, HistoryRepository
 from .import_repo import ImportJob, ImportRepository, ImportTrack, JobStatus, TrackStatus
+from .pending_repo import PendingDownload, PendingRepository, PendingSearch
 
 __all__ = [
     "Database",
@@ -10,5 +11,8 @@ __all__ = [
     "ImportRepository",
     "ImportTrack",
     "JobStatus",
+    "PendingDownload",
+    "PendingRepository",
+    "PendingSearch",
     "TrackStatus",
 ]

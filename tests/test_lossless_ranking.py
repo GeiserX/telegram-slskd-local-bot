@@ -10,7 +10,8 @@ import mutagen
 import mutagen.mp3
 import pytest
 
-from music_downloader.bot.handlers import TELEGRAM_FILE_LIMIT, MusicBot, PendingDownload
+from music_downloader.bot.handlers import MusicBot, PendingDownload
+from music_downloader.config import DEFAULT_UPLOAD_LIMIT_BYTES
 from music_downloader.formats import LOSSLESS_EXTENSIONS, LOSSY_EXTENSIONS, is_lossless
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.processor.file_handler import FileProcessor
@@ -27,13 +28,14 @@ from music_downloader.search.slskd_client import SearchResult, SlskdClient
 from music_downloader.tools.embed_artwork import embed_artwork_into_file
 
 CHAT = 67890
-MB = 1024 * 1024
+MB = 1_000_000  # Telegram counts 1 MB as 1,000,000 bytes
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
 
 
 def _make_config(td=None, chat_users=None):
     td = td or tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -57,8 +59,8 @@ def _make_config(td=None, chat_users=None):
 
 def _make_bot(config=None):
     with (
-        patch("music_downloader.bot.handlers.SpotifyResolver"),
-        patch("music_downloader.bot.handlers.SlskdClient"),
+        patch("music_downloader.pipeline.SpotifyResolver"),
+        patch("music_downloader.pipeline.SlskdClient"),
     ):
         return MusicBot(config or _make_config())
 
@@ -146,7 +148,7 @@ class TestLibraryRanking:
     def _ranked(self, results):
         bot = _make_bot()
         bot.slskd.parse_results = MagicMock(return_value=results)
-        return bot._rank_responses([], _make_track(), chat_id=CHAT)
+        return bot.pipeline.rank([], _make_track(), bot._profile(CHAT))
 
     def test_every_lossless_above_every_lossy_each_group_by_score(self):
         results = [
@@ -179,13 +181,15 @@ class TestLibraryRanking:
         exact320 = _mp3("exact320", 10 * MB, 320)
         bot = _make_bot()
         bot.slskd.parse_results = MagicMock(return_value=[far, exact320, near])
-        ranked = bot._rank_responses([], _make_track(), max_duration_diff=120, chat_id=CHAT)
+        ranked = bot.pipeline.rank([], _make_track(), bot._profile(CHAT), max_duration_diff=120)
         assert [r.username for r in ranked] == ["near", "exact320", "far"]
 
-    def test_unknown_length_lossless_still_leads(self):
+    def test_unknown_length_lossless_cannot_lead(self):
+        # A lossless copy with no length may be any track (the "Echoes" case):
+        # it ranks among the lossy copies, below an exact-length MP3.
         unknown = _result("unknown", "flac", 30 * MB, bit_depth=16, length=None, slot=False, speed=0)
         ranked = self._ranked([_mp3("m", 10 * MB, 320), unknown])
-        assert [r.username for r in ranked] == ["unknown", "m"]
+        assert [r.username for r in ranked] == ["m", "unknown"]
 
 
 class TestResultsHeader:
@@ -250,7 +254,7 @@ class TestChatProfile:
         assert _chat_score(_flac("f", 8 * MB)) == _chat_score(_mp3("m", 8 * MB, 256))
 
     def test_size_penalty_monotonic_and_capped(self):
-        sizes = [1 * MB, 5 * MB, 10 * MB, 25 * MB, 40 * MB, TELEGRAM_FILE_LIMIT]
+        sizes = [1 * MB, 5 * MB, 10 * MB, 25 * MB, 40 * MB, DEFAULT_UPLOAD_LIMIT_BYTES]
         scores = [_chat_score(_flac("f", s)) for s in sizes]
         assert scores[0] == scores[1]  # small files cost nothing
         assert all(a > b for a, b in zip(scores[1:], scores[2:], strict=False))
@@ -267,16 +271,19 @@ class TestChatProfile:
             r = _result("m", "mp3", 8 * MB, sample_rate=None, length=length)
             assert ResultScorer._perceived_points(r) == PERCEIVED_UNKNOWN_POINTS
         assert PERCEIVED_UNKNOWN_POINTS < PERCEIVED_GOOD_POINTS
+        # Quality points only: with no length the copy's duration points differ
+        # (a known bitrate lets the scorer estimate its length).
+        quality = ResultScorer()._chat_quality_points
         unknown = _result("m", "mp3", 8 * MB, length=None)
-        assert _chat_score(unknown) == _chat_score(_result("m", "mp3", 8 * MB, bit_rate=128, length=None))
-        assert _chat_score(unknown) < _chat_score(_result("m", "mp3", 8 * MB, bit_rate=192, length=None))
+        assert quality(unknown) == quality(_result("m", "mp3", 8 * MB, bit_rate=128, length=None))
+        assert quality(unknown) < quality(_result("m", "mp3", 8 * MB, bit_rate=192, length=None))
 
     def test_quality_points_never_negative(self):
         # Under-128 kbps files: oversize (1 - 8) and right at the limit (1 - 5) clamp to 0.
         oversize96 = _mp3("o", 52 * MB, 96)
-        limit96 = _mp3("l", TELEGRAM_FILE_LIMIT, 96)
-        assert ResultScorer._chat_quality_points(oversize96) == 0.0
-        assert ResultScorer._chat_quality_points(limit96) == 0.0
+        limit96 = _mp3("l", DEFAULT_UPLOAD_LIMIT_BYTES, 96)
+        assert ResultScorer()._chat_quality_points(oversize96) == 0.0
+        assert ResultScorer()._chat_quality_points(limit96) == 0.0
 
     def test_oversize_scores_as_opus_regardless_of_size(self):
         big, huge = _flac("big", 60 * MB), _flac("huge", 200 * MB)
@@ -284,7 +291,7 @@ class TestChatProfile:
         fitting_top = _chat_score(_flac("small", 1 * MB))
         assert fitting_top - _chat_score(big) == pytest.approx(CHAT_OPUS_CONVERSION_POINTS)
         # Converted, it still scores below a lossless file right at the limit.
-        assert _chat_score(big) < _chat_score(_flac("limit", TELEGRAM_FILE_LIMIT))
+        assert _chat_score(big) < _chat_score(_flac("limit", DEFAULT_UPLOAD_LIMIT_BYTES))
 
     def test_library_profile_unchanged_for_lossless(self):
         # The library still prefers hi-res: 24-bit beats 16-bit whatever the size.
@@ -298,7 +305,7 @@ class TestChatRanking:
     def _ranked(self, results):
         bot = _make_bot(_make_config(chat_users={CHAT}))
         bot.slskd.parse_results = MagicMock(return_value=results)
-        return [r.username for r in bot._rank_responses([], _make_track(), chat_id=CHAT)]
+        return [r.username for r in bot.pipeline.rank([], _make_track(), bot._profile(CHAT))]
 
     def test_no_lossless_partition_in_chat(self):
         assert self._ranked([_flac("flac35", 35 * MB), _mp3("mp3320", 10 * MB, 320)]) == ["mp3320", "flac35"]
@@ -373,7 +380,7 @@ class TestLossySave:
         pending = PendingDownload(track=_make_track(), result=result, chat_id=CHAT, source_path=source)
         bot.downloads["abc"] = pending
         status_msg = AsyncMock()
-        with patch("music_downloader.bot.handlers.fetch_spotify_artwork", return_value=JPEG):
+        with patch("music_downloader.pipeline.library.fetch_spotify_artwork", return_value=JPEG):
             await bot._auto_save(CHAT, "abc", pending, status_msg, "quality", "#1")
         target = os.path.join(config.output_dir, "Nancy Sinatra - Bang Bang.mp3")
         assert os.path.isfile(target) and not os.path.exists(source)

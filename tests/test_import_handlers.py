@@ -6,6 +6,7 @@ import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 from music_downloader.bot.handlers import (
@@ -36,6 +37,7 @@ async def _fake_to_thread(fn, *args, **kwargs):
 def _make_config():
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -107,8 +109,8 @@ def _make_update(chat_id=67890, user_id=12345, text="/import https://open.spotif
     return update
 
 
-@patch("music_downloader.bot.handlers.SpotifyResolver")
-@patch("music_downloader.bot.handlers.SlskdClient")
+@patch("music_downloader.pipeline.SpotifyResolver")
+@patch("music_downloader.pipeline.SlskdClient")
 def _setup_bot(mock_slskd_cls, mock_spotify_cls):
     config = _make_config()
     mock_slskd_cls.return_value = MagicMock()
@@ -168,7 +170,7 @@ class TestSafeQueryEdit:
         query.edit_message_text = AsyncMock()
         result = await _safe_query_edit(query, "hello")
         assert result is True
-        query.edit_message_text.assert_awaited_once_with("hello")
+        query.edit_message_text.assert_awaited_once_with("hello", parse_mode=ParseMode.HTML)
 
     async def test_safe_query_edit_bad_request(self):
         query = MagicMock()
@@ -431,8 +433,8 @@ class TestHandleImportApprove:
         bot.import_repo.get_next_pending_track = MagicMock(return_value=None)
         bot.import_repo.get_job_progress = MagicMock(return_value=(10, 0, 0, 10))
         bot.import_repo.update_job_status = MagicMock()
-        bot._embed_spotify_artwork = AsyncMock()
-        bot._add_history = AsyncMock()
+        bot.pipeline.embed_artwork = AsyncMock()
+        bot.pipeline.record_history = AsyncMock()
         bot._edit_approval_message = AsyncMock()
         update = _make_update(chat_id=chat_id)
         context = _make_context()
@@ -516,7 +518,7 @@ class TestDoImportSlskdSearch:
                 {"username": "user0", "files": [{"filename": "\\Music\\track0.flac", "size": 30000000, "length": 162}]}
             ]
         )
-        bot._rank_responses = MagicMock(return_value=results)
+        bot.pipeline.rank = MagicMock(return_value=results)
         bot.slskd.enqueue_download = MagicMock(return_value=True)
         bot.slskd.wait_for_download = AsyncMock()
         track = _make_track()
@@ -614,7 +616,7 @@ class TestDoImportDownload:
         status = MagicMock()
         status.is_failed = False
         bot.slskd.wait_for_download = AsyncMock(return_value=status)
-        # Create a file larger than TELEGRAM_FILE_LIMIT
+        # Create a file larger than the upload cap
         with tempfile.NamedTemporaryFile(delete=False, suffix=".flac") as source:
             source.write(b"x" * 100)
         bot.processor = MagicMock()
@@ -625,19 +627,19 @@ class TestDoImportDownload:
         dl_id = "dl_3"
         bot.downloads[dl_id] = PendingDownload(track=_make_track(), result=result, chat_id=chat_id)
         context = _make_context()
-        # Patch TELEGRAM_FILE_LIMIT to be smaller than our file
-        with patch("music_downloader.bot.handlers.TELEGRAM_FILE_LIMIT", 50):
-            await bot._do_import_download(
-                context,
-                chat_id,
-                _make_track(),
-                result,
-                status_msg,
-                generation=0,
-                job_id=1,
-                track_id=5,
-                dl_id=dl_id,
-            )
+        # Lower the upload cap below our file
+        bot.pipeline.upload_limit_bytes = 50
+        await bot._do_import_download(
+            context,
+            chat_id,
+            _make_track(),
+            result,
+            status_msg,
+            generation=0,
+            job_id=1,
+            track_id=5,
+            dl_id=dl_id,
+        )
         mock_edit.assert_awaited()
         assert "too large" in mock_edit.call_args[0][1]
         os.unlink(source.name)
@@ -718,7 +720,7 @@ class TestDoDirectSlskdSearch:
         bot = _setup_bot()
         chat_id = 67890
         bot.slskd.search = AsyncMock(return_value=[])
-        bot._rank_responses = MagicMock(return_value=[])
+        bot.pipeline.rank = MagicMock(return_value=[])
         searching_msg = MagicMock(message_id=100)
         await bot._do_direct_slskd_search(_make_context(), chat_id, "test query", searching_msg, generation=0)
         mock_edit.assert_awaited()
@@ -730,7 +732,7 @@ class TestDoDirectSlskdSearch:
         chat_id = 67890
         results = [_make_result(0), _make_result(1)]
         bot.slskd.search = AsyncMock(return_value=[{"username": "u", "files": []}])
-        bot._rank_responses = MagicMock(return_value=results)
+        bot.pipeline.rank = MagicMock(return_value=results)
         bot._format_results = MagicMock(return_value="Results text")
         searching_msg = MagicMock(message_id=100)
         await bot._do_direct_slskd_search(_make_context(), chat_id, "test query", searching_msg, generation=0)

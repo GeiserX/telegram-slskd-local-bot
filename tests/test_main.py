@@ -14,12 +14,20 @@ class TestHealthHandler:
         """HealthHandler responds 200 on /health."""
         from unittest.mock import MagicMock
 
+        from music_downloader.health import HealthState
+
         handler = MagicMock(spec=HealthHandler)
         handler.path = "/health"
         handler.wfile = BytesIO()
         handler.send_response = MagicMock()
         handler.send_header = MagicMock()
         handler.end_headers = MagicMock()
+        handler._send_json = lambda code, body: HealthHandler._send_json(handler, code, body)
+        health = HealthState()
+        health.telegram_running = lambda: True
+        health.mark_poll()
+        health.mark_slskd_ok()
+        handler.server = MagicMock(health=health)
 
         HealthHandler.do_GET(handler)
 

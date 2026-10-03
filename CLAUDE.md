@@ -37,9 +37,18 @@ Configuration via `.env` (see `.env.example`).
 
 ## Architecture
 - `src/music_downloader/` — main application package
-  - `config.py` — all environment variables and their handling
-  - `bot/handlers.py` — Telegram bot logic and conversation flow
-  - `search/scorer.py` — search result scoring algorithm
+  - `config.py` — all environment variables and their handling (incl. the upload cap: `BYTES_PER_MB`, `DEFAULT_UPLOAD_LIMIT_BYTES`, `TELEGRAM_MAX_UPLOAD_MB`)
+  - `pipeline/` — everything between a query and a file ready to hand over; never imports `telegram` (`tests/test_pipeline_no_telegram.py` enforces it)
+    - `__init__.py` — `Pipeline`: owns the Spotify resolver, slskd client, scorer, file processor, repos and library index; `resolve`, `search`, `rank`, `fetch`, `save`, `discard`, `find_similar`, `library_index_loop`
+    - `resolve.py` — Spotify lookup, "Artist - Title" parsing, synthetic tracks for direct search
+    - `search.py` — query cleanup and fallbacks, the title guard, `rank()` (lossless-first or chat order, unknown-length copies never lead) returning `RankedResults` (`.hidden` = copies the guard dropped)
+    - `fetch.py` — enqueue/wait/locate/lossless check as `FetchOutcome`; Opus conversion and the bitrate ladder that fits the cap
+    - `library.py` — artwork, history rows, deleting sources, the orphan sweep loop
+  - `bot/` — the Telegram front end: `handlers.py` (updates, per-chat state, HTML messages, sending files, `create_bot`), `keyboards.py`, `poll_request.py` (reports each successful `getUpdates` to the health state)
+  - `persistence/` — SQLite in `DATA_DIR/importer.db`: `database.py` (schema), `history_repo.py`, `import_repo.py`, `settings_repo.py`, `pending_repo.py` (searches and downloads waiting on a button, written through from the bot's dicts so buttons survive restarts), `library_index.py` (audio files under `OUTPUT_DIR` for the duplicate check; rebuilt at startup and hourly, updated on save, queried in a thread)
+  - `health.py` — `/health` state: Telegram polling in the last 120 s and slskd answering in the last 60 s
+  - `search/scorer.py` — search result scoring algorithm; `search/slskd_client.py` — slskd API wrapper
+  - `processor/` — file renaming/moving and the lossless spectrum check
 - `scripts/` — utility scripts
 - `tests/` — test suite
 - `docker-compose.yml` — full stack deployment
@@ -49,14 +58,14 @@ Configuration via `.env` (see `.env.example`).
 ## Scoring Algorithm
 
 Search results are ranked by 4 factors (total 100 points):
-1. **Duration match** (40 pts): Compared to Spotify reference duration
+1. **Duration match** (40 pts): Compared to Spotify reference duration. A lossy file without a length gets one estimated from size and bitrate (`ResultScorer.effective_length`); a copy whose length stays unknown earns 0 here
 2. **Audio quality** (25 pts): depends on the profile passed to `score_results(profile=...)`
-   - `library`: lossless scores by bit depth and sample rate (hi-res preferred); lossy scores by bitrate tier. `_rank_responses` then puts every lossless result before every lossy one, except a lossless result of a different version (length off by more than `SAME_VERSION_MAX_DIFF_SECS`), which stays among the lossy ones in score order.
-   - `chat` (chat delivery): perceived quality versus size, no lossless/lossy split. Lossless and lossy >= 256 kbps share the top tier (lossy bitrates are scaled by codec first: Opus x2, AAC/Vorbis x1.5), minus a size cost up to the 50 MB limit; files over the limit score as the Opus they become. Constants and their reasons are at the top of `search/scorer.py`.
+   - `library`: lossless scores by bit depth and sample rate (hi-res preferred); lossy scores by bitrate tier. `pipeline/search.rank` then puts every lossless result before every lossy one, except a lossless result of a different version (length off by more than `SAME_VERSION_MAX_DIFF_SECS`) or of unknown length, which stays among the lossy ones in score order.
+   - `chat` (chat delivery): perceived quality versus size, no lossless/lossy split. Lossless and lossy >= 256 kbps share the top tier (lossy bitrates are scaled by codec first: Opus x2, AAC/Vorbis x1.5), minus a size cost up to the upload cap (50,000,000 bytes by default); files over the cap score as the Opus they become and sort after every file that fits; unknown-length files sort last. Constants and their reasons are at the top of `search/scorer.py`.
 3. **Source reliability** (20 pts): Free slots, upload speed, queue
 4. **Filename relevance** (15 pts): Artist/title word matching
 
-Exclude keywords filter out live/remix/etc unless the original title contains them.
+Exclude keywords filter out live/remix/etc unless the original title contains them. Before scoring, the title guard (`pipeline/search.title_guard`) hides copies whose file and parent folder names share no word with the title (brackets, version noise and a/the/of/and/feat/ft dropped); it never empties the list and is skipped for direct search.
 
 ## Soulseek (slskd) Search Patterns
 
@@ -67,7 +76,7 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 
 ## Telegram UX Patterns
 
-- **Markdown escaping**: Dynamic text (filenames, paths from Soulseek) must be escaped with `_escape_md()` or wrapped in backtick code spans to avoid `BadRequest` from Telegram's Markdown parser
+- **HTML everywhere**: every message is sent with `parse_mode=ParseMode.HTML`; dynamic text (track names, filenames, paths from Soulseek) must go through `_esc()`
 - **Safe edits**: Always use the `_safe_edit()` wrapper (catches `BadRequest`, `TimedOut`, `NetworkError`) instead of raw `msg.edit_text()`
 - **Result identification**: Download messages must include `#number` labels matching the result list so users can tell concurrent downloads apart
 - **Spotify results cap**: Show max 5 results to the user; fetch 10 from the API for filtering headroom

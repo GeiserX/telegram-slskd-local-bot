@@ -10,6 +10,7 @@ import pytest
 
 from music_downloader.bot.handlers import MusicBot, create_bot
 from music_downloader.metadata.spotify import TrackInfo
+from music_downloader.pipeline import fetch as pipeline_fetch
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
@@ -17,6 +18,7 @@ from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 def _make_config():
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -78,8 +80,8 @@ def _make_context():
 
 
 class TestDoSlskdSearch:
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_no_results_all_fallbacks(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -98,8 +100,8 @@ class TestDoSlskdSearch:
         await bot._do_slskd_search(context, 123, _make_track(), msg, 0)
         # Should have tried multiple fallback searches
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_finds_flac_results(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -119,8 +121,8 @@ class TestDoSlskdSearch:
         await bot._do_slskd_search(context, 123, _make_track(), msg, 0)
         assert 123 in bot.pending
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_title_only_research_when_first_search_ranks_nothing(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -154,8 +156,8 @@ class TestDoSlskdSearch:
         context = _make_context()
         await bot._do_slskd_search(context, 123, _make_track(), msg, 0)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_stale_aborts_early(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -174,8 +176,8 @@ class TestDoSlskdSearch:
         await bot._do_slskd_search(context, 123, _make_track(), msg, 0)
         assert 123 not in bot.pending
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_exception_handled(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -193,8 +195,8 @@ class TestDoSlskdSearch:
 
 
 class TestDoDownload:
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_enqueue_fails(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -208,8 +210,8 @@ class TestDoDownload:
         context = _make_context()
         await bot._do_download(context, 123, _make_track(), _make_result(), status_msg)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_download_failed_status(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -227,8 +229,8 @@ class TestDoDownload:
         records = bot.history_repo.get_recent(1)
         assert any(r.status == "failed" for r in records)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_download_timeout(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -243,8 +245,8 @@ class TestDoDownload:
         context = _make_context()
         await bot._do_download(context, 123, _make_track(), _make_result(), status_msg)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_file_not_found_on_disk(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -264,8 +266,8 @@ class TestDoDownload:
         records = bot.history_repo.get_recent(1)
         assert any(r.status == "file_not_found" for r in records)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_successful_download_small_file(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -283,7 +285,7 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.flac")
-            bot._analyze_lossless = AsyncMock(
+            bot.pipeline.analyze = AsyncMock(
                 return_value=LosslessVerdict(
                     verdict="AUTHENTIC",
                     cutoff_khz=22.05,
@@ -309,8 +311,8 @@ class TestDoDownload:
         finally:
             os.unlink(source_path)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_send_audio_bad_request_falls_back_to_document(self, mock_slskd_cls, mock_spotify):
         from telegram.error import BadRequest
@@ -329,7 +331,7 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.flac")
-            bot._analyze_lossless = AsyncMock(return_value=None)
+            bot.pipeline.analyze = AsyncMock(return_value=None)
 
             status_msg = AsyncMock()
             status_msg.edit_text = AsyncMock()
@@ -347,8 +349,8 @@ class TestDoDownload:
         finally:
             os.unlink(source_path)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_download_exception(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -362,8 +364,8 @@ class TestDoDownload:
         context = _make_context()
         await bot._do_download(context, 123, _make_track(), _make_result(), status_msg)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_lossy_skips_lossless_check(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -380,7 +382,7 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.mp3")
-            bot._analyze_lossless = AsyncMock()
+            bot.pipeline.analyze = AsyncMock()
 
             status_msg = AsyncMock()
             status_msg.edit_text = AsyncMock()
@@ -393,7 +395,7 @@ class TestDoDownload:
 
             mp3_result = _make_result(ext="mp3")
             await bot._do_download(context, 123, _make_track(), mp3_result, status_msg)
-            bot._analyze_lossless.assert_not_called()
+            bot.pipeline.analyze.assert_not_called()
         finally:
             os.unlink(source_path)
 
@@ -401,8 +403,8 @@ class TestDoDownload:
         ("ext", "checked"),
         [("flac", True), ("wav", True), ("aiff", True), ("ape", False), ("wv", False), ("mp3", False)],
     )
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_lossless_check_runs_only_where_soundfile_reads(self, mock_slskd_cls, mock_spotify, ext, checked):
         """flac/wav/aiff get the spectrum check; ape/wv say "not checked"; lossy says nothing."""
@@ -421,7 +423,7 @@ class TestDoDownload:
             bot.processor = MagicMock()
             bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
             bot.processor.build_filename = MagicMock(return_value=f"Artist - Song.{ext}")
-            bot._analyze_lossless = AsyncMock(return_value=None)
+            bot.pipeline.analyze = AsyncMock(return_value=None)
 
             status_msg = AsyncMock()
             status_msg.message_id = 1
@@ -430,7 +432,7 @@ class TestDoDownload:
 
             await bot._do_download(context, 123, _make_track(), _make_result(ext=ext), status_msg)
 
-            assert bot._analyze_lossless.await_count == (1 if checked else 0)
+            assert bot.pipeline.analyze.await_count == (1 if checked else 0)
             caption = context.bot.send_audio.call_args.kwargs["caption"]
             if ext == "mp3":
                 assert "Lossless check" not in caption
@@ -442,8 +444,8 @@ class TestDoDownload:
 
 
 class TestSendLargeFile:
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_ogg_conversion_success_small_enough(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -453,7 +455,7 @@ class TestSendLargeFile:
             ogg_path = f.name
 
         try:
-            bot._convert_to_ogg = AsyncMock(return_value=ogg_path)
+            bot.pipeline.convert_to_opus = AsyncMock(return_value=ogg_path)
             bot.processor = MagicMock()
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.ogg")
 
@@ -478,8 +480,8 @@ class TestSendLargeFile:
             if os.path.exists(ogg_path):
                 os.unlink(ogg_path)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_ogg_too_large_falls_back_to_preview(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -494,8 +496,8 @@ class TestSendLargeFile:
             preview_path = f.name
 
         try:
-            bot._convert_to_ogg = AsyncMock(return_value=ogg_path)
-            bot._create_preview = AsyncMock(return_value=preview_path)
+            bot.pipeline.convert_to_opus = AsyncMock(return_value=ogg_path)
+            bot.pipeline.preview_clip = AsyncMock(return_value=preview_path)
             bot.processor = MagicMock()
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.ogg")
 
@@ -529,8 +531,8 @@ class TestSendLargeFile:
                 if os.path.exists(p):
                     os.unlink(p)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_ogg_conversion_fails_uses_preview(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
@@ -540,8 +542,8 @@ class TestSendLargeFile:
             preview_path = f.name
 
         try:
-            bot._convert_to_ogg = AsyncMock(return_value=None)
-            bot._create_preview = AsyncMock(return_value=preview_path)
+            bot.pipeline.convert_to_opus = AsyncMock(return_value=None)
+            bot.pipeline.preview_clip = AsyncMock(return_value=preview_path)
             bot.processor = MagicMock()
             bot.processor.build_filename = MagicMock(return_value="Artist - Song.ogg")
 
@@ -565,13 +567,13 @@ class TestSendLargeFile:
             if os.path.exists(preview_path):
                 os.unlink(preview_path)
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_both_conversions_fail(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
-        bot._convert_to_ogg = AsyncMock(return_value=None)
-        bot._create_preview = AsyncMock(return_value=None)
+        bot.pipeline.convert_to_opus = AsyncMock(return_value=None)
+        bot.pipeline.preview_clip = AsyncMock(return_value=None)
 
         sent_msg = AsyncMock()
         sent_msg.message_id = 2
@@ -593,11 +595,11 @@ class TestSendLargeFile:
 
 
 class TestAsyncHelpers:
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_analyze_lossless_runs(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.analyze_lossless") as mock_analyze:
+        with patch("music_downloader.pipeline.fetch.analyze_lossless") as mock_analyze:
             mock_analyze.return_value = LosslessVerdict(
                 verdict="AUTHENTIC",
                 cutoff_khz=22.05,
@@ -605,84 +607,84 @@ class TestAsyncHelpers:
                 sample_rate=44100,
                 bit_depth=16,
             )
-            result = await MusicBot._analyze_lossless("/fake/path.flac")
+            result = await pipeline_fetch.analyze("/fake/path.flac")
             assert result is not None
             assert result.verdict == "AUTHENTIC"
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_analyze_lossless_exception(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.analyze_lossless") as mock_analyze:
+        with patch("music_downloader.pipeline.fetch.analyze_lossless") as mock_analyze:
             mock_analyze.side_effect = Exception("read error")
-            result = await MusicBot._analyze_lossless("/fake/path.flac")
+            result = await pipeline_fetch.analyze("/fake/path.flac")
             assert result is None
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_convert_to_ogg_runs(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.convert_to_ogg") as mock_conv:
+        with patch("music_downloader.pipeline.fetch.convert_to_ogg") as mock_conv:
             mock_conv.return_value = "/tmp/output.ogg"
-            result = await MusicBot._convert_to_ogg("/fake/path.flac")
+            result = await pipeline_fetch.convert_to_opus("/fake/path.flac")
             assert result == "/tmp/output.ogg"
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_convert_to_ogg_exception(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.convert_to_ogg") as mock_conv:
+        with patch("music_downloader.pipeline.fetch.convert_to_ogg") as mock_conv:
             mock_conv.side_effect = Exception("ffmpeg error")
-            result = await MusicBot._convert_to_ogg("/fake/path.flac")
+            result = await pipeline_fetch.convert_to_opus("/fake/path.flac")
             assert result is None
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_create_preview_runs(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.create_preview_clip") as mock_clip:
+        with patch("music_downloader.pipeline.fetch.create_preview_clip") as mock_clip:
             mock_clip.return_value = "/tmp/preview.ogg"
-            result = await MusicBot._create_preview("/fake/path.flac", 60.0)
+            result = await pipeline_fetch.preview_clip("/fake/path.flac", 60.0)
             assert result == "/tmp/preview.ogg"
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_create_preview_exception(self, mock_slskd_cls, mock_spotify):
-        with patch("music_downloader.bot.handlers.create_preview_clip") as mock_clip:
+        with patch("music_downloader.pipeline.fetch.create_preview_clip") as mock_clip:
             mock_clip.side_effect = Exception("ffmpeg error")
-            result = await MusicBot._create_preview("/fake/path.flac")
+            result = await pipeline_fetch.preview_clip("/fake/path.flac")
             assert result is None
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_embed_spotify_artwork_success(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
-        with patch("music_downloader.bot.handlers.fetch_spotify_artwork") as mock_fetch:
+        with patch("music_downloader.pipeline.library.fetch_spotify_artwork") as mock_fetch:
             mock_fetch.return_value = b"\xff\xd8\xff\xe0"
-            with patch("music_downloader.bot.handlers.embed_artwork_into_file") as mock_embed:
+            with patch("music_downloader.pipeline.library.embed_artwork_into_file") as mock_embed:
                 mock_embed.return_value = True
-                await bot._embed_spotify_artwork("/fake/path.flac", _make_track())
+                await bot.pipeline.embed_artwork("/fake/path.flac", _make_track())
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_embed_spotify_artwork_no_art(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
-        with patch("music_downloader.bot.handlers.fetch_spotify_artwork") as mock_fetch:
+        with patch("music_downloader.pipeline.library.fetch_spotify_artwork") as mock_fetch:
             mock_fetch.return_value = None
-            await bot._embed_spotify_artwork("/fake/path.flac", _make_track())
+            await bot.pipeline.embed_artwork("/fake/path.flac", _make_track())
 
-    @patch("music_downloader.bot.handlers.SpotifyResolver")
-    @patch("music_downloader.bot.handlers.SlskdClient")
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
     @pytest.mark.asyncio
     async def test_embed_spotify_artwork_exception(self, mock_slskd_cls, mock_spotify):
         bot = MusicBot(_make_config())
-        with patch("music_downloader.bot.handlers.fetch_spotify_artwork") as mock_fetch:
+        with patch("music_downloader.pipeline.library.fetch_spotify_artwork") as mock_fetch:
             mock_fetch.side_effect = Exception("network error")
             # Should not raise
-            await bot._embed_spotify_artwork("/fake/path.flac", _make_track())
+            await bot.pipeline.embed_artwork("/fake/path.flac", _make_track())
 
 
 class TestCreateBot:

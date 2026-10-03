@@ -19,6 +19,7 @@ def _handlers_config():
 
     td = tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "i"
     config.spotify_client_secret = "s"
@@ -142,8 +143,8 @@ class TestSweepLoopLifecycle:
     async def test_loop_sweeps_and_survives_errors(self):
         """One failing sweep must not kill the hourly loop."""
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
         ):
             from music_downloader.bot.handlers import MusicBot
 
@@ -164,8 +165,8 @@ class TestSweepLoopLifecycle:
 
         config = _handlers_config()
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
             patch("music_downloader.bot.handlers.Application") as mock_app_cls,
         ):
             mock_builder = MagicMock()
@@ -183,7 +184,35 @@ class TestSweepLoopLifecycle:
         before = asyncio.all_tasks()
         await post_init(app)
         started = asyncio.all_tasks() - before
-        assert len(started) == 1, "post_init must start exactly the sweep task"
+        assert len(started) == 2, "post_init must start exactly the sweep task and the library index task"
 
         await post_shutdown(app)
-        assert started.pop().cancelled(), "post_shutdown must cancel the sweep task"
+        assert all(task.cancelled() for task in started), "post_shutdown must cancel both tasks"
+
+    @pytest.mark.asyncio
+    async def test_library_index_task_runs_with_the_sweep_off(self):
+        from music_downloader.bot.handlers import create_bot
+
+        config = _handlers_config()
+        config.download_cleanup_hours = 0
+        with (
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
+            patch("music_downloader.bot.handlers.Application") as mock_app_cls,
+        ):
+            mock_builder = MagicMock()
+            for chain in ("token", "post_init", "post_shutdown"):
+                getattr(mock_builder, chain).return_value = mock_builder
+            mock_app_cls.builder.return_value = mock_builder
+            create_bot(config)
+            post_init = mock_builder.post_init.call_args[0][0]
+            post_shutdown = mock_builder.post_shutdown.call_args[0][0]
+
+        app = MagicMock()
+        app.bot = AsyncMock()
+        before = asyncio.all_tasks()
+        await post_init(app)
+        started = asyncio.all_tasks() - before
+        assert [t.get_coro().__name__ for t in started] == ["library_index_loop"]
+        await post_shutdown(app)
+        assert all(task.cancelled() for task in started)

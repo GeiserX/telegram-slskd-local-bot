@@ -7,6 +7,7 @@ and filename analysis to filter out unwanted versions.
 import logging
 import re
 
+from music_downloader.config import BYTES_PER_MB, DEFAULT_UPLOAD_LIMIT_BYTES
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.search.slskd_client import SearchResult
 
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Scoring weights
 DURATION_MAX_POINTS = 40.0
 DURATION_CLOSE_POINTS = 25.0
-DURATION_FLAT_POINTS = 15.0
+DURATION_FLAT_POINTS = 15.0  # only when the track's own length is unknown (direct search)
 QUALITY_HIRES_POINTS = 15.0
 QUALITY_CD_POINTS = 10.0
 SAMPLE_RATE_HIRES_POINTS = 10.0
@@ -50,9 +51,9 @@ PERCEIVED_UNKNOWN_POINTS = PERCEIVED_FAIR_POINTS  # lossy with no bitrate and no
 # extension cannot tell, so it takes the lower Vorbis factor.
 CODEC_MP3_EQUIVALENT = {"opus": 2.0, "aac": 1.5, "m4a": 1.5, "ogg": 1.5, "wma": 1.0, "mp3": 1.0}
 
-# Chat profile size cost, inside the range that fits Telegram's upload limit.
-CHAT_SIZE_LIMIT_BYTES = 50 * 1024 * 1024  # Telegram bot API upload limit (handlers.TELEGRAM_FILE_LIMIT)
-CHAT_SIZE_FREE_BYTES = 5 * 1024 * 1024  # files this small cost nothing
+# Chat profile size cost, inside the range that fits Telegram's upload limit
+# (ResultScorer's chat_size_limit_bytes, TELEGRAM_MAX_UPLOAD_MB in config).
+CHAT_SIZE_FREE_BYTES = 5 * BYTES_PER_MB  # files this small cost nothing
 CHAT_SIZE_PENALTY_MAX_POINTS = 5.0  # cost at the limit, linear from the free size
 # A file over the limit is sent as Opus converted from it: scored as its own
 # tier minus this, with no size cost (the Opus that goes out fits).
@@ -66,8 +67,10 @@ class ResultScorer:
         self,
         duration_tolerance_secs: int = 5,
         exclude_keywords: list[str] | None = None,
+        chat_size_limit_bytes: int = DEFAULT_UPLOAD_LIMIT_BYTES,
     ):
         self.duration_tolerance = duration_tolerance_secs
+        self.chat_size_limit = chat_size_limit_bytes
         self.exclude_keywords = exclude_keywords or [
             "live",
             "remix",
@@ -154,11 +157,14 @@ class ResultScorer:
                     return None
 
         # ===== DURATION MATCH (0-40 points) =====
+        # A copy whose length is unknown even after estimating it earns
+        # nothing here: it may be any track (see length_unknown).
         target_secs = track.duration_secs
+        length = self.effective_length(result)
         if target_secs == 0:
             score += DURATION_FLAT_POINTS
-        elif result.length is not None and result.length > 0:
-            diff = abs(result.length - target_secs)
+        elif length is not None:
+            diff = abs(length - target_secs)
 
             if diff <= self.duration_tolerance:
                 score += DURATION_MAX_POINTS - (diff * 2)
@@ -169,10 +175,8 @@ class ResultScorer:
             elif max_duration_diff is not None and diff <= max_duration_diff:
                 pass  # 0 duration points — different version, still acceptable
             else:
-                logger.debug(f"Excluded (duration {result.length}s vs {target_secs}s): {result.basename}")
+                logger.debug(f"Excluded (duration {length}s vs {target_secs}s): {result.basename}")
                 return None
-        else:
-            score += DURATION_FLAT_POINTS
 
         # ===== AUDIO QUALITY (0-25 points) =====
         if profile == PROFILE_CHAT:
@@ -253,24 +257,49 @@ class ResultScorer:
             return PERCEIVED_FAIR_POINTS
         return PERCEIVED_POOR_POINTS
 
-    @classmethod
-    def _chat_quality_points(cls, result: SearchResult) -> float:
+    def _chat_quality_points(self, result: SearchResult) -> float:
         """Chat profile: perceived quality minus a size cost ("best bang for buck").
 
         A fitting file pays up to CHAT_SIZE_PENALTY_MAX_POINTS, growing linearly
         from CHAT_SIZE_FREE_BYTES to the limit. A file over the limit will be
         converted to Opus, so it scores as its tier minus the conversion.
         """
-        points = cls._perceived_points(result)
-        if result.size > CHAT_SIZE_LIMIT_BYTES:
+        points = self._perceived_points(result)
+        if result.size > self.chat_size_limit:
             return max(0.0, points - CHAT_OPUS_CONVERSION_POINTS)
         over_free = max(0, result.size - CHAT_SIZE_FREE_BYTES)
-        cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / (CHAT_SIZE_LIMIT_BYTES - CHAT_SIZE_FREE_BYTES)
+        cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / max(1, self.chat_size_limit - CHAT_SIZE_FREE_BYTES)
         return max(0.0, points - cost)
 
     @staticmethod
-    def is_other_version(result: SearchResult, track: TrackInfo) -> bool:
-        """True when both lengths are known and differ by more than SAME_VERSION_MAX_DIFF_SECS."""
-        if not track.duration_secs or not result.length:
+    def effective_length(result: SearchResult) -> int | None:
+        """The copy's length in seconds: reported, else estimated, else None.
+
+        Peers often share files without a length. For a lossy file with a
+        known bitrate the length follows from size and bitrate
+        (size * 8 / (kbps * 1000)), close enough to compare with the track.
+        A lossless file's size depends on how well it compressed, so it gets
+        no estimate.
+        """
+        if result.length:
+            return result.length
+        if not result.is_lossless and result.bit_rate and result.size:
+            return round(result.size * 8 / (result.bit_rate * 1000))
+        return None
+
+    @classmethod
+    def length_unknown(cls, result: SearchResult, track: TrackInfo) -> bool:
+        """True when the track has a length and the copy's cannot be known or estimated.
+
+        Such a copy earns no duration points and may not lead the list: an
+        unrelated file with no length used to outrank the right one.
+        """
+        return bool(track.duration_secs) and cls.effective_length(result) is None
+
+    @classmethod
+    def is_other_version(cls, result: SearchResult, track: TrackInfo) -> bool:
+        """True when both lengths are known (or estimated) and differ by more than SAME_VERSION_MAX_DIFF_SECS."""
+        length = cls.effective_length(result)
+        if not track.duration_secs or length is None:
             return False
-        return abs(result.length - track.duration_secs) > SAME_VERSION_MAX_DIFF_SECS
+        return abs(length - track.duration_secs) > SAME_VERSION_MAX_DIFF_SECS

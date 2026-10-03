@@ -24,6 +24,26 @@ Cause: `/downloads` in the container is not the folder slskd writes its complete
 
 Fix: set `SLSKD_DOWNLOAD_PATH` to slskd's own download folder on the host, the same one slskd mounts.
 
+## slskd writes downloads as root
+
+Cause: slskd's container runs as root with umask 0022, so every finished download belongs to root and only
+root may change it. The bot runs as uid 1000: it can read the file and copy it into the library, but it cannot
+delete the download afterwards. The log shows `Failed to cleanup: /downloads/...` after a save or a chat send,
+and the orphan sweep logs `Orphan sweep could not delete /downloads/...: [Errno 13] Permission denied`. The
+downloads folder keeps growing.
+
+Fix: let slskd write files its group can change, and put the bot in that group.
+
+1. On the slskd container, set `SLSKD_UMASK=0002`. New downloads are then group-writable (`rw-rw-r--`, folders
+   `rwxrwxr-x`).
+2. Run the bot with the root group: `user: "1000:0"` under the `slskd-importer` service in
+   `docker-compose.yml`. Running it with slskd's own uid works too.
+3. Fix the downloads that already exist, once, on the host:
+   `sudo chmod -R g+w /path/to/slskd/downloads`.
+
+Recreate both containers (`docker compose up -d`). The next save deletes its download, and the next sweep
+stops logging `Permission denied`.
+
 ## Reporting a bug
 
 Open an [issue](https://github.com/GeiserX/telegram-slskd-local-bot/issues) with:

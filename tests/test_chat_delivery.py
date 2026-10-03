@@ -12,17 +12,18 @@ import pytest
 from telegram.error import BadRequest, NetworkError
 
 from music_downloader.bot.handlers import (
-    TELEGRAM_FILE_LIMIT,
     MusicBot,
     PendingDownload,
     PendingSearch,
-    _opus_bitrates_that_fit,
 )
 from music_downloader.bot.keyboards import build_delivery_mode_keyboard
+from music_downloader.config import DEFAULT_UPLOAD_LIMIT_BYTES
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.import_repo import TrackStatus
 from music_downloader.persistence.settings_repo import SettingsRepository
+from music_downloader.pipeline import fetch as pipeline_fetch
+from music_downloader.pipeline.fetch import opus_bitrates_that_fit
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
 CHAT = 67890
@@ -33,6 +34,7 @@ GROUP = -100123
 def _make_config(td=None, chat_users=None):
     td = td or tempfile.mkdtemp()
     config = MagicMock()
+    config.telegram_upload_limit_bytes = 50_000_000
     config.telegram_bot_token = "test-token"
     config.spotify_client_id = "test-id"
     config.spotify_client_secret = "test-secret"
@@ -56,8 +58,8 @@ def _make_config(td=None, chat_users=None):
 
 def _make_bot(config=None):
     with (
-        patch("music_downloader.bot.handlers.SpotifyResolver"),
-        patch("music_downloader.bot.handlers.SlskdClient"),
+        patch("music_downloader.pipeline.SpotifyResolver"),
+        patch("music_downloader.pipeline.SlskdClient"),
     ):
         return MusicBot(config or _make_config())
 
@@ -68,7 +70,7 @@ def _chat_bot():
     bot.processor = MagicMock()
     bot.processor.build_filename = MagicMock(side_effect=lambda a, t, ext="flac": f"{a} - {t}.{ext}")
     bot.processor.cleanup_download = MagicMock(side_effect=lambda p: os.remove(p) or True)
-    bot._embed_spotify_artwork = AsyncMock()
+    bot.pipeline.embed_artwork = AsyncMock()
     return bot
 
 
@@ -117,7 +119,7 @@ def _setup_download(bot, source_path):
         return_value=DownloadStatus(username="u", filename="f", state="Completed, Succeeded")
     )
     bot.processor.find_downloaded_file = MagicMock(return_value=source_path)
-    bot._analyze_lossless = AsyncMock(return_value=None)
+    bot.pipeline.analyze = AsyncMock(return_value=None)
 
 
 def _status_msg():
@@ -288,7 +290,7 @@ class TestDeliverCommand:
         update.message = AsyncMock()
         await bot.cmd_deliver(update, _make_context())
         kwargs = update.message.reply_text.call_args.kwargs
-        assert "*Chat*" in update.message.reply_text.call_args.args[0]
+        assert "<b>Chat</b>" in update.message.reply_text.call_args.args[0]
         assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "deliver:library"
 
     @pytest.mark.asyncio
@@ -300,7 +302,7 @@ class TestDeliverCommand:
         update.message = AsyncMock()
         await bot.cmd_deliver(update, _make_context())
         args, kwargs = update.message.reply_text.call_args
-        assert "fixed" in args[0] and "*Chat*" in args[0]
+        assert "fixed" in args[0] and "<b>Chat</b>" in args[0]
         assert "reply_markup" not in kwargs
 
     @pytest.mark.asyncio
@@ -350,13 +352,12 @@ class TestDeliverCommand:
         update.effective_user.id = 12345
         update.message = AsyncMock()
         await bot.cmd_history(update, _make_context())
-        assert "\U0001f4e8 `a - t.flac`" in update.message.reply_text.call_args.args[0]
+        assert "\U0001f4e8 <code>a - t.flac</code>" in update.message.reply_text.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_chat_mode_skips_library_duplicate_check(self):
         bot = _make_bot(_make_config(chat_users={CHAT}))
-        bot.processor = MagicMock()
-        bot.processor.find_similar = MagicMock(return_value=["Nancy Sinatra - Bang Bang.flac"])
+        bot.pipeline.find_similar = AsyncMock(return_value=["Nancy Sinatra - Bang Bang.flac"])
         update = MagicMock()
         update.effective_user.id = CHAT
         update.effective_chat.id = CHAT
@@ -364,7 +365,7 @@ class TestDeliverCommand:
         update.message.text = "Nancy Sinatra Bang Bang"
         with patch.object(bot, "_do_search", new_callable=AsyncMock) as mock_search:
             await bot.handle_text(update, _make_context())
-        bot.processor.find_similar.assert_not_called()
+        bot.pipeline.find_similar.assert_not_called()
         mock_search.assert_awaited_once()
 
 
@@ -375,7 +376,7 @@ class TestDeliverCommand:
 
 class TestRanking:
     def _ranked(self, bot, chat_id):
-        big = TELEGRAM_FILE_LIMIT + 10_000_000
+        big = DEFAULT_UPLOAD_LIMIT_BYTES + 10_000_000
         results = [
             _make_result(0, size=big),  # top score, hi-res, over the limit
             _make_result(1, size=40_000_000),
@@ -385,7 +386,7 @@ class TestRanking:
         bot.slskd.parse_results = MagicMock(return_value=results)
         bot.scorer = MagicMock()
         bot.scorer.score_results = MagicMock(return_value=list(results))
-        ranked = bot._rank_responses([], _make_track(), chat_id=chat_id)
+        ranked = bot.pipeline.rank([], _make_track(), bot._profile(chat_id))
         return [r.username for r in ranked]
 
     def test_chat_mode_puts_oversize_after_every_fit_stably(self):
@@ -397,23 +398,27 @@ class TestRanking:
         assert self._ranked(bot, CHAT) == ["user0", "user1", "user2", "user3"]
 
     def test_bitrate_choice(self):
-        assert _opus_bitrates_that_fit(162) == [192, 160]
-        assert _opus_bitrates_that_fit(2200) == [160, 128]
-        assert _opus_bitrates_that_fit(3000) == [128, 96]
-        assert _opus_bitrates_that_fit(3500) == [96]
-        assert _opus_bitrates_that_fit(5000) == []
+        assert opus_bitrates_that_fit(162) == [192, 160]
+        assert opus_bitrates_that_fit(2200) == [160, 128]
+        # 2915 s at 128 kbps fits only with a 1 MB headroom of 1,000,000 bytes.
+        assert opus_bitrates_that_fit(2915) == [128, 96]
+        assert opus_bitrates_that_fit(3500) == [96]
+        assert opus_bitrates_that_fit(5000) == []
 
     def test_unknown_duration_tries_every_bitrate(self):
         # Nothing can be estimated, so a long mix must still reach 128 and 96.
-        assert _opus_bitrates_that_fit(0) == [192, 160, 128, 96]
+        assert opus_bitrates_that_fit(0) == [192, 160, 128, 96]
 
     def test_result_exactly_at_the_limit_counts_as_fitting(self):
         bot = _make_bot(_make_config(chat_users={CHAT}))
-        results = [_make_result(0, size=TELEGRAM_FILE_LIMIT + 1), _make_result(1, size=TELEGRAM_FILE_LIMIT)]
+        results = [
+            _make_result(0, size=DEFAULT_UPLOAD_LIMIT_BYTES + 1),
+            _make_result(1, size=DEFAULT_UPLOAD_LIMIT_BYTES),
+        ]
         bot.slskd.parse_results = MagicMock(return_value=results)
         bot.scorer = MagicMock()
         bot.scorer.score_results = MagicMock(return_value=list(results))
-        ranked = bot._rank_responses([], _make_track(), chat_id=CHAT)
+        ranked = bot.pipeline.rank([], _make_track(), bot._profile(CHAT))
         assert [r.username for r in ranked] == ["user1", "user0"]
 
 
@@ -446,7 +451,7 @@ class TestChatDownload:
         bot.processor.cleanup_download.assert_called_once_with(source)
         assert seen_during_cleanup == [True]  # entry still protected the file during cleanup
         assert bot.downloads == {}
-        bot._embed_spotify_artwork.assert_awaited_once()
+        bot.pipeline.embed_artwork.assert_awaited_once()
         assert "#1 Sent" in _edits(status)[-1]
         assert bot.history_repo.get_recent(1)[0].status == "delivered"
 
@@ -466,38 +471,38 @@ class TestChatDownload:
     @pytest.mark.asyncio
     async def test_oversize_converted_at_best_fitting_bitrate(self, tmp_path):
         bot = _chat_bot()
-        source = _file(tmp_path, size=TELEGRAM_FILE_LIMIT + 11 * 1024 * 1024)
+        source = _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES + 11_000_000)
         _setup_download(bot, source)
         ogg = _file(tmp_path, "out.ogg", 5000)
-        bot._convert_to_ogg = AsyncMock(return_value=ogg)
-        bot._create_preview = AsyncMock()
+        bot.pipeline.convert_to_opus = AsyncMock(return_value=ogg)
+        bot.pipeline.preview_clip = AsyncMock()
         context = _make_context()
 
         await bot._do_download(context, CHAT, _make_track(), _make_result(), _status_msg())
 
-        bot._convert_to_ogg.assert_awaited_once_with(source, 192)
-        bot._create_preview.assert_not_awaited()
+        bot.pipeline.convert_to_opus.assert_awaited_once_with(source, 192)
+        bot.pipeline.preview_clip.assert_not_awaited()
         kwargs = context.bot.send_audio.call_args.kwargs
         assert "Converted to Opus 192 kbps, original 61 MB FLAC" in kwargs["caption"]
         assert kwargs["filename"].endswith(".ogg")
         assert "reply_markup" not in kwargs
         assert not os.path.exists(ogg)
         assert not os.path.exists(source)
-        bot._embed_spotify_artwork.assert_not_awaited()
+        bot.pipeline.embed_artwork.assert_not_awaited()
         assert bot.history_repo.get_recent(1)[0].filename == "Nancy Sinatra - Bang Bang.ogg"
 
     @pytest.mark.asyncio
     async def test_file_exactly_at_the_limit_is_sent_as_is(self, tmp_path):
         bot = _chat_bot()
-        source = _file(tmp_path, size=TELEGRAM_FILE_LIMIT)
+        source = _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES)
         _setup_download(bot, source)
-        bot._convert_to_ogg = AsyncMock()
+        bot.pipeline.convert_to_opus = AsyncMock()
         context = _make_context()
 
         await bot._do_download(context, CHAT, _make_track(), _make_result(), _status_msg())
 
-        bot._convert_to_ogg.assert_not_awaited()
-        bot._embed_spotify_artwork.assert_awaited_once()
+        bot.pipeline.convert_to_opus.assert_not_awaited()
+        bot.pipeline.embed_artwork.assert_awaited_once()
         context.bot.send_audio.assert_awaited_once()
         assert context.bot.send_audio.call_args.kwargs["filename"] == "Nancy Sinatra - Bang Bang.flac"
         assert bot.history_repo.get_recent(1)[0].status == "delivered"
@@ -505,33 +510,33 @@ class TestChatDownload:
     @pytest.mark.asyncio
     async def test_oversize_retries_once_lower_when_output_still_too_big(self, tmp_path):
         bot = _chat_bot()
-        _setup_download(bot, _file(tmp_path, size=TELEGRAM_FILE_LIMIT + 1))
-        too_big = _file(tmp_path, "a.ogg", TELEGRAM_FILE_LIMIT + 1)
+        _setup_download(bot, _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES + 1))
+        too_big = _file(tmp_path, "a.ogg", DEFAULT_UPLOAD_LIMIT_BYTES + 1)
         fits = _file(tmp_path, "b.ogg", 5000)
-        bot._convert_to_ogg = AsyncMock(side_effect=[too_big, fits])
+        bot.pipeline.convert_to_opus = AsyncMock(side_effect=[too_big, fits])
         context = _make_context()
 
         await bot._do_download(context, CHAT, _make_track(), _make_result(), _status_msg())
 
-        assert [c.args[1] for c in bot._convert_to_ogg.await_args_list] == [192, 160]
+        assert [c.args[1] for c in bot.pipeline.convert_to_opus.await_args_list] == [192, 160]
         assert "Opus 160 kbps" in context.bot.send_audio.call_args.kwargs["caption"]
         assert not os.path.exists(too_big) and not os.path.exists(fits)
 
     @pytest.mark.asyncio
     async def test_nothing_fits_keeps_source_and_offers_retry(self, tmp_path):
         bot = _chat_bot()
-        source = _file(tmp_path, size=TELEGRAM_FILE_LIMIT + 1)
+        source = _file(tmp_path, size=DEFAULT_UPLOAD_LIMIT_BYTES + 1)
         _setup_download(bot, source)
-        bot._convert_to_ogg = AsyncMock()
-        bot._create_preview = AsyncMock()
+        bot.pipeline.convert_to_opus = AsyncMock()
+        bot.pipeline.preview_clip = AsyncMock()
         bot.pending[CHAT] = PendingSearch(query="q", results=[_make_result(0), _make_result(1)])
         context = _make_context()
         status = _status_msg()
 
         await bot._do_download(context, CHAT, _make_track(duration_ms=5_000_000), _make_result(), status)
 
-        bot._convert_to_ogg.assert_not_awaited()
-        bot._create_preview.assert_not_awaited()
+        bot.pipeline.convert_to_opus.assert_not_awaited()
+        bot.pipeline.preview_clip.assert_not_awaited()
         context.bot.send_audio.assert_not_awaited()
         assert "under 50 MB" in _edits(status)[-1]
         markup = status.edit_text.call_args.kwargs["reply_markup"]
@@ -837,14 +842,14 @@ class TestChatImports:
         assert os.path.exists(source)
 
     @pytest.mark.asyncio
-    async def test_review_import_failure_heading_escapes_markdown(self, tmp_path):
-        """A name like *NSYNC must not break the Markdown edit that carries the Skip keyboard."""
+    async def test_review_import_failure_heading_escapes_html(self, tmp_path):
+        """A name like <NSYNC> must not break the HTML edit that carries the Skip keyboard."""
         bot = _import_bot()
         source = _file(tmp_path)
         context = _make_context()
         context.bot.send_audio = AsyncMock(side_effect=NetworkError("down"))
         track = TrackInfo(
-            artist="*NSYNC", title="Bye_Bye [Bye]", album="X", duration_ms=162_000, spotify_url="u", year="2000"
+            artist="*NSYNC <&>", title="Bye_Bye [Bye]", album="X", duration_ms=162_000, spotify_url="u", year="2000"
         )
         _setup_download(bot, source)
         bot.downloads["dl1"] = PendingDownload(track=track, result=_make_result(), chat_id=CHAT)
@@ -856,8 +861,8 @@ class TestChatImports:
             )
 
         text = _edits(status)[-1]
-        assert "\\*NSYNC" in text and "Bye\\_Bye \\[Bye\\]" in text
-        assert "*NSYNC" not in text.replace("\\*NSYNC", "")
+        assert "*NSYNC &lt;&amp;&gt; - Bye_Bye [Bye]" in text
+        assert "<&>" not in text
 
     @pytest.mark.asyncio
     async def test_import_approve_in_chat_mode_delivers_instead_of_saving(self, tmp_path):
@@ -914,6 +919,6 @@ class TestConvertBitrate:
 
     @pytest.mark.asyncio
     async def test_handler_wrapper_passes_bitrate(self):
-        with patch("music_downloader.bot.handlers.convert_to_ogg", return_value="/tmp/x.ogg") as mock_conv:
-            assert await MusicBot._convert_to_ogg("/fake.flac", 160) == "/tmp/x.ogg"
+        with patch("music_downloader.pipeline.fetch.convert_to_ogg", return_value="/tmp/x.ogg") as mock_conv:
+            assert await pipeline_fetch.convert_to_opus("/fake.flac", 160) == "/tmp/x.ogg"
         mock_conv.assert_called_once_with("/fake.flac", 160)

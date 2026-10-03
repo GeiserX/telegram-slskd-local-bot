@@ -55,7 +55,7 @@ You text the bot a song name. When Spotify returns more than one distinct track 
 ## What it does
 
 - Resolves artist, title, album and duration on Spotify, and warns when similar files are already in your library before it searches.
-- Lists every lossless copy before every lossy one, so a song with no lossless copy still gets a lossy one. Within each group it ranks by duration against Spotify, bit depth and sample rate (hi-res first) or bitrate, the uploader's free slot, speed and queue, and the file name; drops live, remix and karaoke cuts unless the title has them.
+- Lists every lossless copy of known length before every lossy one, so a song with no lossless copy still gets a lossy one. Within each group it ranks by duration against Spotify, bit depth and sample rate (hi-res first) or bitrate, the uploader's free slot, speed and queue, and the file name; drops live, remix and karaoke cuts unless the title has them.
 - Checks the spectrum of a lossless file (FLAC, WAV or AIFF) found from a song name and flags an MP3-style cutoff before you save. `/import` skips the check.
 - Saves as `Artist - Title` with its own extension (`.flac`, `.wav`, `.mp3`...) and the Spotify cover art embedded, in the folder your player or [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) watches.
 - `/import` a Spotify playlist or album and review each track or auto-save them all; `/auto` per chat saves the best match without a tap; a failed transfer gets Retry and Try next result.
