@@ -8,7 +8,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
 | `TELEGRAM_ALLOWED_USERS` | Yes | *(deny all)* | Comma-separated Telegram user IDs allowed to use the bot. Empty means the bot denies everyone (fail-closed) — the denial reply shows you your ID |
-| `TELEGRAM_CHAT_DELIVERY_USERS` | No | *(empty)* | Comma-separated Telegram user IDs whose chats default to chat delivery: the track is sent into the chat (under Telegram's 50 MB limit, converted to Opus when bigger) and nothing is saved anywhere. In a group chat it matches the user who started the search or import. `/deliver` overrides it per chat |
+| `TELEGRAM_CHAT_DELIVERY_USERS` | No | *(empty)* | Comma-separated Telegram user IDs fixed to chat delivery: the track is sent into the chat (under Telegram's 50 MB limit, converted to Opus when bigger) and nothing is saved anywhere. These accounts cannot switch to the library with `/deliver`, so only accounts outside the list ever write to it. In a group chat it matches the user who started the search or import |
 | `SPOTIFY_CLIENT_ID` | Yes | — | Spotify Developer app Client ID |
 | `SPOTIFY_CLIENT_SECRET` | Yes | — | Spotify Developer app Client Secret |
 | `SLSKD_HOST` | Yes | — | slskd instance URL (e.g., `http://192.168.1.100:5030`) |

@@ -403,15 +403,23 @@ class MusicBot:
         ``user_id`` is the user who started the operation; outside private chats
         it, not the chat id, is what the env list matches.
         """
+        if self._is_locked_to_chat(chat_id, user_id):
+            return DELIVERY_CHAT
         if chat_id not in self._delivery_cache:
             self._delivery_cache[chat_id] = self.settings_repo.get_delivery_mode(chat_id)
         stored = self._delivery_cache[chat_id]
         if stored in (DELIVERY_LIBRARY, DELIVERY_CHAT):
             return stored
-        users = self.config.telegram_chat_delivery_users
-        if chat_id in users or (user_id is not None and user_id in users):
-            return DELIVERY_CHAT
         return DELIVERY_LIBRARY
+
+    def _is_locked_to_chat(self, chat_id: int, user_id: int | None = None) -> bool:
+        """Accounts in TELEGRAM_CHAT_DELIVERY_USERS always get chat delivery.
+
+        The list is the owner's guarantee that those accounts never write to the
+        library: /deliver cannot switch them, and a stored value does not count.
+        """
+        users = self.config.telegram_chat_delivery_users
+        return chat_id in users or (user_id is not None and user_id in users)
 
     def _is_chat_delivery(self, chat_id: int, user_id: int | None = None) -> bool:
         return self._delivery_mode(chat_id, user_id) == DELIVERY_CHAT
@@ -537,6 +545,15 @@ class MusicBot:
     async def cmd_deliver(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /deliver command — switch between library and chat delivery."""
         if not await self._check_auth(update):
+            return
+
+        if self._is_locked_to_chat(update.effective_chat.id, update.effective_user.id):
+            await update.message.reply_text(
+                "Delivery mode for this account: *Chat* (fixed)\n\n"
+                "Tracks are sent here and nothing is saved anywhere. Over 50 MB they are converted to Opus to fit. "
+                "This account cannot switch to the library.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
 
         current = self._delivery_mode(update.effective_chat.id, update.effective_user.id)
@@ -988,6 +1005,12 @@ class MusicBot:
 
         # Delivery-mode toggle
         if data in (f"deliver:{DELIVERY_LIBRARY}", f"deliver:{DELIVERY_CHAT}"):
+            if self._is_locked_to_chat(chat_id, query.from_user.id):
+                await query.edit_message_text(
+                    "Delivery mode: *Chat* (fixed for this account)",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
             mode = data.split(":", 1)[1]
             self._set_delivery(chat_id, mode)
             mode_str = "Chat" if mode == DELIVERY_CHAT else "Library"
