@@ -113,6 +113,11 @@ class Config:
         # approved or rejected. Active transfers are safe (fresh mtime).
         self.download_cleanup_hours = max(0, int(os.getenv("DOWNLOAD_CLEANUP_HOURS", "24")))
 
+        # Wishlist: hours between two searches for the same wish, and seconds
+        # between two wish searches in one pass (Soulseek etiquette).
+        self.wishlist_check_hours = max(1, int(os.getenv("WISHLIST_CHECK_HOURS") or "24"))
+        self.wishlist_pause_secs = max(0, int(os.getenv("WISHLIST_PAUSE_SECS") or "20"))
+
         # Keywords in file paths that indicate unwanted versions
         exclude_kw = os.getenv(
             "EXCLUDE_KEYWORDS",

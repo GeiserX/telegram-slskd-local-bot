@@ -28,9 +28,25 @@ lossless", with the frequency where it stops. Then you tap Save to library or Re
 | `/auto` | Toggle auto-download per chat: best match is downloaded and saved without picking or approval (persists across restarts) |
 | `/deliver` | Switch this chat between library delivery (save after you approve) and chat delivery (the track is sent here, nothing is saved). Persists across restarts |
 | `/format` | Pick the format of tracks sent into this chat: Original (default), MP3 320 kbps or Opus 192 kbps. Chat delivery only; persists across restarts |
+| `/wishlist` | Tracks this chat is waiting for, each with a Remove button (see [Wishlist](#wishlist)) |
 | `/status` | Show active searches and downloads |
 | `/history` | Show recent download history |
 | `/help` | Show help message |
+
+## Wishlist
+
+A track can wait for a copy that does not exist yet:
+
+- When nothing is found, tap **🔔 Tell me when it appears**: any copy will do.
+- Under every result list, tap **⏳ Wait for a better copy**: only a copy of a higher quality tier than
+  result #1 counts. The tiers, lowest first: lossy under 128 kbps, 128, 192, 256 kbps or more (MP3-equivalent,
+  so Opus 128 counts as 256), lossless 16-bit, lossless 24-bit.
+
+The bot searches each wished track again once every `WISHLIST_CHECK_HOURS` (default 24), one search at a
+time with `WISHLIST_PAUSE_SECS` (default 20) between them. When a copy turns up, a chat with `/auto` on gets
+it fetched and delivered like an auto search, and the wish is done. Any other chat gets the list of copies
+that qualify, with the usual pick buttons and **Stop waiting**; the wish stays and is not sent again before the
+next period. `/wishlist` lists the chat's wishes with when each was last checked.
 
 ## Chat delivery
 

@@ -112,6 +112,25 @@ CREATE TABLE IF NOT EXISTS library_index (
     mtime REAL NOT NULL
 );
 
+-- Tracks to search again later (/wishlist). wanted is 'any' (nothing was
+-- found) or 'better' (only a copy above baseline_tier counts, see
+-- search.scorer.quality_tier). track is JSON; profile is the ranking profile
+-- of the search that made the wish; times are Unix timestamps, NULL = never.
+CREATE TABLE IF NOT EXISTS wishlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER,
+    track TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    wanted TEXT NOT NULL,
+    baseline_tier INTEGER,
+    created_at REAL NOT NULL,
+    last_checked_at REAL,
+    checks INTEGER NOT NULL DEFAULT 0,
+    notified_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wishlist_chat ON wishlist(chat_id);
 CREATE INDEX IF NOT EXISTS idx_import_tracks_job_status ON import_tracks(job_id, status);
 CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_download_history_created ON download_history(created_at);

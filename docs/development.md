@@ -32,6 +32,7 @@ and "we have a file ready to hand over". Its methods take and return plain datac
 | `pipeline/search.py` | The search query helpers (version-noise stripping, keyword-reduction fallbacks), the title guard, and `rank`, which turns slskd responses into a `RankedResults` list for the `library` or `chat` profile |
 | `pipeline/fetch.py` | `fetch`: enqueue, wait, find the file on disk, run the lossless check, all returned as a `FetchOutcome`. Also the Opus conversion and the bitrate ladder that fits the upload cap |
 | `pipeline/library.py` | Cover art, the download-history row, deleting sources, the hourly orphan sweep |
+| `pipeline/wishlist.py` | The wishlist checker: which wishes are due, which copies satisfy one (`search/scorer.py` `quality_tier`), the sequential search pass that hands hits to the front end's delivery callback |
 
 The pieces it drives sit next to it: `metadata/` (Spotify, playlists), `search/slskd_client.py` and
 `search/scorer.py`, `processor/` (renaming and moving files, the lossless analyzer), `tools/embed_artwork.py`.
@@ -44,7 +45,7 @@ them pulls in `telegram`.
   per-chat state, edits messages (always HTML, every outside value through `_esc`) and sends files.
   `bot/keyboards.py` builds the buttons. `bot/poll_request.py` reports every successful `getUpdates` poll to
   the health state. `create_bot()` wires it up and starts the background tasks: the orphan sweep, the
-  library index rescan and the slskd health probe.
+  library index rescan, the slskd health probe and the wishlist checker.
 - **Other front ends**: because the pipeline is Telegram-free, another front end (an MCP server, for
   example, kept as its own project) can import `music_downloader.pipeline` and drive the same `Pipeline`
   without going through the bot.
@@ -61,6 +62,7 @@ with `CREATE TABLE IF NOT EXISTS`):
 | `chat_settings` | Per-chat `/auto` and `/deliver` choices | `settings_repo.py` |
 | `pending_searches` | One row per chat with a live result list: the query, the track, the ranked results (JSON), the page, the profile and how many copies the title guard hid | `pending_repo.py` |
 | `pending_downloads` | One row per download waiting on Save, Reject, Retry or Try next: track and result (JSON), the file path, the slskd transfer id, the import job if any | `pending_repo.py` |
+| `wishlist` | One row per wished track: chat, track (JSON), profile, `any` or `better` than a baseline quality tier, last check, number of checks, last notification | `wishlist_repo.py` |
 | `library_index` | One row per audio file under `OUTPUT_DIR`, subfolders included: relative path, stem, accent-free lowercase stem, extension, mtime | `library_index.py` |
 
 The bot keeps the pending rows in two dicts (`WriteThroughDict`): every set and delete is written through, so

@@ -14,6 +14,7 @@ def build_results_keyboard(
     page_size: int = 10,
     *,
     search_id: str,
+    stop_wish_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     """
     Build an inline keyboard with search results for the user to pick from.
@@ -22,6 +23,9 @@ def build_results_keyboard(
     Callback data format: dl:<search_id>:<index> — the search_id binds the
     button to the search that produced it, so a stale keyboard from an
     earlier search can never act on the current one.
+
+    Below the results: "Wait for a better copy" (wish:better:<search_id>),
+    or "Stop waiting" (wish:stop:<id>) when the list comes from wish *stop_wish_id*.
     """
     start = page * page_size
     end = min(start + page_size, len(results))
@@ -32,6 +36,11 @@ def build_results_keyboard(
         absolute_idx = start + i
         label = f"#{absolute_idx + 1} {result.duration_display} | {result.quality_display} | {result.size_mb:.0f}MB"
         buttons.append([InlineKeyboardButton(label, callback_data=f"dl:{search_id}:{absolute_idx}")])
+
+    if stop_wish_id is not None:
+        buttons.append([InlineKeyboardButton("\U0001f515 Stop waiting", callback_data=f"wish:stop:{stop_wish_id}")])
+    elif results:
+        buttons.append([build_wait_better_button(search_id)])
 
     # Pagination row
     nav_row = []
@@ -50,6 +59,37 @@ def build_results_keyboard(
     buttons.append(action_row)
 
     return InlineKeyboardMarkup(buttons)
+
+
+def build_wait_better_button(search_id: str) -> InlineKeyboardButton:
+    """Wishlist: search this track again later for a copy better than result #1."""
+    return InlineKeyboardButton("⏳ Wait for a better copy", callback_data=f"wish:better:{search_id}")
+
+
+def build_nothing_found_keyboard(search_id: str) -> InlineKeyboardMarkup:
+    """Nothing found: search Soulseek directly, or put the track on the wishlist."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("\U0001f50e Search Soulseek directly", callback_data="direct:search")],
+            [InlineKeyboardButton("\U0001f514 Tell me when it appears", callback_data=f"wish:any:{search_id}")],
+        ]
+    )
+
+
+def build_wishlist_keyboard(wish_ids: list[int]) -> InlineKeyboardMarkup:
+    """/wishlist: one Remove button per wish, numbered as in the list."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(f"Remove #{n}", callback_data=f"wish:rm:{wid}")] for n, wid in enumerate(wish_ids, 1)]
+    )
+
+
+def without_wish_buttons(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    """*markup* minus its wishlist buttons (callback data wish:...), or None when nothing is left."""
+    if markup is None:
+        return None
+    rows = [[b for b in row if not str(b.callback_data or "").startswith("wish:")] for row in markup.inline_keyboard]
+    rows = [row for row in rows if row]
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 def build_approve_keyboard(download_id: str) -> InlineKeyboardMarkup:

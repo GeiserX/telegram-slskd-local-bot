@@ -150,7 +150,7 @@ class TestNoResultsEscapeHatch:
             await bot._do_slskd_search(_make_context(), 67890, track, AsyncMock(), generation=0)
 
         assert 67890 in bot.pending, "query must be stored for the direct-search button"
-        assert bot.pending[67890].track is None
+        assert bot.pending[67890].track is track, "the track stays for the wishlist button"
         final_kwargs = mock_edit.call_args.kwargs
         assert final_kwargs.get("reply_markup") is not None, "no-results reply must carry the escape-hatch button"
 

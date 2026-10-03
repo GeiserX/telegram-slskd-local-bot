@@ -13,11 +13,12 @@ import time
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
-from telegram import BotCommand, Message, Update
+from telegram import BotCommand, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
+    CallbackContext,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -35,11 +36,15 @@ from music_downloader.bot.keyboards import (
     build_import_retry_keyboard,
     build_import_skip_keyboard,
     build_import_track_keyboard,
+    build_nothing_found_keyboard,
     build_results_keyboard,
     build_retry_keyboard,
     build_retry_next_keyboard,
     build_send_format_keyboard,
     build_spotify_keyboard,
+    build_wait_better_button,
+    build_wishlist_keyboard,
+    without_wish_buttons,
 )
 from music_downloader.bot.poll_request import PollTrackingRequest
 from music_downloader.config import BYTES_PER_MB, Config
@@ -64,8 +69,9 @@ from music_downloader.pipeline.search import (
     extract_latin_keywords,
     has_non_latin_script,
 )
+from music_downloader.pipeline.wishlist import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.processor.lossless_analyzer import not_checked_display
-from music_downloader.search.scorer import PROFILE_CHAT, PROFILE_LIBRARY
+from music_downloader.search.scorer import PROFILE_CHAT, PROFILE_LIBRARY, TIER_LABELS, TIER_LOSSLESS_24, quality_tier
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
 logger = logging.getLogger(__name__)
@@ -438,6 +444,7 @@ class MusicBot:
             "/auto — Toggle auto-download mode\n"
             "/deliver — Toggle chat delivery (send tracks here instead of saving)\n"
             "/format — Format of tracks sent in the chat (Original, MP3 320, Opus 192)\n"
+            "/wishlist — Tracks waiting for a copy, or for a better one\n"
             "/status — Show active downloads\n"
             "/history — Recent downloads\n"
             "/help — Show this message",
@@ -569,6 +576,42 @@ class MusicBot:
             lines.append(f"{icon} <code>{_esc(entry.filename)}</code>")
 
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+    async def cmd_wishlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /wishlist command — this chat's wishes, each with a Remove button."""
+        if not await self._check_auth(update):
+            return
+
+        wishes = self.pipeline.wishlist_list(update.effective_chat.id)
+        text, markup = self._wishlist_view(wishes)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+    def _wishlist_view(self, wishes: list[Wish]) -> tuple[str, InlineKeyboardMarkup | None]:
+        """The /wishlist message: one entry per wish (track, wanted, last checked, checks) and its buttons."""
+        if not wishes:
+            return (
+                "The wishlist of this chat is empty.\n\n"
+                "Add a track with \U0001f514 <b>Tell me when it appears</b> when nothing is found, "
+                "or ⏳ <b>Wait for a better copy</b> under a result list.",
+                None,
+            )
+        lines = [f"<b>Wishlist</b> (each track is searched again every {self.config.wishlist_check_hours} h):\n"]
+        for n, wish in enumerate(wishes, 1):
+            if wish.wanted == WANTED_BETTER:
+                wanted = f"a copy better than {TIER_LABELS.get(wish.baseline_tier, '?')}"
+            else:
+                wanted = "any copy"
+            checked = (
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(wish.last_checked_at))
+                if wish.last_checked_at
+                else "not yet"
+            )
+            checks = "1 check" if wish.checks == 1 else f"{wish.checks} checks"
+            lines.append(
+                f"<b>#{n}</b> {_esc(wish.track.artist)} - {_esc(wish.track.title)}\n"
+                f"    Waiting for {wanted} · last checked {checked} · {checks}"
+            )
+        return "\n".join(lines), build_wishlist_keyboard([w.id for w in wishes])
 
     # =========================================================================
     # TEXT MESSAGE HANDLER (song search)
@@ -803,7 +846,11 @@ class MusicBot:
                 # Not a dead end: offer the manual escape hatch. The scorer
                 # also filters live/remix/duration mismatches, so "no results"
                 # regularly means "nothing survived the filters".
-                self.pending[chat_id] = PendingSearch(query=f"{track.artist} {clean_title}", track=None)
+                # The track stays with the query for the wishlist button.
+                search_id = uuid4().hex[:8]
+                self.pending[chat_id] = PendingSearch(
+                    query=f"{track.artist} {clean_title}", track=track, search_id=search_id
+                )
                 await _safe_edit(
                     searching_msg,
                     f"🎵 <b>{_esc(track.artist)} - {_esc(track.title)}</b> ({track.duration_display})\n\n"
@@ -811,7 +858,7 @@ class MusicBot:
                     f"Try a different query, or search Soulseek directly "
                     f"(skips the duration and live/remix filters).",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=build_direct_search_keyboard(),
+                    reply_markup=build_nothing_found_keyboard(search_id),
                 )
                 return
 
@@ -836,6 +883,7 @@ class MusicBot:
                     searching_msg,
                     f"{results_text}\n\n\U0001f916 <b>Auto-mode:</b> downloading best match #1…",
                     parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[build_wait_better_button(search_id)]]),
                 )
                 await self._launch_download(context, chat_id, track, best, 0, search_id, user_id=user_id)
                 return
@@ -891,6 +939,7 @@ class MusicBot:
             "dl": self._handle_download_selection,
             "approve": self._handle_approval,
             "reject": self._handle_approval,
+            "wish": self._handle_wish_callback,
         }.get(prefix)
 
         if handler:
@@ -1768,12 +1817,13 @@ class MusicBot:
                 return
 
             if not ranked:
-                self.pending[chat_id] = PendingSearch(query=query, track=None)
+                search_id = uuid4().hex[:8]
+                self.pending[chat_id] = PendingSearch(query=query, track=track, search_id=search_id)
                 await _safe_edit(
                     searching_msg,
                     f"\U0001f50e Direct search: <code>{_esc(query)}</code>\n\nNo results found on Soulseek.",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=build_direct_search_keyboard(),
+                    reply_markup=build_nothing_found_keyboard(search_id),
                 )
                 return
 
@@ -2654,6 +2704,113 @@ class MusicBot:
         self._track_task(chat_id, task)
 
     # =========================================================================
+    # WISHLIST
+    # =========================================================================
+
+    async def _handle_wish_callback(self, update, context, chat_id: int, data: str):
+        """wish:any|better:<search_id> adds a wish; wish:rm|stop:<id> removes one."""
+        query = update.callback_query
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            return
+        _, action, arg = parts
+
+        if action in ("rm", "stop"):
+            try:
+                wish_id = int(arg)
+            except ValueError:
+                return
+            self.pipeline.wishlist_remove(chat_id, wish_id)
+            if action == "rm":
+                text, markup = self._wishlist_view(self.pipeline.wishlist_list(chat_id))
+                await _safe_query_edit(query, text, reply_markup=markup)
+            else:
+                await self._append_wish_line(query, "\U0001f515 Stopped waiting for this track.")
+            return
+
+        if action not in (WANTED_ANY, WANTED_BETTER):
+            return
+        pending = self.pending.get(chat_id)
+        if not pending or pending.search_id != arg or not pending.track:
+            await _safe_query_edit(
+                query, self._expired_text(query, "⌛ These results are out of date. Send a new search.")
+            )
+            return
+
+        hours = self.config.wishlist_check_hours
+        baseline = None
+        if action == WANTED_BETTER:
+            if not pending.results:
+                return
+            baseline = quality_tier(pending.results[0])
+            if baseline >= TIER_LOSSLESS_24:
+                await self._append_wish_line(
+                    query, f"#1 is already {TIER_LABELS[baseline]}: no better copy to wait for."
+                )
+                return
+            line = f"⏳ Waiting for a copy better than {TIER_LABELS[baseline]}, searched again every {hours} h (/wishlist)."
+        else:
+            line = f"\U0001f514 I'll tell you when it appears, searched again every {hours} h (/wishlist)."
+        user_id = query.from_user.id
+        self.pipeline.wishlist_add(chat_id, user_id, pending.track, self._profile(chat_id, user_id), action, baseline)
+        await self._append_wish_line(query, line)
+
+    async def _append_wish_line(self, query, line: str) -> None:
+        """Add *line* under the tapped message and drop its wishlist buttons (no second tap)."""
+        message = query.message
+        text = getattr(message, "text_html", None)
+        text = f"{text}\n\n{line}" if isinstance(text, str) and text else line
+        markup = getattr(message, "reply_markup", None)
+        markup = without_wish_buttons(markup) if isinstance(markup, InlineKeyboardMarkup) else None
+        await _safe_query_edit(query, text, reply_markup=markup)
+
+    async def _deliver_wish(self, context, wish: Wish, matches: list[SearchResult]) -> bool:
+        """The wishlist checker found copies that satisfy *wish* (pipeline.wishlist.WishDelivery).
+
+        With /auto on, the best one is fetched and delivered like an auto
+        search and the wish is done (True). Otherwise the list goes to the
+        chat with the pick buttons and Stop waiting, and the wish stays (False).
+        Either way the list becomes the chat's live result list.
+        """
+        chat_id = wish.chat_id
+        track = wish.track
+        if wish.wanted == WANTED_BETTER:
+            header = f"⏳ <b>Wishlist:</b> a copy better than {TIER_LABELS.get(wish.baseline_tier, '?')} turned up."
+        else:
+            header = "\U0001f514 <b>Wishlist:</b> this track turned up on Soulseek."
+        hidden = getattr(matches, "hidden", 0)
+        page_size = self.config.max_results
+        results_text = self._format_results(track, matches, page=0, page_size=page_size, hidden=hidden)
+        search_id = uuid4().hex[:8]
+        auto = self._is_auto(chat_id)
+        if auto:
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{header}\n\n{results_text}\n\n\U0001f916 <b>Auto-mode:</b> downloading best match #1…",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{header}\n\n{results_text}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=build_results_keyboard(
+                    matches, page=0, page_size=page_size, search_id=search_id, stop_wish_id=wish.id
+                ),
+            )
+        self.pending[chat_id] = PendingSearch(
+            query=f"{track.artist} {track.title}",
+            track=track,
+            results=list(matches),
+            message_id=msg.message_id,
+            search_id=search_id,
+            hidden=hidden,
+        )
+        if auto:
+            await self._launch_download(context, chat_id, track, matches[0], 0, search_id, user_id=wish.user_id)
+        return auto
+
+    # =========================================================================
     # HELPERS
     # =========================================================================
 
@@ -2773,6 +2930,7 @@ async def _register_commands(app: Application) -> None:
             BotCommand("auto", "Toggle auto-download mode"),
             BotCommand("deliver", "Toggle chat delivery (send tracks here instead of saving)"),
             BotCommand("format", "Format of tracks sent in the chat"),
+            BotCommand("wishlist", "Tracks waiting for a copy or a better one"),
             BotCommand("status", "Show active searches and downloads"),
             BotCommand("history", "Recent downloads"),
             BotCommand("help", "How to use the bot"),
@@ -2827,9 +2985,14 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
             bot._probe_task = asyncio.get_running_loop().create_task(
                 slskd_probe_loop(lambda: bot.slskd.is_up(), health)
             )
+        # Wishlist checker: hourly tick, each wish searched once per WISHLIST_CHECK_HOURS.
+        wish_context = CallbackContext(app)
+        bot._wishlist_task = asyncio.get_running_loop().create_task(
+            bot.pipeline.wishlist_loop(lambda wish, matches: bot._deliver_wish(wish_context, wish, matches))
+        )
 
     async def _post_shutdown(app: Application) -> None:
-        for name in ("_sweep_task", "_index_task", "_probe_task"):
+        for name in ("_sweep_task", "_index_task", "_probe_task", "_wishlist_task"):
             task = getattr(bot, name, None)
             if task is not None:
                 task.cancel()
@@ -2860,6 +3023,7 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
     app.add_handler(CommandHandler("auto", bot.cmd_auto, filters=new_messages))
     app.add_handler(CommandHandler("deliver", bot.cmd_deliver, filters=new_messages))
     app.add_handler(CommandHandler("format", bot.cmd_format, filters=new_messages))
+    app.add_handler(CommandHandler("wishlist", bot.cmd_wishlist, filters=new_messages))
     app.add_handler(CommandHandler("status", bot.cmd_status, filters=new_messages))
     app.add_handler(CommandHandler("history", bot.cmd_history, filters=new_messages))
     app.add_handler(CommandHandler("import", bot.cmd_import, filters=new_messages))

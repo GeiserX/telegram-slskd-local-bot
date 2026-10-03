@@ -184,10 +184,10 @@ class TestSweepLoopLifecycle:
         before = asyncio.all_tasks()
         await post_init(app)
         started = asyncio.all_tasks() - before
-        assert len(started) == 2, "post_init must start exactly the sweep task and the library index task"
+        assert len(started) == 3, "post_init must start exactly the sweep, library index and wishlist tasks"
 
         await post_shutdown(app)
-        assert all(task.cancelled() for task in started), "post_shutdown must cancel both tasks"
+        assert all(task.cancelled() for task in started), "post_shutdown must cancel every task"
 
     @pytest.mark.asyncio
     async def test_library_index_task_runs_with_the_sweep_off(self):
@@ -213,6 +213,6 @@ class TestSweepLoopLifecycle:
         before = asyncio.all_tasks()
         await post_init(app)
         started = asyncio.all_tasks() - before
-        assert [t.get_coro().__name__ for t in started] == ["library_index_loop"]
+        assert sorted(t.get_coro().__name__ for t in started) == ["library_index_loop", "wishlist_loop"]
         await post_shutdown(app)
         assert all(task.cancelled() for task in started)
