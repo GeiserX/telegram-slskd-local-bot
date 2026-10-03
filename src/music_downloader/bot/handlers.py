@@ -7,7 +7,6 @@ import contextlib
 import datetime
 import logging
 import os
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -40,27 +39,20 @@ from music_downloader.bot.keyboards import (
 )
 from music_downloader.config import Config
 from music_downloader.metadata.playlist import PlaylistResolver
-from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
-from music_downloader.persistence.database import Database
-from music_downloader.persistence.history_repo import HistoryRepository
-from music_downloader.persistence.import_repo import (
-    ImportRepository,
-    JobStatus,
-    TrackStatus,
+from music_downloader.metadata.spotify import TrackInfo
+from music_downloader.persistence.import_repo import JobStatus, TrackStatus
+from music_downloader.pipeline import Pipeline
+from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED, opus_bitrates_that_fit
+from music_downloader.pipeline.resolve import parse_query_artist_title, synthetic_track
+from music_downloader.pipeline.search import (
+    build_reduced_queries,
+    clean_search_title,
+    extract_latin_keywords,
+    has_non_latin_script,
 )
-from music_downloader.persistence.settings_repo import SettingsRepository
-from music_downloader.processor.file_handler import FileProcessor
-from music_downloader.processor.lossless_analyzer import (
-    CHECKABLE_EXTENSIONS,
-    LosslessVerdict,
-    analyze_lossless,
-    convert_to_ogg,
-    create_preview_clip,
-    not_checked_display,
-)
-from music_downloader.search.scorer import CHAT_SIZE_LIMIT_BYTES, PROFILE_CHAT, PROFILE_LIBRARY, ResultScorer
-from music_downloader.search.slskd_client import DownloadStatus, SearchResult, SlskdClient
-from music_downloader.tools.embed_artwork import embed_artwork_into_file, fetch_spotify_artwork
+from music_downloader.processor.lossless_analyzer import not_checked_display
+from music_downloader.search.scorer import CHAT_SIZE_LIMIT_BYTES, PROFILE_CHAT, PROFILE_LIBRARY
+from music_downloader.search.slskd_client import DownloadStatus, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -71,25 +63,6 @@ TELEGRAM_FILE_LIMIT = CHAT_SIZE_LIMIT_BYTES
 # track into the chat as the deliverable and saves nothing anywhere.
 DELIVERY_LIBRARY = "library"
 DELIVERY_CHAT = "chat"
-
-# Opus bitrates tried (highest first) when a chat-delivery track is over the limit.
-_OPUS_BITRATES_KBPS = (192, 160, 128, 96)
-
-
-def _opus_bitrates_that_fit(duration_secs: int) -> list[int]:
-    """The highest Opus bitrate whose estimated size fits, then one lower fallback.
-
-    Estimate = bitrate * duration * 5 % container overhead + 1 MiB headroom.
-    With an unknown duration nothing can be estimated, so every bitrate is tried.
-    """
-    if duration_secs <= 0:
-        return list(_OPUS_BITRATES_KBPS)
-    fitting = [
-        kbps
-        for kbps in _OPUS_BITRATES_KBPS
-        if kbps * 1000 / 8 * duration_secs * 1.05 + 1024 * 1024 <= TELEGRAM_FILE_LIMIT
-    ]
-    return fitting[:2]
 
 
 def _escape_md(text: str) -> str:
@@ -162,130 +135,6 @@ async def _safe_query_edit(query, text: str, **kwargs) -> bool:
     return False
 
 
-# Noise keywords that Spotify appends to track titles but Soulseek users never use.
-# Named remixes (e.g. "Butch Vig Remix") are intentionally excluded — they
-# represent distinct versions the user specifically selected.
-_NOISE_PATTERN = (
-    r"Mono|Stereo|Remaster(?:ed)?(?:\s+\d{4})?"
-    r"|Deluxe(?:\s+Edition)?"
-    r"|Ultimate\s+Mix|Single\s+Version|Album\s+Version"
-    r"|Radio\s+Edit|Bonus\s+Track|Anniversary(?:\s+Edition)?"
-    r"|Super\s+Deluxe|Special\s+Edition"
-    r"|\d{4}\s+(?:Mix|Remix|Remaster(?:ed)?|Version)"
-    r"|(?:German|French|Spanish|Italian|Japanese|Portuguese|English)\s+Version"
-    r"|Remix"
-)
-
-# Matches trailing " - Remastered 2009", " - German Version 1989 Remix; ...", etc.
-# Once a noise keyword is detected after a dash, everything to EOL is stripped.
-_VERSION_SUFFIX_RE = re.compile(
-    r"\s*[-–]\s*(?:" + _NOISE_PATTERN + r").*$",
-    re.IGNORECASE,
-)
-
-# Same patterns inside parentheses: "(Remastered 2009)", "(German Version)", etc.
-_VERSION_PAREN_RE = re.compile(
-    r"\s*\((?:" + _NOISE_PATTERN + r")[^)]*\)",
-    re.IGNORECASE,
-)
-
-
-_QUOTE_CHARS = "'\"‘’“”"
-
-
-def _clean_search_title(title: str) -> str:
-    """Strip Spotify version suffixes that add noise to Soulseek keyword search."""
-    title = _VERSION_SUFFIX_RE.sub("", title)
-    title = _VERSION_PAREN_RE.sub("", title)
-    title = title.strip()
-    if len(title) >= 2 and title[0] in _QUOTE_CHARS and title[-1] in _QUOTE_CHARS:
-        title = title[1:-1].strip()
-    return title
-
-
-def _build_reduced_queries(title: str, year: str) -> list[str]:
-    """Build fallback search queries by dropping one word at a time and appending the year.
-
-    Soulseek users sometimes block entire phrases (e.g. "Purple Rain").
-    Removing one keyword at a time while adding the album year often
-    bypasses server-side filters while still narrowing results enough
-    to find the right track.
-
-    Args:
-        title: The (cleaned) song title, e.g. "Purple Rain".
-        year: Album release year, e.g. "1984".
-
-    Returns:
-        List of fallback query strings.  Empty if the title has fewer
-        than 2 words or no year is available.
-    """
-    if not year:
-        return []
-    words = title.split()
-    if len(words) < 2:
-        return []
-    queries: list[str] = []
-    for i in range(len(words)):
-        reduced = " ".join(words[:i] + words[i + 1 :])
-        queries.append(f"{reduced} {year}")
-    return queries
-
-
-def _has_non_latin_script(text: str) -> bool:
-    """True when *text* contains characters from non-Latin scripts (CJK, Cyrillic, etc.)."""
-    return any(c.isalpha() and ord(c) > 0x024F for c in text)
-
-
-_NOISE_WORDS = frozenset(
-    {
-        "single",
-        "version",
-        "long",
-        "short",
-        "full",
-        "edit",
-        "mix",
-        "remastered",
-        "remaster",
-        "deluxe",
-        "edition",
-        "bonus",
-        "track",
-        "album",
-        "mono",
-        "stereo",
-        "original",
-        "extended",
-        "feat",
-        "featuring",
-        "ft",
-        "the",
-        "an",
-        "and",
-        "or",
-        "of",
-        "in",
-        "on",
-        "at",
-        "to",
-        "for",
-        "with",
-        "from",
-        "by",
-    }
-)
-
-
-def _extract_latin_keywords(title: str) -> list[str]:
-    """Extract meaningful Latin keywords from a potentially mixed-script title.
-
-    Strips common noise words so only distinctive keywords remain,
-    e.g. ``["KURENAI"]`` from ``"紅 - KURENAI - シングル… - Single Long Version"``.
-    """
-    words = re.findall(r"[a-zA-Z]{2,}", title)
-    return [w for w in words if w.lower() not in _NOISE_WORDS]
-
-
 @dataclass
 class PendingSearch:
     """Holds state for an active search session."""
@@ -317,22 +166,21 @@ class PendingDownload:
     user_id: int | None = None
 
 
+def _component(name: str) -> property:
+    """A pipeline component exposed on the bot, so assigning ``bot.slskd`` replaces it in the pipeline too."""
+    return property(
+        lambda self: getattr(self.pipeline, name),
+        lambda self, value: setattr(self.pipeline, name, value),
+    )
+
+
 class MusicBot:
     """Telegram bot for music discovery and download."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, pipeline: Pipeline | None = None):
         self.config = config
-        self.spotify = SpotifyResolver(config.spotify_client_id, config.spotify_client_secret)
-        self.slskd = SlskdClient(config.slskd_host, config.slskd_api_key)
-        self.scorer = ResultScorer(
-            duration_tolerance_secs=config.duration_tolerance_secs,
-            exclude_keywords=config.exclude_keywords,
-        )
-        self.processor = FileProcessor(
-            download_dir=config.download_dir,
-            output_dir=config.output_dir,
-            filename_template=config.filename_template,
-        )
+        # Everything that is not Telegram: Spotify, slskd, ranking, files, repos.
+        self.pipeline = pipeline or Pipeline(config)
         # Per-chat auto-mode cache; the durable value lives in chat_settings
         # (config.auto_mode is only the default for chats that never toggled).
         self._auto_mode_cache: dict[int, bool] = {}
@@ -363,15 +211,6 @@ class MusicBot:
         # Orphan-sweep loop handle; owned here and cancelled on shutdown.
         self._sweep_task: asyncio.Task | None = None
 
-        # Persistence
-        self.db = Database(f"{config.data_dir}/importer.db")
-        self.history_repo = HistoryRepository(self.db)
-        self.import_repo = ImportRepository(self.db)
-        self.settings_repo = SettingsRepository(self.db)
-
-        # Playlist resolver
-        self.playlist_resolver = PlaylistResolver(self.spotify)
-
         # Active import tracking (chat_id -> job_id)
         self._active_import: dict[int, int] = {}
         # Separate pending search state for import flows (avoids clobbering self.pending)
@@ -386,6 +225,23 @@ class MusicBot:
         stale_jobs = self.import_repo.cancel_stale_jobs()
         if stale_jobs:
             logger.warning("Cancelled %d stale import job(s) left over from a previous run", stale_jobs)
+
+    # The pipeline's components, reachable (and replaceable) through the bot:
+    # /status, /history and the import flow read them here.
+    spotify = _component("spotify")
+    slskd = _component("slskd")
+    scorer = _component("scorer")
+    processor = _component("processor")
+    db = _component("db")
+    history_repo = _component("history_repo")
+    import_repo = _component("import_repo")
+    settings_repo = _component("settings_repo")
+    playlist_resolver = _component("playlist_resolver")
+
+    def _profile(self, chat_id: int | None, user_id: int | None = None) -> str:
+        """Ranking profile for this chat: chat delivery weighs quality against size."""
+        chat = chat_id is not None and self._is_chat_delivery(chat_id, user_id)
+        return PROFILE_CHAT if chat else PROFILE_LIBRARY
 
     def _is_auto(self, chat_id: int) -> bool:
         """Whether auto-download is on for this chat (persisted; config is the default)."""
@@ -654,19 +510,12 @@ class MusicBot:
             else:
                 artist, title = query, search_query
 
-            synthetic_track = TrackInfo(
-                artist=artist.strip(),
-                title=title.strip(),
-                album="",
-                duration_ms=0,
-                spotify_url="",
-                year="",
-            )
+            display_track = synthetic_track(artist.strip(), title.strip())
 
             searching_msg = await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"\U0001f50d Searching slskd for: `{search_query}`\n"
-                f"Saving as: *{synthetic_track.artist} - {synthetic_track.title}*",
+                f"Saving as: *{display_track.artist} - {display_track.title}*",
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -676,7 +525,7 @@ class MusicBot:
                 search_query,
                 searching_msg,
                 generation,
-                display_track=synthetic_track,
+                display_track=display_track,
                 user_id=update.effective_user.id,
             )
             return
@@ -704,7 +553,7 @@ class MusicBot:
         # Step 0: Check for similar files already in the library (meaningless
         # in chat delivery, which never uses the library)
         similar = (
-            None if self._is_chat_delivery(chat_id, update.effective_user.id) else self.processor.find_similar(query)
+            None if self._is_chat_delivery(chat_id, update.effective_user.id) else self.pipeline.find_similar(query)
         )
         if similar:
             existing_list = "\n".join(f"• `{f}`" for f in similar[:5])
@@ -729,11 +578,11 @@ class MusicBot:
         )
 
         try:
-            tracks = self.spotify.search_multiple(query, limit=50)
+            unique_tracks = self.pipeline.resolve(query)
             if self._is_stale(chat_id, generation):
                 return
 
-            if not tracks:
+            if not unique_tracks:
                 await _safe_edit(
                     searching_msg,
                     f"Could not find `{query}` on Spotify.\nYou can search Soulseek directly instead.",
@@ -743,41 +592,6 @@ class MusicBot:
                 # Store query for direct search callback
                 self.pending[chat_id] = PendingSearch(query=query, track=None)
                 return
-
-            query_lower = query.lower()
-            query_words = set(query_lower.split())
-            query_artist = ""
-            if " - " in query:
-                query_artist = query.split(" - ", 1)[0].strip().lower()
-
-            seen = set()
-            unique_tracks = []
-            artist_match_tracks = []
-            other_tracks = []
-            for t in tracks:
-                key = (t.artist.lower(), t.title.lower(), t.album.lower())
-                if key in seen:
-                    continue
-                seen.add(key)
-                artist_lower = t.artist.lower()
-                if query_artist and query_artist not in artist_lower:
-                    continue
-                artist_words = set(artist_lower.split())
-                if (len(artist_words) >= 2 and artist_lower in query_lower) or artist_words.issubset(query_words):
-                    artist_match_tracks.append(t)
-                else:
-                    other_tracks.append(t)
-
-            artist_match_tracks.sort(key=lambda t: len(t.artist), reverse=True)
-            unique_tracks = artist_match_tracks + other_tracks
-
-            if not unique_tracks:
-                seen = set()
-                for t in tracks:
-                    key = (t.artist.lower(), t.title.lower(), t.album.lower())
-                    if key not in seen:
-                        seen.add(key)
-                        unique_tracks.append(t)
 
             if len(unique_tracks) == 1:
                 await self._do_slskd_search(
@@ -816,13 +630,11 @@ class MusicBot:
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-            clean_title = _clean_search_title(track.title)
+            clean_title = clean_search_title(track.title)
             search_query = f"{track.artist} {clean_title}"
-            raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
+            ranked = await self.pipeline.search(search_query, track, self._profile(chat_id, user_id))
             if self._is_stale(chat_id, generation):
                 return
-
-            ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
 
             # Fallback 2: title-only search
             if not ranked:
@@ -839,15 +651,13 @@ class MusicBot:
                     f"No results with full query — retrying with song title only…",
                     parse_mode=ParseMode.MARKDOWN,
                 )
-                raw_responses = await self.slskd.search(clean_title, timeout_secs=self.config.search_timeout_secs)
+                ranked = await self.pipeline.search(clean_title, track, self._profile(chat_id, user_id))
                 if self._is_stale(chat_id, generation):
                     return
 
-                ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
-
             # Fallback 3: keyword reduction + album year
-            if not ranked and not _has_non_latin_script(clean_title):
-                reduced_queries = _build_reduced_queries(clean_title, track.year)
+            if not ranked and not has_non_latin_script(clean_title):
+                reduced_queries = build_reduced_queries(clean_title, track.year)
                 if reduced_queries:
                     if self._is_stale(chat_id, generation):
                         return
@@ -864,10 +674,7 @@ class MusicBot:
                     for fallback_query in reduced_queries:
                         if self._is_stale(chat_id, generation):
                             return
-                        raw_responses = await self.slskd.search(
-                            fallback_query, timeout_secs=self.config.search_timeout_secs
-                        )
-                        ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=user_id)
+                        ranked = await self.pipeline.search(fallback_query, track, self._profile(chat_id, user_id))
                         if ranked:
                             logger.info("Keyword-reduction fallback hit: '%s'", fallback_query)
                             break
@@ -876,7 +683,7 @@ class MusicBot:
             if not ranked:
                 if self._is_stale(chat_id, generation):
                     return
-                latin_kw = _extract_latin_keywords(clean_title)
+                latin_kw = extract_latin_keywords(clean_title)
                 if latin_kw:
                     fb4_query = f"{track.artist} {' '.join(latin_kw)}"
                 else:
@@ -890,17 +697,12 @@ class MusicBot:
                     f"🎵 *{track.artist} - {track.title}*\n\nStill no results — trying artist + keyword search…",
                     parse_mode=ParseMode.MARKDOWN,
                 )
-                raw_responses = await self.slskd.search(
-                    fb4_query,
-                    timeout_secs=self.config.search_timeout_secs,
-                    response_limit=150,
+                ranked = await self.pipeline.search(
+                    fb4_query, track, self._profile(chat_id, user_id), max_duration_diff=120, response_limit=150
                 )
                 if self._is_stale(chat_id, generation):
                     return
 
-                ranked = self._rank_responses(
-                    raw_responses, track, max_duration_diff=120, chat_id=chat_id, user_id=user_id
-                )
                 if ranked:
                     logger.info("Artist-keyword fallback hit: '%s'", fb4_query)
 
@@ -1211,41 +1013,6 @@ class MusicBot:
         )
         self._track_task(chat_id, task)
 
-    def _rank_responses(
-        self,
-        raw_responses,
-        track: TrackInfo,
-        max_duration_diff: int | None = None,
-        chat_id: int | None = None,
-        user_id: int | None = None,
-    ) -> list[SearchResult]:
-        """Parse raw slskd responses (every audio format) and rank them for this chat.
-
-        Library delivery: every lossless result before every lossy one, each
-        group by score, so a lossy copy is offered only below the lossless ones.
-        A lossless copy of a different version (length off by more than
-        SAME_VERSION_MAX_DIFF_SECS) does not lead: it ranks among the lossy
-        results by score, so an exact-length lossy copy can beat it.
-        Chat delivery: one list scored by the chat profile (perceived quality
-        versus size); results over the Telegram upload limit sort after every
-        result that fits (stable), since those would have to be converted.
-        """
-        chat = chat_id is not None and self._is_chat_delivery(chat_id, user_id)
-        score_kwargs = {"max_duration_diff": max_duration_diff} if max_duration_diff else {}
-        results = self.slskd.parse_results(raw_responses)
-        ranked = self.scorer.score_results(
-            results, track, profile=PROFILE_CHAT if chat else PROFILE_LIBRARY, **score_kwargs
-        )
-        if chat:
-            return [r for r in ranked if r.size <= TELEGRAM_FILE_LIMIT] + [
-                r for r in ranked if r.size > TELEGRAM_FILE_LIMIT
-            ]
-
-        def leads(r: SearchResult) -> bool:
-            return r.is_lossless and not self.scorer.is_other_version(r, track)
-
-        return [r for r in ranked if leads(r)] + [r for r in ranked if not leads(r)]
-
     # =========================================================================
     # DOWNLOAD + PREVIEW + APPROVAL
     # =========================================================================
@@ -1279,8 +1046,14 @@ class MusicBot:
         label = f"#{result_index + 1}"
 
         try:
-            success = await asyncio.to_thread(self.slskd.enqueue_download, result)
-            if not success:
+            outcome = await self.pipeline.fetch(
+                result,
+                self._make_progress_reporter(
+                    status_msg,
+                    f"⬇️ *Downloading {label}...*\n{track.artist} - {track.title}\nFrom: `{result.username}`",
+                ),
+            )
+            if outcome.error == ENQUEUE_FAILED:
                 pending_dl = PendingDownload(
                     track=track,
                     result=result,
@@ -1299,18 +1072,8 @@ class MusicBot:
                 )
                 return
 
-            status = await self.slskd.wait_for_download(
-                username=result.username,
-                filename=result.filename,
-                timeout_secs=self.config.download_timeout_secs,
-                progress_cb=self._make_progress_reporter(
-                    status_msg,
-                    f"⬇️ *Downloading {label}...*\n{track.artist} - {track.title}\nFrom: `{result.username}`",
-                ),
-            )
-
-            if status is None or status.is_failed:
-                state = status.state if status else "Timeout"
+            if outcome.error == DOWNLOAD_FAILED:
+                state = outcome.state
                 pending_dl = PendingDownload(
                     track=track,
                     result=result,
@@ -1327,18 +1090,18 @@ class MusicBot:
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
                 )
-                await self._add_history(track, result, "failed")
+                await self.pipeline.record_history(track, result, "failed")
                 return
 
-            source_path = self.processor.find_downloaded_file(result.username, result.filename)
-            if not source_path:
+            if not outcome.ok:
                 await status_msg.edit_text(
                     "❌ Downloaded file not found on disk.\nCheck DOWNLOAD_DIR configuration.",
                 )
-                await self._add_history(track, result, "file_not_found")
+                await self.pipeline.record_history(track, result, "file_not_found")
                 return
 
-            verdict = await self._analyze_lossless(source_path) if result.extension in CHECKABLE_EXTENSIONS else None
+            source_path = outcome.path
+            verdict = outcome.verdict
 
             pending_dl = PendingDownload(
                 track=track,
@@ -1394,7 +1157,7 @@ class MusicBot:
                     dl_id,
                 )
             else:
-                target_name = self.processor.build_filename(track.artist, track.title, result.extension)
+                target_name = self.pipeline.target_filename(track, result.extension)
                 try:
                     with open(source_path, "rb") as f:
                         sent = await context.bot.send_audio(
@@ -1438,22 +1201,17 @@ class MusicBot:
         track = pending_dl.track
         result = pending_dl.result
 
-        target_path = await asyncio.to_thread(
-            self.processor.process_file, pending_dl.source_path, track.artist, track.title
-        )
-        # Popped only after processing: the entry keeps the source protected
-        # from the orphan sweep while process_file runs.
+        target_path = await self.pipeline.save(pending_dl.source_path, track, result)
+        # Popped only after saving: the entry keeps the source protected
+        # from the orphan sweep until it is gone.
         self.downloads.pop(dl_id, None)
         if target_path:
-            await asyncio.to_thread(self.processor.cleanup_download, pending_dl.source_path)
-            await self._embed_spotify_artwork(target_path, track)
             target_name = os.path.basename(target_path)
             await _safe_edit(
                 status_msg,
                 f"✅ *{label} Auto-saved:* `{target_name}`\n{quality_line}",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            await self._add_history(track, result, "success")
             logger.info(f"Auto-saved: {target_name}")
         else:
             await _safe_edit(
@@ -1461,7 +1219,6 @@ class MusicBot:
                 f"❌ {label} Downloaded but failed to save. Check logs.",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            await self._add_history(track, result, "process_failed")
 
     async def _deliver_download(
         self, context, chat_id: int, dl_id: str, pending_dl: PendingDownload, status_msg, quality_line: str, label: str
@@ -1478,7 +1235,7 @@ class MusicBot:
             context, chat_id, track, result, source_path, f"{label} {quality_line}"
         )
         if outcome == "sent":
-            await asyncio.to_thread(self.processor.cleanup_download, source_path)
+            await self.pipeline.discard(source_path)
             # Popped only after cleanup: the entry keeps the source protected
             # from the orphan sweep until it is gone.
             self.downloads.pop(dl_id, None)
@@ -1487,7 +1244,7 @@ class MusicBot:
                 f"✅ *{label} Sent:* `{note}`\n{quality_line}",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            await self._add_history(track, result, "delivered", filename=note)
+            await self.pipeline.record_history(track, result, "delivered", filename=note)
             logger.info(f"Delivered to chat: {note}")
             return True
 
@@ -1502,7 +1259,7 @@ class MusicBot:
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
         )
-        await self._add_history(track, result, outcome)
+        await self.pipeline.record_history(track, result, outcome)
         return False
 
     async def _send_to_chat(
@@ -1520,23 +1277,23 @@ class MusicBot:
         size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
         if size <= TELEGRAM_FILE_LIMIT:
             # The source is deleted right after sending, so tagging it is free.
-            await self._embed_spotify_artwork(source_path, track)
+            await self.pipeline.embed_artwork(source_path, track)
             size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
         if size <= TELEGRAM_FILE_LIMIT:
-            target_name = self.processor.build_filename(track.artist, track.title, result.extension)
+            target_name = self.pipeline.target_filename(track, result.extension)
             error = await self._send_audio_file(context, chat_id, source_path, target_name, track, caption)
             return ("sent", target_name) if error is None else ("send_failed", error)
 
         original = f"original {size / (1024 * 1024):.0f} MB {result.extension.upper()}"
         too_large = ("too_large", f"Could not fit this track under 50 MB, even converted to Opus ({original}).")
-        for kbps in _opus_bitrates_that_fit(track.duration_secs or result.length or 0):
-            ogg_path = await self._convert_to_ogg(source_path, kbps)
+        for kbps in opus_bitrates_that_fit(track.duration_secs or result.length or 0):
+            ogg_path = await self.pipeline.convert_to_opus(source_path, kbps)
             if not ogg_path:
                 return "convert_failed", f"Could not convert this track to fit under 50 MB ({original})."
             try:
                 if os.path.getsize(ogg_path) > TELEGRAM_FILE_LIMIT:
                     continue
-                target_name = self.processor.build_filename(track.artist, track.title, "ogg")
+                target_name = self.pipeline.target_filename(track, "ogg")
                 converted_caption = f"{caption}\n\U0001f3a7 Converted to Opus {kbps} kbps, {original}"
                 error = await self._send_audio_file(context, chat_id, ogg_path, target_name, track, converted_caption)
                 return ("sent", target_name) if error is None else ("send_failed", error)
@@ -1589,13 +1346,13 @@ class MusicBot:
         3. If OGG > 50 MB → trim to ~1 min and send that.
         """
         # Step 1: full OGG conversion
-        ogg_path = await self._convert_to_ogg(source_path)
+        ogg_path = await self.pipeline.convert_to_opus(source_path)
 
         if ogg_path:
             ogg_size = os.path.getsize(ogg_path)
             if ogg_size <= TELEGRAM_FILE_LIMIT:
                 try:
-                    target_name = self.processor.build_filename(track.artist, track.title, "ogg")
+                    target_name = self.pipeline.target_filename(track, "ogg")
                     caption = (
                         f"🎧 {label} Converted to OGG "
                         f"(original: {file_size / (1024 * 1024):.0f}MB {result.extension.upper()})\n"
@@ -1624,7 +1381,7 @@ class MusicBot:
                     os.unlink(ogg_path)
 
         # Step 2: trim to ~1 min
-        preview_path = await self._create_preview(source_path, duration_secs=60.0)
+        preview_path = await self.pipeline.preview_clip(source_path, duration_secs=60.0)
         if not preview_path:
             logger.error("Preview creation failed for %s, cannot send to Telegram", source_path)
             sent = await context.bot.send_message(
@@ -1642,7 +1399,7 @@ class MusicBot:
 
         try:
             preview_ext = os.path.splitext(preview_path)[1].lstrip(".")
-            target_name = self.processor.build_filename(track.artist, f"{track.title} (1min preview)", preview_ext)
+            target_name = self.pipeline.target_filename(track, preview_ext, title=f"{track.title} (1min preview)")
             preview_caption = (
                 f"🎧 {label} ~1 min preview "
                 f"(full file: {file_size / (1024 * 1024):.0f}MB)\n"
@@ -1699,28 +1456,24 @@ class MusicBot:
 
         if action == "approve":
             if pending_dl.source_path:
-                target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
+                target_path = await self.pipeline.save(pending_dl.source_path, track, result)
                 if target_path:
-                    self.processor.cleanup_download(pending_dl.source_path)
-                    await self._embed_spotify_artwork(target_path, track)
                     target_name = os.path.basename(target_path)
                     await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
-                    await self._add_history(track, result, "success")
                     logger.info(f"Approved and saved: {target_name}")
 
                     # Dismiss every other pending download for this chat.
                     await self._dismiss_other_downloads(context, chat_id)
                 else:
                     await self._edit_approval_message(query, "❌ Failed to save file. Check logs.")
-                    await self._add_history(track, result, "process_failed")
             else:
                 await self._edit_approval_message(query, "❌ Source file not found.")
-                await self._add_history(track, result, "file_not_found")
+                await self.pipeline.record_history(track, result, "file_not_found")
 
         elif action == "reject":
-            self._remove_download_file(pending_dl.source_path)
+            self.pipeline.remove_file(pending_dl.source_path)
             await self._edit_approval_message(query, f"🚫 Rejected: {track.artist} - {track.title}")
-            await self._add_history(track, result, "rejected")
+            await self.pipeline.record_history(track, result, "rejected")
             logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
 
     async def _dismiss_other_downloads(self, context, chat_id: int):
@@ -1738,7 +1491,7 @@ class MusicBot:
         stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
-            self._remove_download_file(dl.source_path)
+            self.pipeline.remove_file(dl.source_path)
             if dl.approval_message_id:
                 try:
                     await context.bot.edit_message_caption(
@@ -1780,22 +1533,6 @@ class MusicBot:
             await _safe_edit(status_msg, f"{header}\n{line}", parse_mode=ParseMode.MARKDOWN)
 
         return _report
-
-    @staticmethod
-    def _remove_download_file(path: str | None) -> None:
-        """Delete a file from the downloads dir, never letting failure break the flow.
-
-        The downloads volume may be mounted read-only; a failed delete must not
-        swallow the reject/dismiss handling around it.
-        """
-        if not path:
-            return
-        try:
-            if os.path.isfile(path):
-                os.remove(path)
-                logger.info(f"Deleted file from downloads: {path}")
-        except OSError as exc:
-            logger.warning("Could not delete %s (downloads mount read-only?): %s", path, exc)
 
     @staticmethod
     async def _edit_approval_message(query, text: str, reply_markup=None):
@@ -1845,33 +1582,16 @@ class MusicBot:
     ):
         """Search slskd without Spotify metadata. Duration scoring gives flat 15 points."""
         try:
-            raw_responses = await self.slskd.search(query, timeout_secs=self.config.search_timeout_secs)
-            if self._is_stale(chat_id, generation):
-                return
-
             # Use display_track from Spotify candidates if available, otherwise parse query
             if display_track:
-                synthetic_track = TrackInfo(
-                    artist=display_track.artist,
-                    title=display_track.title,
-                    album=display_track.album,
-                    duration_ms=0,
-                    spotify_url="",
-                    year=display_track.year,
+                track = synthetic_track(
+                    display_track.artist, display_track.title, album=display_track.album, year=display_track.year
                 )
             else:
-                artist, title = self._parse_query_artist_title(query)
-                synthetic_track = TrackInfo(
-                    artist=artist,
-                    title=title,
-                    album="",
-                    duration_ms=0,
-                    spotify_url="",
-                    year="",
-                )
+                artist, title = parse_query_artist_title(query)
+                track = synthetic_track(artist, title)
 
-            ranked = self._rank_responses(raw_responses, synthetic_track, chat_id=chat_id, user_id=user_id)
-
+            ranked = await self.pipeline.search(query, track, self._profile(chat_id, user_id))
             if self._is_stale(chat_id, generation):
                 return
 
@@ -1888,13 +1608,13 @@ class MusicBot:
             search_id = uuid4().hex[:8]
             self.pending[chat_id] = PendingSearch(
                 query=query,
-                track=synthetic_track,
+                track=track,
                 results=ranked,
                 message_id=searching_msg.message_id,
                 search_id=search_id,
             )
 
-            results_text = self._format_results(synthetic_track, ranked, page=0, page_size=self.config.max_results)
+            results_text = self._format_results(track, ranked, page=0, page_size=self.config.max_results)
             await _safe_edit(
                 searching_msg,
                 results_text,
@@ -2119,13 +1839,10 @@ class MusicBot:
             )
             return
 
-        target_path = self.processor.process_file(pending_dl.source_path, track.artist, track.title)
+        target_path = await self.pipeline.save(pending_dl.source_path, track, result)
         if target_path:
-            self.processor.cleanup_download(pending_dl.source_path)
-            await self._embed_spotify_artwork(target_path, track)
             target_name = os.path.basename(target_path)
             await self._edit_approval_message(query, f"✅ Saved: `{target_name}`")
-            await self._add_history(track, result, "success")
             await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.completed)
         else:
             await self._edit_approval_message(query, "❌ Failed to save file.")
@@ -2198,24 +1915,21 @@ class MusicBot:
     ):
         """Search slskd for an import track. Similar to _do_slskd_search but with import keyboards."""
         try:
-            clean_title = _clean_search_title(track.title)
+            clean_title = clean_search_title(track.title)
             search_query = f"{track.artist} {clean_title}"
-            raw_responses = await self.slskd.search(search_query, timeout_secs=self.config.search_timeout_secs)
+            profile = self._profile(chat_id, self._import_user.get(chat_id))
+            ranked = await self.pipeline.search(search_query, track, profile)
             if self._is_stale(chat_id, generation):
                 return
-
-            ranked = self._rank_responses(raw_responses, track, chat_id=chat_id, user_id=self._import_user.get(chat_id))
 
             # Title-only fallback
             if not ranked:
                 if self._is_stale(chat_id, generation):
                     return
-                raw_responses = await self.slskd.search(clean_title, timeout_secs=self.config.search_timeout_secs)
+                profile = self._profile(chat_id, self._import_user.get(chat_id))
+                ranked = await self.pipeline.search(clean_title, track, profile)
                 if self._is_stale(chat_id, generation):
                     return
-                ranked = self._rank_responses(
-                    raw_responses, track, chat_id=chat_id, user_id=self._import_user.get(chat_id)
-                )
 
             if self._is_stale(chat_id, generation):
                 return
@@ -2294,8 +2008,16 @@ class MusicBot:
     ):
         """Download a file within an import flow."""
         try:
-            success = await asyncio.to_thread(self.slskd.enqueue_download, result)
-            if not success:
+            outcome = await self.pipeline.fetch(
+                result,
+                self._make_progress_reporter(
+                    status_msg,
+                    f"\U0001f4cb *Import track:* {track.artist} - {track.title}\n"
+                    f"⬇️ Downloading: `{result.basename}`\nFrom: `{result.username}`",
+                ),
+                analyze=False,
+            )
+            if outcome.error == ENQUEUE_FAILED:
                 if self._import_auto.get(chat_id):
                     await self._import_auto_fail(
                         context,
@@ -2320,19 +2042,8 @@ class MusicBot:
                 await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
 
-            status = await self.slskd.wait_for_download(
-                username=result.username,
-                filename=result.filename,
-                timeout_secs=self.config.download_timeout_secs,
-                progress_cb=self._make_progress_reporter(
-                    status_msg,
-                    f"\U0001f4cb *Import track:* {track.artist} - {track.title}\n"
-                    f"⬇️ Downloading: `{result.basename}`\nFrom: `{result.username}`",
-                ),
-            )
-
-            if status is None or status.is_failed:
-                state = status.state if status else "Timeout"
+            if outcome.error == DOWNLOAD_FAILED:
+                state = outcome.state
                 if self._import_auto.get(chat_id):
                     await self._import_auto_fail(
                         context,
@@ -2355,8 +2066,7 @@ class MusicBot:
                 await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
 
-            source_path = self.processor.find_downloaded_file(result.username, result.filename)
-            if not source_path:
+            if not outcome.ok:
                 if self._import_auto.get(chat_id):
                     await self._import_auto_fail(
                         context,
@@ -2378,6 +2088,7 @@ class MusicBot:
                 await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
                 return
 
+            source_path = outcome.path
             # Update PendingDownload with source path
             if dl_id in self.downloads:
                 self.downloads[dl_id].source_path = source_path
@@ -2412,7 +2123,7 @@ class MusicBot:
                     reply_markup=build_import_track_keyboard(job_id, track_id, dl_id),
                 )
             else:
-                target_name = self.processor.build_filename(track.artist, track.title, result.extension)
+                target_name = self.pipeline.target_filename(track, result.extension)
                 try:
                     with open(source_path, "rb") as f:
                         await context.bot.send_audio(
@@ -2484,16 +2195,16 @@ class MusicBot:
         )
         outcome, note = await self._send_to_chat(context, chat_id, track, result, source_path, caption)
         if outcome == "sent":
-            await asyncio.to_thread(self.processor.cleanup_download, source_path)
+            await self.pipeline.discard(source_path)
             # Popped only after cleanup (orphan-sweep protection, see _auto_save).
             self.downloads.pop(dl_id, None)
             await _safe_edit(status_msg, f"{heading}\n✅ Sent: `{note}`", parse_mode=ParseMode.MARKDOWN)
-            await self._add_history(track, result, "delivered", filename=note)
+            await self.pipeline.record_history(track, result, "delivered", filename=note)
             await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.completed)
             await self._process_next_import_track(context, chat_id, job_id, generation)
             return
 
-        await self._add_history(track, result, outcome)
+        await self.pipeline.record_history(track, result, outcome)
         if self._import_auto.get(chat_id):
             # Source kept for the orphan sweep once the entry is gone.
             await self._import_auto_fail(
@@ -2532,10 +2243,8 @@ class MusicBot:
     ):
         """Unattended import: save the track straight to the library, no preview upload."""
         self.downloads.pop(dl_id, None)
-        target_path = await asyncio.to_thread(self.processor.process_file, source_path, track.artist, track.title)
+        target_path = await self.pipeline.save(source_path, track, result)
         if target_path:
-            await asyncio.to_thread(self.processor.cleanup_download, source_path)
-            await self._embed_spotify_artwork(target_path, track)
             target_name = os.path.basename(target_path)
             await _safe_edit(
                 status_msg,
@@ -2543,7 +2252,6 @@ class MusicBot:
                 f"✅ Auto-saved: `{target_name}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            await self._add_history(track, result, "success")
             await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.completed)
         else:
             await _safe_edit(
@@ -2664,51 +2372,6 @@ class MusicBot:
         self._track_task(chat_id, task)
 
     # =========================================================================
-    # LOSSLESS CHECK
-    # =========================================================================
-
-    @staticmethod
-    async def _analyze_lossless(filepath: str) -> LosslessVerdict | None:
-        """Run the spectral lossless check in a thread to avoid blocking."""
-        try:
-            verdict = await asyncio.to_thread(analyze_lossless, filepath)
-            if verdict:
-                logger.info("Lossless check for %s: %s (cutoff=%.1fkHz)", filepath, verdict.verdict, verdict.cutoff_khz)
-            return verdict
-        except Exception:
-            logger.exception("Lossless check failed for %s", filepath)
-            return None
-
-    @staticmethod
-    async def _convert_to_ogg(filepath: str, bitrate_kbps: int = 128) -> str | None:
-        """Convert a full audio file to OGG Opus in a thread."""
-        try:
-            return await asyncio.to_thread(convert_to_ogg, filepath, bitrate_kbps)
-        except Exception:
-            logger.exception("OGG conversion failed for %s", filepath)
-            return None
-
-    @staticmethod
-    async def _create_preview(filepath: str, duration_secs: float = 60.0) -> str | None:
-        """Create a trimmed audio preview clip in a thread to avoid blocking."""
-        try:
-            return await asyncio.to_thread(create_preview_clip, filepath, duration_secs)
-        except Exception:
-            logger.exception("Preview clip creation failed for %s", filepath)
-            return None
-
-    async def _embed_spotify_artwork(self, filepath: str, track: TrackInfo) -> None:
-        """Fetch album artwork from Spotify and embed into the saved file."""
-        try:
-            art = await asyncio.to_thread(fetch_spotify_artwork, self.spotify.sp, track.artist, track.title)
-            if art:
-                ok = await asyncio.to_thread(embed_artwork_into_file, filepath, art)
-                if ok:
-                    logger.info("Embedded Spotify artwork into %s (%d KB)", filepath, len(art) // 1024)
-        except Exception:
-            logger.debug("Artwork embedding failed for %s", filepath, exc_info=True)
-
-    # =========================================================================
     # HELPERS
     # =========================================================================
 
@@ -2788,43 +2451,11 @@ class MusicBot:
 
         return "\n".join(lines)
 
-    @staticmethod
-    def _parse_query_artist_title(query: str) -> tuple[str, str]:
-        """Parse a free-text query into (artist, title) with title-casing.
-
-        Tries " - " separator first. Otherwise assumes last word is title,
-        rest is artist (e.g. "david bowie helden" → "David Bowie", "Helden").
-        """
-        if " - " in query:
-            parts = query.split(" - ", 1)
-            return parts[0].strip().title(), parts[1].strip().title()
-        words = query.strip().split()
-        if len(words) >= 3:
-            return " ".join(words[:-1]).title(), words[-1].title()
-        if len(words) == 2:
-            return words[0].title(), words[1].title()
-        return "", query.title()
-
     async def _orphan_sweep_loop(self) -> None:
-        """Hourly TTL sweep of abandoned files in the downloads dir.
-
-        Runs once at startup (catching leftovers from before a restart) and
-        then every hour. In-flight downloads are protected explicitly, on top
-        of the mtime-based safety in FileProcessor.sweep_orphans.
-        """
-        while True:
-            try:
-                protected = {dl.source_path for dl in self.downloads.values() if dl.source_path}
-                deleted, freed = await asyncio.to_thread(
-                    self.processor.sweep_orphans, self.config.download_cleanup_hours, protected
-                )
-                if deleted:
-                    logger.info(
-                        f"Orphan sweep: removed {deleted} abandoned file(s), freed {freed / (1024 * 1024):.0f} MB"
-                    )
-            except Exception:
-                logger.exception("Orphan sweep failed")
-            await asyncio.sleep(3600)
+        """The pipeline's hourly orphan sweep, with this bot's in-flight downloads protected."""
+        await self.pipeline.orphan_sweep_loop(
+            lambda: {dl.source_path for dl in self.downloads.values() if dl.source_path}
+        )
 
     async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Global error handler: log the crash and tell the user something broke.
@@ -2837,21 +2468,6 @@ class MusicBot:
         if message is not None:
             with contextlib.suppress(Exception):
                 await message.reply_text("⚠️ Something went wrong. Please try again.")
-
-    async def _add_history(self, track: TrackInfo, result: SearchResult, status: str, filename: str | None = None):
-        """Add an entry to download history (persisted in SQLite)."""
-        await asyncio.to_thread(
-            self.history_repo.add,
-            artist=track.artist,
-            title=track.title,
-            album=track.album,
-            filename=filename or f"{track.artist} - {track.title}.{result.extension}",
-            source_user=result.username,
-            remote_path=result.filename,
-            status=status,
-            duration_secs=track.duration_secs,
-            file_size=result.size,
-        )
 
 
 async def _register_commands(app: Application) -> None:
@@ -2883,7 +2499,7 @@ def create_bot(config: Config) -> Application:
     Returns:
         Configured telegram Application ready to run.
     """
-    bot = MusicBot(config)
+    bot = MusicBot(config, Pipeline(config))
 
     async def _post_init(app: Application) -> None:
         await _register_commands(app)

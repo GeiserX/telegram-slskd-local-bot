@@ -142,8 +142,8 @@ class TestSweepLoopLifecycle:
     async def test_loop_sweeps_and_survives_errors(self):
         """One failing sweep must not kill the hourly loop."""
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
         ):
             from music_downloader.bot.handlers import MusicBot
 
@@ -164,8 +164,8 @@ class TestSweepLoopLifecycle:
 
         config = _handlers_config()
         with (
-            patch("music_downloader.bot.handlers.SpotifyResolver"),
-            patch("music_downloader.bot.handlers.SlskdClient"),
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
             patch("music_downloader.bot.handlers.Application") as mock_app_cls,
         ):
             mock_builder = MagicMock()

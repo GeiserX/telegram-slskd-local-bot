@@ -42,8 +42,8 @@ def _make_config(td=None):
 
 def _make_bot(config=None):
     with (
-        patch("music_downloader.bot.handlers.SpotifyResolver"),
-        patch("music_downloader.bot.handlers.SlskdClient"),
+        patch("music_downloader.pipeline.SpotifyResolver"),
+        patch("music_downloader.pipeline.SlskdClient"),
     ):
         return MusicBot(config or _make_config())
 
@@ -164,7 +164,7 @@ class TestAutoDownloadFlow:
         bot.processor.cleanup_download = MagicMock(return_value=True)
         status_msg = AsyncMock()
 
-        with patch.object(bot, "_embed_spotify_artwork", new_callable=AsyncMock):
+        with patch.object(bot.pipeline, "embed_artwork", new_callable=AsyncMock):
             await bot._auto_save(67890, "abc", pending, status_msg, "quality", "#1")
 
         assert "abc" not in bot.downloads
@@ -197,7 +197,7 @@ class TestImportAutoSave:
         bot.processor.cleanup_download = MagicMock(return_value=True)
 
         with (
-            patch.object(bot, "_embed_spotify_artwork", new_callable=AsyncMock),
+            patch.object(bot.pipeline, "embed_artwork", new_callable=AsyncMock),
             patch.object(bot, "_process_next_import_track", new_callable=AsyncMock) as mock_next,
             patch("music_downloader.bot.handlers.asyncio.to_thread", side_effect=lambda fn, *a, **k: fn(*a, **k)),
         ):

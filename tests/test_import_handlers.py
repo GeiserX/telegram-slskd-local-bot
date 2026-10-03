@@ -107,8 +107,8 @@ def _make_update(chat_id=67890, user_id=12345, text="/import https://open.spotif
     return update
 
 
-@patch("music_downloader.bot.handlers.SpotifyResolver")
-@patch("music_downloader.bot.handlers.SlskdClient")
+@patch("music_downloader.pipeline.SpotifyResolver")
+@patch("music_downloader.pipeline.SlskdClient")
 def _setup_bot(mock_slskd_cls, mock_spotify_cls):
     config = _make_config()
     mock_slskd_cls.return_value = MagicMock()
@@ -431,8 +431,8 @@ class TestHandleImportApprove:
         bot.import_repo.get_next_pending_track = MagicMock(return_value=None)
         bot.import_repo.get_job_progress = MagicMock(return_value=(10, 0, 0, 10))
         bot.import_repo.update_job_status = MagicMock()
-        bot._embed_spotify_artwork = AsyncMock()
-        bot._add_history = AsyncMock()
+        bot.pipeline.embed_artwork = AsyncMock()
+        bot.pipeline.record_history = AsyncMock()
         bot._edit_approval_message = AsyncMock()
         update = _make_update(chat_id=chat_id)
         context = _make_context()
@@ -516,7 +516,7 @@ class TestDoImportSlskdSearch:
                 {"username": "user0", "files": [{"filename": "\\Music\\track0.flac", "size": 30000000, "length": 162}]}
             ]
         )
-        bot._rank_responses = MagicMock(return_value=results)
+        bot.pipeline.rank = MagicMock(return_value=results)
         bot.slskd.enqueue_download = MagicMock(return_value=True)
         bot.slskd.wait_for_download = AsyncMock()
         track = _make_track()
@@ -718,7 +718,7 @@ class TestDoDirectSlskdSearch:
         bot = _setup_bot()
         chat_id = 67890
         bot.slskd.search = AsyncMock(return_value=[])
-        bot._rank_responses = MagicMock(return_value=[])
+        bot.pipeline.rank = MagicMock(return_value=[])
         searching_msg = MagicMock(message_id=100)
         await bot._do_direct_slskd_search(_make_context(), chat_id, "test query", searching_msg, generation=0)
         mock_edit.assert_awaited()
@@ -730,7 +730,7 @@ class TestDoDirectSlskdSearch:
         chat_id = 67890
         results = [_make_result(0), _make_result(1)]
         bot.slskd.search = AsyncMock(return_value=[{"username": "u", "files": []}])
-        bot._rank_responses = MagicMock(return_value=results)
+        bot.pipeline.rank = MagicMock(return_value=results)
         bot._format_results = MagicMock(return_value="Results text")
         searching_msg = MagicMock(message_id=100)
         await bot._do_direct_slskd_search(_make_context(), chat_id, "test query", searching_msg, generation=0)

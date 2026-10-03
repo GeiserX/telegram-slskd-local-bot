@@ -44,8 +44,8 @@ def _make_config():
 
 def _make_bot():
     with (
-        patch("music_downloader.bot.handlers.SpotifyResolver"),
-        patch("music_downloader.bot.handlers.SlskdClient"),
+        patch("music_downloader.pipeline.SpotifyResolver"),
+        patch("music_downloader.pipeline.SlskdClient"),
     ):
         return MusicBot(_make_config())
 

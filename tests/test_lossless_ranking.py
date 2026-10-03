@@ -57,8 +57,8 @@ def _make_config(td=None, chat_users=None):
 
 def _make_bot(config=None):
     with (
-        patch("music_downloader.bot.handlers.SpotifyResolver"),
-        patch("music_downloader.bot.handlers.SlskdClient"),
+        patch("music_downloader.pipeline.SpotifyResolver"),
+        patch("music_downloader.pipeline.SlskdClient"),
     ):
         return MusicBot(config or _make_config())
 
@@ -146,7 +146,7 @@ class TestLibraryRanking:
     def _ranked(self, results):
         bot = _make_bot()
         bot.slskd.parse_results = MagicMock(return_value=results)
-        return bot._rank_responses([], _make_track(), chat_id=CHAT)
+        return bot.pipeline.rank([], _make_track(), bot._profile(CHAT))
 
     def test_every_lossless_above_every_lossy_each_group_by_score(self):
         results = [
@@ -179,7 +179,7 @@ class TestLibraryRanking:
         exact320 = _mp3("exact320", 10 * MB, 320)
         bot = _make_bot()
         bot.slskd.parse_results = MagicMock(return_value=[far, exact320, near])
-        ranked = bot._rank_responses([], _make_track(), max_duration_diff=120, chat_id=CHAT)
+        ranked = bot.pipeline.rank([], _make_track(), bot._profile(CHAT), max_duration_diff=120)
         assert [r.username for r in ranked] == ["near", "exact320", "far"]
 
     def test_unknown_length_lossless_still_leads(self):
@@ -298,7 +298,7 @@ class TestChatRanking:
     def _ranked(self, results):
         bot = _make_bot(_make_config(chat_users={CHAT}))
         bot.slskd.parse_results = MagicMock(return_value=results)
-        return [r.username for r in bot._rank_responses([], _make_track(), chat_id=CHAT)]
+        return [r.username for r in bot.pipeline.rank([], _make_track(), bot._profile(CHAT))]
 
     def test_no_lossless_partition_in_chat(self):
         assert self._ranked([_flac("flac35", 35 * MB), _mp3("mp3320", 10 * MB, 320)]) == ["mp3320", "flac35"]
@@ -373,7 +373,7 @@ class TestLossySave:
         pending = PendingDownload(track=_make_track(), result=result, chat_id=CHAT, source_path=source)
         bot.downloads["abc"] = pending
         status_msg = AsyncMock()
-        with patch("music_downloader.bot.handlers.fetch_spotify_artwork", return_value=JPEG):
+        with patch("music_downloader.pipeline.library.fetch_spotify_artwork", return_value=JPEG):
             await bot._auto_save(CHAT, "abc", pending, status_msg, "quality", "#1")
         target = os.path.join(config.output_dir, "Nancy Sinatra - Bang Bang.mp3")
         assert os.path.isfile(target) and not os.path.exists(source)
