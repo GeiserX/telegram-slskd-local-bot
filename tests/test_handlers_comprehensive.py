@@ -12,12 +12,13 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.constants import ParseMode
 
 from music_downloader.bot.handlers import (
     MusicBot,
     PendingDownload,
     PendingSearch,
-    _escape_md,
+    _esc,
     _safe_edit,
 )
 from music_downloader.metadata.spotify import TrackInfo
@@ -122,17 +123,19 @@ def _make_context(chat_id=67890):
 # ---------------------------------------------------------------------------
 
 
-class TestEscapeMd:
-    def test_escapes_special_chars(self):
-        assert _escape_md("hello_world") == "hello\\_world"
-        assert _escape_md("*bold*") == "\\*bold\\*"
-        assert _escape_md("[link](url)") == "\\[link\\]\\(url\\)"
+class TestEsc:
+    def test_escapes_html_special_chars(self):
+        assert _esc("*NSYNC <&> _Test_") == "*NSYNC &lt;&amp;&gt; _Test_"
+        assert _esc('say "hi"') == 'say "hi"'
 
-    def test_plain_text_unchanged(self):
-        assert _escape_md("hello world") == "hello world"
+    def test_markdown_chars_pass_through(self):
+        assert _esc("Bye [Bye] `Bye`") == "Bye [Bye] `Bye`"
+
+    def test_non_strings_are_stringified(self):
+        assert _esc(2000) == "2000"
 
     def test_empty_string(self):
-        assert _escape_md("") == ""
+        assert _esc("") == ""
 
 
 class TestSafeEdit:
@@ -422,7 +425,7 @@ class TestMusicBotCommands:
         update = _make_update()
         context = _make_context()
         await bot.cmd_status(update, context)
-        update.message.reply_text.assert_called_once_with("No active searches or downloads.")
+        update.message.reply_text.assert_called_once_with("No active searches or downloads.", parse_mode=ParseMode.HTML)
 
     @patch("music_downloader.pipeline.SpotifyResolver")
     @patch("music_downloader.pipeline.SlskdClient")
@@ -460,7 +463,7 @@ class TestMusicBotCommands:
         update = _make_update()
         context = _make_context()
         await bot.cmd_history(update, context)
-        update.message.reply_text.assert_called_once_with("No downloads yet.")
+        update.message.reply_text.assert_called_once_with("No downloads yet.", parse_mode=ParseMode.HTML)
 
     @patch("music_downloader.pipeline.SpotifyResolver")
     @patch("music_downloader.pipeline.SlskdClient")
@@ -586,7 +589,9 @@ class TestMusicBotCallbackHandler:
         update = _make_callback_update(data="sp_page:0")
         context = _make_context()
         await bot.handle_callback(update, context)
-        update.callback_query.edit_message_text.assert_called_with("Search expired. Send a new query.")
+        update.callback_query.edit_message_text.assert_called_with(
+            "Search expired. Send a new query.", parse_mode=ParseMode.HTML
+        )
 
     @patch("music_downloader.pipeline.SpotifyResolver")
     @patch("music_downloader.pipeline.SlskdClient")
@@ -649,7 +654,9 @@ class TestMusicBotCallbackHandler:
         update = _make_callback_update(data="dl:0")
         context = _make_context()
         await bot.handle_callback(update, context)
-        update.callback_query.edit_message_text.assert_called_with("Search expired. Send a new query.")
+        update.callback_query.edit_message_text.assert_called_with(
+            "Search expired. Send a new query.", parse_mode=ParseMode.HTML
+        )
 
     @patch("music_downloader.pipeline.SpotifyResolver")
     @patch("music_downloader.pipeline.SlskdClient")
@@ -682,7 +689,9 @@ class TestMusicBotCallbackHandler:
         update = _make_callback_update(data="dl_page:0")
         context = _make_context()
         await bot.handle_callback(update, context)
-        update.callback_query.edit_message_text.assert_called_with("Search expired. Send a new query.")
+        update.callback_query.edit_message_text.assert_called_with(
+            "Search expired. Send a new query.", parse_mode=ParseMode.HTML
+        )
 
     @patch("music_downloader.pipeline.SpotifyResolver")
     @patch("music_downloader.pipeline.SlskdClient")

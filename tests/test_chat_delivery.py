@@ -289,7 +289,7 @@ class TestDeliverCommand:
         update.message = AsyncMock()
         await bot.cmd_deliver(update, _make_context())
         kwargs = update.message.reply_text.call_args.kwargs
-        assert "*Chat*" in update.message.reply_text.call_args.args[0]
+        assert "<b>Chat</b>" in update.message.reply_text.call_args.args[0]
         assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "deliver:library"
 
     @pytest.mark.asyncio
@@ -301,7 +301,7 @@ class TestDeliverCommand:
         update.message = AsyncMock()
         await bot.cmd_deliver(update, _make_context())
         args, kwargs = update.message.reply_text.call_args
-        assert "fixed" in args[0] and "*Chat*" in args[0]
+        assert "fixed" in args[0] and "<b>Chat</b>" in args[0]
         assert "reply_markup" not in kwargs
 
     @pytest.mark.asyncio
@@ -351,7 +351,7 @@ class TestDeliverCommand:
         update.effective_user.id = 12345
         update.message = AsyncMock()
         await bot.cmd_history(update, _make_context())
-        assert "\U0001f4e8 `a - t.flac`" in update.message.reply_text.call_args.args[0]
+        assert "\U0001f4e8 <code>a - t.flac</code>" in update.message.reply_text.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_chat_mode_skips_library_duplicate_check(self):
@@ -838,14 +838,14 @@ class TestChatImports:
         assert os.path.exists(source)
 
     @pytest.mark.asyncio
-    async def test_review_import_failure_heading_escapes_markdown(self, tmp_path):
-        """A name like *NSYNC must not break the Markdown edit that carries the Skip keyboard."""
+    async def test_review_import_failure_heading_escapes_html(self, tmp_path):
+        """A name like <NSYNC> must not break the HTML edit that carries the Skip keyboard."""
         bot = _import_bot()
         source = _file(tmp_path)
         context = _make_context()
         context.bot.send_audio = AsyncMock(side_effect=NetworkError("down"))
         track = TrackInfo(
-            artist="*NSYNC", title="Bye_Bye [Bye]", album="X", duration_ms=162_000, spotify_url="u", year="2000"
+            artist="*NSYNC <&>", title="Bye_Bye [Bye]", album="X", duration_ms=162_000, spotify_url="u", year="2000"
         )
         _setup_download(bot, source)
         bot.downloads["dl1"] = PendingDownload(track=track, result=_make_result(), chat_id=CHAT)
@@ -857,8 +857,8 @@ class TestChatImports:
             )
 
         text = _edits(status)[-1]
-        assert "\\*NSYNC" in text and "Bye\\_Bye \\[Bye\\]" in text
-        assert "*NSYNC" not in text.replace("\\*NSYNC", "")
+        assert "*NSYNC &lt;&amp;&gt; - Bye_Bye [Bye]" in text
+        assert "<&>" not in text
 
     @pytest.mark.asyncio
     async def test_import_approve_in_chat_mode_delivers_instead_of_saving(self, tmp_path):

@@ -6,6 +6,7 @@ import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 from music_downloader.bot.handlers import (
@@ -168,7 +169,7 @@ class TestSafeQueryEdit:
         query.edit_message_text = AsyncMock()
         result = await _safe_query_edit(query, "hello")
         assert result is True
-        query.edit_message_text.assert_awaited_once_with("hello")
+        query.edit_message_text.assert_awaited_once_with("hello", parse_mode=ParseMode.HTML)
 
     async def test_safe_query_edit_bad_request(self):
         query = MagicMock()
