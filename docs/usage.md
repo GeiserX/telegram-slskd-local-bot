@@ -46,6 +46,7 @@ the track into the chat with no Save or Reject buttons and deletes the downloade
 - `/import` sends every track of the playlist or album to the chat, one after another.
 
 Turn it on per chat with `/deliver`, or make it the default for some users with `TELEGRAM_CHAT_DELIVERY_USERS`.
+In a group chat without a `/deliver` setting, the user who started the search or import decides where that track goes.
 One bot token can only run one bot process, so both modes live in the same instance.
 
 ## Scoring Algorithm
