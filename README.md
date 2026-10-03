@@ -15,7 +15,7 @@
 ## Features
 
 - Send a song name; the bot resolves artist, title, album and duration on Spotify and searches Soulseek through your slskd for every audio format: lossless (FLAC, WAV, AIFF, ALAC, APE, WavPack, TTA, TAK) and lossy (MP3, AAC, M4A, Ogg, Opus, WMA).
-- Lists every lossless copy before every lossy one, so a song with no lossless copy still gets the best MP3 or AAC. Within each group it ranks by duration against Spotify, bit depth and sample rate (hi-res first) or bitrate, free slots, speed and file name; drops live, remix and karaoke cuts unless the title has them.
+- Lists every lossless copy of known length before every lossy one, so a song with no lossless copy still gets the best MP3 or AAC. Within each group it ranks by duration against Spotify, bit depth and sample rate (hi-res first) or bitrate, free slots, speed and file name; drops live, remix and karaoke cuts unless the title has them.
 - Sends you the track in the chat before it is saved: the file itself, or an Opus copy of the whole song when the file is over Telegram's 50 MB limit.
 - Checks the spectrum of a lossless file found from a song name (by you or `/auto`) and flags an MP3-style cutoff ("Possible transcode", "Likely transcode", "Fake lossless") before Save. `/import` skips it. FLAC, WAV and AIFF are checked; other lossless formats say "not checked".
 - Warns when similar files are already in the library before it searches.

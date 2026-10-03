@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sending files. A test fails if a pipeline module ever imports `telegram`, so
   another front end can drive the same pipeline. One side effect: Save on a
   preview now moves the file in a background thread, as auto-mode already did,
-  so a big copy no longer stalls the bot.
+  so a big copy no longer stalls the bot. An import track whose save fails now
+  gets a "process failed" row in `/history`, as a plain search already did.
 - **Every message is HTML.** Markdown broke whenever a track, file or
   Soulseek user name held `*`, `_`, `[` or a backtick. Messages now use
   Telegram's HTML mode and every outside value is escaped, so no name can
@@ -34,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subfolders. A `library_index` table in SQLite now holds every audio file
   under `OUTPUT_DIR`, subfolders included. The bot rebuilds it in a thread at
   startup and every hour, and each save adds its row. A query looks at no more
-  than 300 rows, in a thread. The warning and its threshold are unchanged.
+  than 300 rows, in a thread. The warning and its threshold are unchanged. A
+  rebuild that finds no audio file (a missing or unmounted `OUTPUT_DIR`) keeps
+  the previous index instead of emptying it.
 - **The upload cap is Telegram's real one.** Telegram's bot upload limit is
   50,000,000 bytes, not 50 MiB (52,428,800), so a file just under 50 MiB was
   treated as fitting and Telegram refused it. The cap now comes from
@@ -49,13 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reject, Retry, Try next and the result pages still work after the bot
   restarts. A button whose entry expired says "This button expired after a
   restart". Downloads still waiting after `DOWNLOAD_CLEANUP_HOURS` are dropped
-  with their file.
+  with their file (counted from when the file landed; a download still running
+  is never dropped). Result lists older than that are dropped at the next start.
 - **`/health` checks something.** It used to answer 200 no matter what. It now
   answers 200 only while the bot polls Telegram (a successful poll in the last
   120 s) and slskd answers (in the last 60 s), and 503 with the failed check
   otherwise. `/ready` stays a constant 200.
 - **slskd's transfer list is tidied.** Once a download is saved, sent,
-  rejected or expired, its finished transfer is removed from slskd too.
+  rejected, expired or dropped by a new search, its finished transfer is
+  removed from slskd too.
 - **Retry after a failed chat send in an import.** In a review-mode import
   sent to the chat, a failed send now offers Retry, Try next result, Mark
   failed and Skip instead of stalling the import.

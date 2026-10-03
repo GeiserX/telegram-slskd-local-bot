@@ -3,7 +3,7 @@
 ## What the chat looks like
 
 Text the bot a song name. It shows the Spotify matches when there is more than one, searches Soulseek
-through slskd, ranks the copies with every lossless one first, and sends you the one you pick so you can listen and read the
+through slskd, ranks the copies with every lossless one of known length first, and sends you the one you pick so you can listen and read the
 lossless check before you save it. A file whose spectrum reaches the top of its range says "Lossless OK";
 one whose spectrum stops at an MP3-style cutoff says "Possible transcode", "Likely transcode" or "Fake
 lossless", with the frequency where it stops. Then you tap Save to library or Reject.
@@ -13,7 +13,7 @@ lossless", with the frequency where it stops. Then you tap Save to library or Re
 1. Send a song name to the Telegram bot (text message)
 2. Bot resolves the track on **Spotify** (artist, title, duration, album)
 3. Bot searches **slskd** (Soulseek) for audio files matching the track, lossless and lossy
-4. Results are **scored** by duration match, audio quality, source reliability, and filename relevance; every lossless copy is listed before every lossy one
+4. Results are **scored** by duration match, audio quality, source reliability, and filename relevance; every lossless copy of known length is listed before every lossy one
 5. Bot presents the top matches; you pick one (or enable auto-mode). The file is sent to the chat with its lossless check; you tap Save to library or Reject
 6. File is renamed to `Artist - Title` with its own extension (`.flac`, `.mp3`...), tagged with the Spotify cover art, and placed in your output directory
 7. Your existing tools (e.g., [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher), Navidrome) pick it up from there
@@ -77,8 +77,8 @@ Search results are ranked by:
    copies, in chat delivery after every copy of known length.
 2. **Audio quality** (25 pts), which depends on where the track goes:
     - **Library delivery**: every lossless copy is listed before every lossy one, except a lossless copy of a
-      different version (more than 30 s off Spotify's length, kept only by the last-resort search), which ranks
-      among the lossy copies by score. A lossless copy scores by
+      different version (more than 30 s off Spotify's length, kept only by the last-resort search) or without a
+      known length, which ranks among the lossy copies by score. A lossless copy scores by
       bit depth (24-bit 15, 16-bit 10) and sample rate (88.2 kHz and above 10, 48 kHz 7, 44.1 kHz 6). A lossy
       copy scores by bitrate: 256 kbps or more 25, 192 kbps 20, 128 kbps 10, under 128 kbps 1. The bitrate is
       first scaled to what it sounds like in MP3 terms: Opus counts double, AAC and Vorbis one and a half times

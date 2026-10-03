@@ -25,7 +25,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | `DURATION_TOLERANCE_SECS` | No | `5` | Duration match tolerance in seconds |
 | `SEARCH_TIMEOUT_SECS` | No | `30` | slskd search timeout |
 | `DOWNLOAD_TIMEOUT_SECS` | No | `600` | Download completion timeout |
-| `DOWNLOAD_CLEANUP_HOURS` | No | `24` | Hours before abandoned files in `DOWNLOAD_DIR` are auto-deleted (hourly sweep; `0` disables). In-flight transfers are never touched. Downloads still waiting on a button (Save, Reject, Retry) survive a restart for this long, then expire with their file |
+| `DOWNLOAD_CLEANUP_HOURS` | No | `24` | Hours before abandoned files in `DOWNLOAD_DIR` are auto-deleted (hourly sweep; `0` disables). In-flight transfers are never touched. Downloads still waiting on a button (Save, Reject, Retry) survive a restart for this long, then expire with their file. Result lists older than this are dropped at the next start |
 | `EXCLUDE_KEYWORDS` | No | `live,remix,...` | Comma-separated keywords to filter out |
 | `FILENAME_TEMPLATE` | No | `{artist} - {title}` | Output filename template |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
