@@ -25,6 +25,24 @@ ENQUEUE_FAILED = "enqueue_failed"
 DOWNLOAD_FAILED = "failed"
 FILE_NOT_FOUND = "file_not_found"
 
+# slskd reports a transfer "Completed" a moment before the file is moved from its incomplete
+# folder into the downloads folder, so the first look on disk can miss it (seen live on
+# 2026-10-04). Keep looking this long, this often, before giving up.
+LOCATE_RETRY_SECS = 10.0
+LOCATE_RETRY_STEP_SECS = 0.5
+
+
+async def locate_landed(find: Callable[[], str | None], *, sleep=asyncio.sleep) -> str | None:
+    """Run *find* (a sync disk lookup) in a thread, retrying for LOCATE_RETRY_SECS until it answers."""
+    waited = 0.0
+    while True:
+        path = await asyncio.to_thread(find)
+        if path is not None or waited >= LOCATE_RETRY_SECS:
+            return path
+        await sleep(LOCATE_RETRY_STEP_SECS)
+        waited += LOCATE_RETRY_STEP_SECS
+
+
 # Opus bitrates tried (highest first) when a chat-delivery track is over the limit.
 _OPUS_BITRATES_KBPS = (192, 160, 128, 96)
 
@@ -100,7 +118,7 @@ async def fetch(
     if status is None or status.is_failed:
         return FetchOutcome(error=DOWNLOAD_FAILED, state=status.state if status else "Timeout")
 
-    path = processor.find_downloaded_file(result.username, result.filename)
+    path = await locate_landed(lambda: processor.find_downloaded_file(result.username, result.filename))
     if not path:
         return FetchOutcome(error=FILE_NOT_FOUND)
 

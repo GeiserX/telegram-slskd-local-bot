@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-10-04
+
+### Fixed
+
+- slskd reports a transfer as complete a moment before it moves the file from
+  its incomplete folder into the downloads folder, so the bot sometimes answered
+  "Downloaded file not found on disk" for a file that landed a second later.
+  The lookup now keeps looking for up to 10 seconds, for single tracks and for
+  album files alike
+- Album files in WAV or AIFF were always named from their file name: their ID3
+  tags (artist, title, album, track number) are now read like every other format
+- The album duplicate check compared names without the format, so a library
+  MP3 made the bot discard the lossless copy of the same track. A lossy library
+  copy no longer counts against a lossless album file; a lossless or same-format
+  copy still does
+- `{track}` in `FILENAME_TEMPLATE` with a file that has no number no longer eats
+  leading punctuation from the artist or title, and cleans up "({track})" and
+  "{track}. " separators too
+- "Artist - Album - 03 - Title.mp3" file names now parse their track number
+
 ## [0.17.0] - 2026-10-04
 
 ### Added

@@ -18,11 +18,12 @@ from dataclasses import dataclass, field
 
 import httpx
 import mutagen
+import mutagen.id3
 
 from music_downloader.formats import AUDIO_EXTENSIONS
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.album_repo import FileOutcome, FolderFile
-from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED, FILE_NOT_FOUND
+from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED, FILE_NOT_FOUND, locate_landed
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.search.slskd_client import DownloadStatus, SlskdClient
 from music_downloader.tools.embed_artwork import fetch_spotify_artwork
@@ -325,7 +326,7 @@ async def fetch_folder(
                     outcome.error, outcome.state = DOWNLOAD_FAILED, status.state if status else "Timeout"
                 else:
                     outcome.transfer_id = status.transfer_id
-                    outcome.path = await asyncio.to_thread(locate, processor, username, f.filename)
+                    outcome.path = await locate_landed(lambda f=f: locate(processor, username, f.filename))
                     if outcome.path is None:
                         outcome.error = FILE_NOT_FOUND
                     await _call(progress_cb, i, total, status.state, 100.0)
@@ -367,12 +368,24 @@ def parse_filename(name: str) -> tuple[str | None, str, int | None]:
         track, rest = int(m.group(1)), m.group(2).strip()
     parts = [p.strip() for p in rest.split(" - ")]
     artist: str | None = None
-    if len(parts) >= 3 and track is None and parts[1].isdigit():
-        artist, track, parts = parts[0], int(parts[1]), parts[2:]
+    number_at = next((i for i in range(1, len(parts) - 1) if parts[i].isdigit()), None) if track is None else None
+    if number_at is not None:
+        # "Artist - NN - Title" and "Artist - Album - NN - Title": the first all-digit part is the number.
+        artist, track, parts = " - ".join(parts[:number_at]), int(parts[number_at]), parts[number_at + 1 :]
     elif len(parts) >= 2:
         artist, parts = parts[0], parts[1:]
     title = " - ".join(p for p in parts if p) or stem or name
     return (artist or None), title, (track or None)
+
+
+_ID3_FRAMES = {
+    "artist": "TPE1",
+    "albumartist": "TPE2",
+    "title": "TIT2",
+    "album": "TALB",
+    "tracknumber": "TRCK",
+    "date": "TDRC",
+}
 
 
 def _first(tags, key: str) -> str:
@@ -401,6 +414,13 @@ def read_tags(path: str) -> tuple[dict[str, str], int]:
     if audio is None:
         return {}, 0
     tags = audio.tags
+    if isinstance(tags, mutagen.id3.ID3):
+        # WAV and AIFF carry raw ID3 (no Easy wrapper): map the frames to the easy keys.
+        tags = {
+            key: [str(tags[frame].text[0])]
+            for key, frame in _ID3_FRAMES.items()
+            if frame in tags and getattr(tags[frame], "text", None)
+        }
     found = {key: _first(tags, key) for key in ("artist", "albumartist", "title", "album", "tracknumber", "date")}
     length = getattr(getattr(audio, "info", None), "length", 0) or 0
     return {k: v for k, v in found.items() if v}, int(length * 1000)

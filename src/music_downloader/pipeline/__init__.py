@@ -14,6 +14,7 @@ import threading
 from collections.abc import Awaitable, Callable
 
 from music_downloader.config import Config
+from music_downloader.formats import is_lossless
 from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.persistence.album_repo import (
@@ -395,11 +396,21 @@ class Pipeline:
         return _album.AlbumArt(self.spotify.sp, track.artist, track.album, track.title)
 
     async def library_copy(self, path: str, track: TrackInfo) -> str | None:
-        """The library file that saving *path* as *track* would duplicate: same name (accents and case aside)."""
+        """The library file that saving *path* as *track* would duplicate: same name, accents and case aside.
+
+        A library copy in another format counts unless it is lossy and the new
+        file is lossless: a 320 kbps MP3 saved earlier must not make the bot
+        throw away the FLAC of the same track.
+        """
         extension = os.path.splitext(path)[1].lstrip(".").lower() or "flac"
         name = self.processor.build_filename(track.artist, track.title, extension, track.track_number)
         rel_path = await asyncio.to_thread(self.library_index.find_stem, os.path.splitext(name)[0])
-        return os.path.join(self.config.output_dir, rel_path) if rel_path else None
+        if not rel_path:
+            return None
+        existing_ext = os.path.splitext(rel_path)[1].lstrip(".").lower()
+        if is_lossless(extension) and not is_lossless(existing_ext):
+            return None
+        return os.path.join(self.config.output_dir, rel_path)
 
     async def _album_file_landed(
         self,
