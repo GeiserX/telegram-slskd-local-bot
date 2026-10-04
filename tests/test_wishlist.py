@@ -496,6 +496,23 @@ class TestDelivery:
         return search
 
     @pytest.mark.asyncio
+    async def test_wish_of_a_deauthorized_user_is_dropped_without_a_search(self, tmp_path):
+        bot, context = self._bot(tmp_path, auto=False)
+        wish = _wish(bot.pipeline.wishlist_repo, "any")
+        bot.config.telegram_allowed_users = {wish.user_id + 1}  # the owner removed this account
+        await bot.pipeline.wishlist_check_due(
+            lambda w, m: bot._deliver_wish(context, w, m), skip=bot._wish_skip, sleep=AsyncMock()
+        )
+        bot.slskd.search.assert_not_awaited()
+        context.bot.send_message.assert_not_called()
+        assert bot.pipeline.wishlist_repo.get(wish.id) is None
+        # Direct delivery of such a wish is refused too.
+        wish2 = _wish(bot.pipeline.wishlist_repo, "any")
+        assert await bot._deliver_wish(context, wish2, [_mp3(320, 1)]) is False
+        context.bot.send_message.assert_not_called()
+        assert bot.pipeline.wishlist_repo.get(wish2.id) is None
+
+    @pytest.mark.asyncio
     async def test_auto_chat_fetches_the_best_match_and_keeps_the_wish_until_it_is_saved(self, tmp_path):
         bot, context = self._bot(tmp_path, auto=True)
         wish = _wish(bot.pipeline.wishlist_repo, "better", TIER_LOSSY_192)
@@ -698,4 +715,4 @@ async def test_the_bot_checker_skips_busy_chats():
         await builder.post_init.call_args[0][0](app)
         await asyncio.sleep(0)
         await builder.post_shutdown.call_args[0][0](app)
-    assert getattr(seen["skip"], "__func__", None) is MusicBot._chat_busy
+    assert getattr(seen["skip"], "__func__", None) is MusicBot._wish_skip

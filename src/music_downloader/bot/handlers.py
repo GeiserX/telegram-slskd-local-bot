@@ -2844,6 +2844,16 @@ class MusicBot:
         chat_id = wish.chat_id
         return bool(self._active_tasks.get(chat_id) or self._searching.get(chat_id) or chat_id in self._active_import)
 
+    def _wish_skip(self, wish: Wish) -> bool:
+        """Skip for the checker: a wish of an account no longer in TELEGRAM_ALLOWED_USERS is dropped
+        (no search, no delivery), a busy chat waits for the next tick."""
+        if not self._is_authorized(wish.user_id):
+            logger.info("Dropping wish %s: user %s is no longer authorized", wish.id, wish.user_id)
+            self.pipeline.wishlist_repo.remove(wish.chat_id, wish.id)
+            self._forget_wish(wish.id)
+            return True
+        return self._chat_busy(wish)
+
     def _forget_wish(self, wish_id: int) -> None:
         """The wish is gone: its lists keep working but no longer offer Stop waiting."""
         for key, search in list(self.wish_searches.items()):
@@ -2872,6 +2882,10 @@ class MusicBot:
         """
         chat_id = wish.chat_id
         track = wish.track
+        if not self._is_authorized(wish.user_id):
+            self.pipeline.wishlist_repo.remove(wish.chat_id, wish.id)
+            self._forget_wish(wish.id)
+            return False
         if wish.wanted == WANTED_BETTER:
             header = f"⏳ <b>Wishlist:</b> a copy better than {TIER_LABELS.get(wish.baseline_tier, '?')} turned up."
         else:
@@ -3092,7 +3106,7 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
         wish_context = CallbackContext(app)
         bot._wishlist_task = asyncio.get_running_loop().create_task(
             bot.pipeline.wishlist_loop(
-                lambda wish, matches: bot._deliver_wish(wish_context, wish, matches), skip=bot._chat_busy
+                lambda wish, matches: bot._deliver_wish(wish_context, wish, matches), skip=bot._wish_skip
             )
         )
         if config.mcp_port:
