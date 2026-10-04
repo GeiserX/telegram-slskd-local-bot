@@ -24,6 +24,7 @@
 - Chat delivery (`/deliver`, or fixed per account with `TELEGRAM_CHAT_DELIVERY_USERS`) sends the track into the chat under 50 MB and saves nothing anywhere, so you can share the bot without sharing your library. It ranks copies by quality for their size instead: an MP3 at 320 kbps counts as much as a lossless file, and the smaller file wins.
 - `/format` per chat sends tracks as the original, MP3 320 kbps or Opus 192 kbps, for whoever wants MP3 whatever the source.
 - A wishlist: "Tell me when it appears" when nothing is found, "Wait for a better copy" under every result list. The bot searches again every `WISHLIST_CHECK_HOURS` and tells you, or fetches the copy with `/auto` on; `/wishlist` lists and removes wishes.
+- **Whole album from this source** under a saved or sent track lists the folder it came from on that peer and fetches every file: saved to the library named from its tags with the album cover, skipping files you already have, or sent into the chat in your `/format`, with live progress and `/cancel`.
 - `/auto` per chat saves the best match without a tap; a failed transfer gets Retry and Try next result; downloads show live progress.
 - Answers only allow-listed Telegram users, and denies everyone while the list is empty.
 - Sweeps abandoned downloads after `DOWNLOAD_CLEANUP_HOURS` and never touches a transfer in flight.
@@ -41,10 +42,10 @@ curl -fsSL https://raw.githubusercontent.com/GeiserX/telegram-slskd-local-bot/ma
 # SPOTIFY_CLIENT_SECRET, SLSKD_HOST and SLSKD_API_KEY, SLSKD_DOWNLOAD_PATH (slskd's completed-downloads
 # folder) and MUSIC_OUTPUT_PATH (your library); the last two must be writable by uid 1000
 mkdir -p data && sudo chown 1000:1000 data    # the container runs as uid 1000
-docker compose up -d                          # starts drumsergio/telegram-slskd-local-bot:0.16.2
+docker compose up -d                          # starts drumsergio/telegram-slskd-local-bot:0.17.0
 ```
 
-The container is `slskd_importer`, and the log line `Music Downloader v0.16.2 starting` means it is up. A message to your bot (for example `Nancy Sinatra Bang Bang`) is answered with the Spotify matches to pick from, or with the ranked copies when there is only one match; an empty `TELEGRAM_ALLOWED_USERS` answers nobody, and the denial reply shows your id. [Getting started](https://geiserx.github.io/telegram-slskd-local-bot/getting-started/) has the other install paths.
+The container is `slskd_importer`, and the log line `Music Downloader v0.17.0 starting` means it is up. A message to your bot (for example `Nancy Sinatra Bang Bang`) is answered with the Spotify matches to pick from, or with the ranked copies when there is only one match; an empty `TELEGRAM_ALLOWED_USERS` answers nobody, and the denial reply shows your id. [Getting started](https://geiserx.github.io/telegram-slskd-local-bot/getting-started/) has the other install paths.
 
 ## Documentation
 
