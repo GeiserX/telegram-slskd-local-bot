@@ -362,6 +362,34 @@ class SlskdClient:
             logger.exception(f"Failed to enqueue download: {result.basename}")
             return False
 
+    def enqueue_files(self, username: str, files: list[tuple[str, int]]) -> bool:
+        """Enqueue several files of one peer in a single request: *files* is (remote path, size) pairs.
+
+        True when slskd accepted the list; False (logged) when it refused or failed.
+        """
+        try:
+            ok = self.client.transfers.enqueue(
+                username=username, files=[{"filename": name, "size": size} for name, size in files]
+            )
+        except Exception:
+            logger.warning("Failed to enqueue %d files from %s in one request", len(files), username, exc_info=True)
+            return False
+        if ok is False:
+            logger.warning("slskd refused to enqueue %d files from %s", len(files), username)
+            return False
+        logger.info("Enqueued %d files from %s", len(files), username)
+        return True
+
+    def browse_directory(self, username: str, directory: str) -> list[dict]:
+        """The peer's listing of one remote *directory* (slskd's users/directory), as a list of directories.
+
+        Raises when slskd or the peer fails (offline, refused, timed out): the caller words the reason.
+        """
+        raw = self.client.users.directory(username=username, directory=directory)
+        if isinstance(raw, dict):
+            return [raw]
+        return list(raw or [])
+
     def get_download_status(self, username: str, filename: str) -> DownloadStatus | None:
         """
         Get the download status for a specific file.

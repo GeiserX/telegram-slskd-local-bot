@@ -22,6 +22,8 @@ class TrackInfo:
     duration_ms: int
     spotify_url: str
     year: str
+    # Position on the release; set for album files (pipeline.album.track_info_for), None from Spotify.
+    track_number: int | None = None
 
     @property
     def duration_secs(self) -> int:

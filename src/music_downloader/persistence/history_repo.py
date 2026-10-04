@@ -18,6 +18,8 @@ class HistoryRecord:
     duration_secs: int
     file_size: int
     created_at: str
+    # What kind of download this was beyond the status ("album" for a file of an album fetch).
+    note: str = ""
 
 
 class HistoryRepository:
@@ -35,11 +37,12 @@ class HistoryRepository:
         remote_path: str = "",
         duration_secs: int = 0,
         file_size: int = 0,
+        note: str = "",
     ) -> int:
         cursor = self._conn.execute(
-            """INSERT INTO download_history (artist, title, album, filename, source_user, remote_path, status, duration_secs, file_size)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (artist, title, album, filename, source_user, remote_path, status, duration_secs, file_size),
+            """INSERT INTO download_history (artist, title, album, filename, source_user, remote_path, status, duration_secs, file_size, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (artist, title, album, filename, source_user, remote_path, status, duration_secs, file_size, note),
         )
         self._conn.commit()
         return cursor.lastrowid  # type: ignore[return-value]

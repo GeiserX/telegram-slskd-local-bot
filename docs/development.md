@@ -31,6 +31,7 @@ and "we have a file ready to hand over". Its methods take and return plain datac
 | `pipeline/resolve.py` | Free text to Spotify candidates (`lookup`), "Artist - Title" parsing, the synthetic track a direct search uses |
 | `pipeline/search.py` | The search query helpers (version-noise stripping, keyword-reduction fallbacks), the title guard, and `rank`, which turns slskd responses into a `RankedResults` list for the `library` or `chat` profile |
 | `pipeline/fetch.py` | `fetch`: enqueue, wait, find the file on disk, run the lossless check, all returned as a `FetchOutcome`. Also the Opus conversion and the bitrate ladder that fits the upload cap, and the `/format` send formats (`transcode` to MP3 320 or Opus 192) |
+| `pipeline/album.py` | Album delivery: `browse_folder` (the audio files of the peer folder a copy came from, through slskd's user directory endpoint; an empty listing with a reason when the peer is offline or silent), `fetch_folder` (one enqueue for the folder, falling back to one by one; each file waited on in turn under `DOWNLOAD_TIMEOUT_SECS` and the album under `ALBUM_TIMEOUT_SECS`; one outcome per file, never raising), `track_info_for` (tags, then "NN - Title" style file names, then the chosen track's artist and album), `AlbumArt` (the album's Spotify cover, looked up once). `Pipeline.album` composes them and saves each file as it lands; `Pipeline.album_recover` handles a restart |
 | `pipeline/library.py` | Cover art, the download-history row, deleting sources, the hourly orphan sweep |
 | `pipeline/wishlist.py` | The wishlist checker: which wishes are due, which copies satisfy one (`search/scorer.py` `quality_tier`), the sequential search pass that hands hits to the front end's delivery callback |
 
@@ -59,13 +60,14 @@ with `CREATE TABLE IF NOT EXISTS`):
 
 | Table | Holds | Written by |
 |-------|-------|------------|
-| `download_history` | One row per finished, failed, delivered or rejected download (`/history`) | `history_repo.py` |
+| `download_history` | One row per finished, failed, delivered or rejected download (`/history`); `note` is `album` for a file of an album download | `history_repo.py` |
 | `import_jobs`, `import_tracks` | `/import` jobs and the state of each track | `import_repo.py` |
 | `chat_settings` | Per-chat `/auto` and `/deliver` choices | `settings_repo.py` |
 | `pending_searches` | One row per chat with a live result list: the query, the track, the ranked results (JSON), the page, the profile and how many copies the title guard hid | `pending_repo.py` |
 | `pending_downloads` | One row per download waiting on Save, Reject, Retry or Try next: track and result (JSON), the file path, the slskd transfer id, the import job if any | `pending_repo.py` |
 | `wish_searches` | One row per list the wishlist checker sent, keyed by chat and search id: the same fields as `pending_searches` plus the wish it belongs to (NULL once the wish is gone). Kept apart so a chat's own search and a wish's list never replace each other | `pending_repo.py` |
 | `wishlist` | One row per wished track: chat, track (JSON), profile, `any` or `better` than a baseline quality tier, last check, number of checks, last notification | `wishlist_repo.py` |
+| `album_jobs` | One row per album download: the peer, the remote folder, `library` or `path`, the chosen track (JSON), the folder's audio files (JSON) and one outcome per file (JSON, null while unfinished), and `running`, `done` or `interrupted`. At startup `Pipeline.album_recover` marks the jobs left running as interrupted and saves the files of theirs that are already in `DOWNLOAD_DIR`; transfers are not re-enqueued, slskd keeps them | `album_repo.py` |
 | `library_index` | One row per audio file under `OUTPUT_DIR`, subfolders included: relative path, stem, accent-free lowercase stem, extension, mtime | `library_index.py` |
 
 The bot keeps the pending rows in three dicts (`WriteThroughDict`): every set and delete is written through, so

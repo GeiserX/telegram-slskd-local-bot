@@ -27,7 +27,7 @@ class FileProcessor:
         os.makedirs(self.output_dir, exist_ok=True)
         logger.info(f"File processor initialized: downloads={download_dir}, output={output_dir}")
 
-    def build_filename(self, artist: str, title: str, extension: str = "flac") -> str:
+    def build_filename(self, artist: str, title: str, extension: str = "flac", track: int | None = None) -> str:
         """
         Build the target filename from artist and title.
 
@@ -35,11 +35,17 @@ class FileProcessor:
             artist: Artist/group name.
             title: Song title.
             extension: File extension (default: flac).
+            track: Track number, used only when the template has {track}
+                (two digits, "03"). Without a number the placeholder is
+                dropped together with the separator next to it.
 
         Returns:
             Sanitized filename like 'Artist - Title.flac'.
         """
-        name = self.filename_template.format(artist=artist, title=title)
+        name = self.filename_template.format(artist=artist, title=title, track=f"{track:02d}" if track else "")
+        if not track and "{track" in self.filename_template:
+            name = re.sub(r"(\s*-\s*){2,}", " - ", name)
+            name = re.sub(r"^[\s\-_.]+|[\s\-_]+$", "", name)
         name = self._sanitize_filename(name)
         return f"{name}.{extension}"
 
@@ -85,7 +91,7 @@ class FileProcessor:
         logger.warning(f"Downloaded file not found: {basename} (user={username})")
         return None
 
-    def process_file(self, source_path: str, artist: str, title: str) -> str | None:
+    def process_file(self, source_path: str, artist: str, title: str, track: int | None = None) -> str | None:
         """
         Rename and move a downloaded file to the output directory.
 
@@ -93,6 +99,7 @@ class FileProcessor:
             source_path: Path to the downloaded file.
             artist: Artist name for the filename.
             title: Song title for the filename.
+            track: Track number, in the name only when FILENAME_TEMPLATE has {track}.
 
         Returns:
             Path to the final file in the output directory, or None on failure.
@@ -107,7 +114,7 @@ class FileProcessor:
             extension = ext.lstrip(".").lower() or "flac"
 
             # Build target filename
-            target_name = self.build_filename(artist, title, extension)
+            target_name = self.build_filename(artist, title, extension, track)
             target_path = os.path.join(self.output_dir, target_name)
 
             # Avoid overwriting existing files
