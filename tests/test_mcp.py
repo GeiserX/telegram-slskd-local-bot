@@ -10,12 +10,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from music_downloader.metadata.spotify import TrackInfo
+from music_downloader.persistence.album_repo import AlbumJob, FileOutcome, FolderFile
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.history_repo import HistoryRepository
 from music_downloader.persistence.pending_repo import PendingRepository
 from music_downloader.persistence.wishlist_repo import WishlistRepository
 from music_downloader.pipeline import Pipeline
 from music_downloader.pipeline import library as _library
+from music_downloader.pipeline.album import REASON_UNREACHABLE, FolderListing
 from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, FetchOutcome
 from music_downloader.pipeline.search import RankedResults
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
@@ -67,6 +69,23 @@ class FakePipeline:
         self.slskd.is_up.return_value = True
         self.verdict = LosslessVerdict("AUTHENTIC", 21.5, 22.05, 44100, 16)
         self.fetch_outcome = None
+        self.listing = FolderListing(
+            "peer0",
+            "\\Music\\Nancy Sinatra\\Boots",
+            [
+                FolderFile(
+                    "\\Music\\Nancy Sinatra\\Boots\\01 - Boots.flac",
+                    25_000_000,
+                    "flac",
+                    bit_depth=16,
+                    sample_rate=44100,
+                    length=170,
+                ),
+                FolderFile("\\Music\\Nancy Sinatra\\Boots\\02 - Bang Bang.mp3", 6_000_000, "mp3", bit_rate=320),
+            ],
+        )
+        self.album_calls = []
+        self.album_failures = set()
 
     def resolve(self, query):
         return [TRACK] if query else []
@@ -89,6 +108,28 @@ class FakePipeline:
         self.saved.append((source_path, transfer_id))
         await self.record_history(track, result, "success")
         return str(self.output_dir / f"{track.artist} - {track.title}.{result.extension}")
+
+    async def album_listing(self, result):
+        self.listed = result
+        return self.listing
+
+    async def album(self, result, track, deliver="library", progress_cb=None, listing=None, chat_id=None):
+        self.album_calls.append((result, track, deliver))
+        files = self.listing.files
+        job = AlbumJob(self.listing.username, self.listing.remote_dir, list(files), track, deliver=deliver)
+        if not files:
+            return job, self.listing
+        job.id = 7
+        for i, f in enumerate(files):
+            await progress_cb(i, len(files), "InProgress", 50.0)
+            failed = f.basename in self.album_failures
+            job.outcomes[i] = FileOutcome(
+                f.filename,
+                path=None if failed else f"/music/{f.basename}",
+                error="failed" if failed else None,
+                state="Completed, Errored" if failed else "",
+            )
+        return job, self.listing
 
     async def find_similar(self, query):
         return ["Nancy Sinatra - Bang Bang.flac"] if "bang bang" in query.lower() else []
@@ -334,6 +375,8 @@ class TestProtocol:
                 "wishlist_list",
                 "wishlist_remove",
                 "status",
+                "album_listing",
+                "album_download",
             }
             resolved = await client.call_tool("resolve_track", {"query": "bang bang"})
             track_id = resolved.structured_content["candidates"][0]["id"]
@@ -343,9 +386,74 @@ class TestProtocol:
             assert done.structured_content["ok"] is True
             expired = await client.call_tool("download", {"copy_id": "cdeadbe"})
             assert expired.is_error
+            listing = await client.call_tool("album_listing", {"copy_id": copy_id})
+            assert listing.structured_content["count"] == 2
+            album = await client.call_tool(
+                "album_download", {"copy_id": copy_id, "deliver": "path"}, progress_callback=on_progress
+            )
+            assert album.structured_content["landed"] == 2
 
-        assert [p[0] for p in progress] == [50.0, 100.0]
+        assert [p[0] for p in progress] == [50.0, 100.0, 0.5, 1.5]
         assert progress[0][1] == 100.0 and "InProgress" in progress[0][2]
+
+
+class TestAlbumTools:
+    async def _copy_id(self, tools):
+        track_id = (await tools.resolve_track("bang bang"))["candidates"][0]["id"]
+        return (await tools.search_copies(track_id))["copies"][0]["id"]
+
+    @pytest.mark.asyncio
+    async def test_album_listing_describes_the_folder(self, tmp_path):
+        tools, pipeline, _ = _tools(tmp_path)
+        copy_id = await self._copy_id(tools)
+        listing = await tools.album_listing(copy_id)
+        assert pipeline.listed.username == "peer0"
+        assert listing["answered"] is True and listing["reason"] is None
+        assert listing["count"] == 2 and listing["formats"] == ["flac", "mp3"]
+        assert listing["total_size_bytes"] == 31_000_000 and listing["total_size_mb"] == 31.0
+        assert [f["filename"] for f in listing["files"]] == ["01 - Boots.flac", "02 - Bang Bang.mp3"]
+        assert listing["files"][0]["quality"] == "16bit/44.1kHz" and listing["files"][1]["quality"] == "320kbps"
+
+    @pytest.mark.asyncio
+    async def test_album_download_returns_one_outcome_per_file(self, tmp_path):
+        tools, pipeline, _ = _tools(tmp_path)
+        pipeline.album_failures = {"02 - Bang Bang.mp3"}
+        copy_id = await self._copy_id(tools)
+        progress = []
+        done = await tools.album_download(copy_id, "path", progress=lambda *a: _record(progress, a))
+        assert pipeline.album_calls[0][0].username == "peer0" and pipeline.album_calls[0][2] == "path"
+        assert done["ok"] is False and done["job_id"] == 7 and done["deliver"] == "path"
+        assert (done["total"], done["landed"], done["failed"]) == (2, 1, 1)
+        assert done["files"] == [
+            {"filename": "01 - Boots.flac", "ok": True, "path": "/music/01 - Boots.flac", "error": None, "state": None},
+            {
+                "filename": "02 - Bang Bang.mp3",
+                "ok": False,
+                "path": None,
+                "error": "failed",
+                "state": "Completed, Errored",
+            },
+        ]
+        assert progress == [(0.5, 2.0, "1/2 InProgress 50%"), (1.5, 2.0, "2/2 InProgress 50%")]
+        assert tools.downloads_in_progress == 0
+
+        pipeline.album_failures = set()
+        assert (await tools.album_download(copy_id))["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_unreachable_peer_and_bad_arguments(self, tmp_path):
+        tools, pipeline, _ = _tools(tmp_path)
+        pipeline.listing = FolderListing(
+            "peer0", "\\Music", answered=False, reason=REASON_UNREACHABLE, detail="offline"
+        )
+        copy_id = await self._copy_id(tools)
+        done = await tools.album_download(copy_id)
+        assert done["ok"] is False and done["error"] == REASON_UNREACHABLE and done["detail"] == "offline"
+        assert done["answered"] is False and done["files"] == []
+        with pytest.raises(ToolError, match="deliver"):
+            await tools.album_download(copy_id, "chat")
+        with pytest.raises(ToolError, match="expired"):
+            await tools.album_listing("cdeadbe")
 
 
 class TestHttpToken:
