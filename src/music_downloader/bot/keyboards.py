@@ -257,3 +257,34 @@ def build_retry_next_keyboard(dl_id: str) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def build_album_offer_keyboard(dl_id: str) -> InlineKeyboardMarkup:
+    """Shown once a track is saved or sent: take the whole folder it came from (alb:<dl_id>)."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\U0001f4bf Whole album from this source", callback_data=f"alb:{dl_id}")]]
+    )
+
+
+def build_album_confirm_keyboard(dl_id: str, count: int) -> InlineKeyboardMarkup:
+    """Under the folder listing: fetch every file (albgo) or drop the offer (albno)."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(f"⬇️ Get all {count}", callback_data=f"albgo:{dl_id}"),
+                InlineKeyboardButton("Cancel", callback_data=f"albno:{dl_id}"),
+            ]
+        ]
+    )
+
+
+def build_album_retry_keyboard(dl_id: str) -> InlineKeyboardMarkup:
+    """The peer did not answer the listing: ask again (alb) or drop the offer (albno)."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("\U0001f504 Retry", callback_data=f"alb:{dl_id}"),
+                InlineKeyboardButton("Cancel", callback_data=f"albno:{dl_id}"),
+            ]
+        ]
+    )

@@ -61,6 +61,7 @@ You text the bot a song name. When Spotify returns more than one distinct track 
 - `/import` a Spotify playlist or album and review each track or auto-save them all; `/auto` per chat saves the best match without a tap; a failed transfer gets Retry and Try next result.
 - Chat delivery (`/deliver`, or `TELEGRAM_CHAT_DELIVERY_USERS`) sends the track into the chat under 50 MB and saves nothing anywhere, and ranks copies by quality for their size.
 - `/format` per chat sends tracks as the original, MP3 320 kbps or Opus 192 kbps.
+- **Whole album from this source** under a saved or sent track fetches the folder it came from on that peer: every file saved to the library with the album cover, skipping files you already have, or sent into the chat (see [Album delivery](usage.md#album-delivery)).
 - Sends originals up to 2000 MB instead of 50 MB through a [local Bot API server](getting-started.md#send-files-over-50-mb-a-local-bot-api-server), started with the compose profile `bigfiles`.
 - A wishlist: when nothing is found, or nothing good enough, the bot searches again every `WISHLIST_CHECK_HOURS` and tells you, or fetches the copy with `/auto` on, when one turns up (`/wishlist`).
 - An [MCP server](mcp.md) over the same pipeline, so an agent like Claude Code can resolve, search, download and wishlist tracks, over stdio or over HTTP from the bot process with a bearer token.

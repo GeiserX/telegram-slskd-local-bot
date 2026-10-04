@@ -168,7 +168,8 @@ class TestAutoDownloadFlow:
         with patch.object(bot.pipeline, "embed_artwork", new_callable=AsyncMock):
             await bot._auto_save(67890, "abc", pending, status_msg, "quality", "#1")
 
-        assert "abc" not in bot.downloads
+        # Saved: the row only backs the album button now (no file, no transfer).
+        assert bot.downloads["abc"].delivered and bot.downloads["abc"].source_path is None
         bot.processor.process_file.assert_called_once()
         records = bot.history_repo.get_recent(5)
         assert records and records[0].status == "success"

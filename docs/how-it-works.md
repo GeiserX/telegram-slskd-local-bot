@@ -15,6 +15,12 @@ The steps below are the Telegram side; the MCP tools run the same steps without 
 
 In a chat-delivery chat (`/deliver`) the copies are ranked by quality for their size instead, with no lossless-first split, and the track itself is sent, converted to Opus when over the cap or to MP3 or Opus when `/format` asks for it, and nothing is written to `OUTPUT_DIR`; the download is deleted once it is sent.
 
+**Take the whole album.** A track that was saved or sent offers the folder it came from on the same peer. The
+bot lists that folder through slskd, asks before it fetches, then queues every audio file in one request and
+waits for them one after another, each delivered as it lands: saved to the library with names from its tags
+and the album's cover (files the library already has are skipped), or sent into the chat in the `/format`
+format. The job is kept in SQLite file by file, so `/cancel` and a restart both know what arrived.
+
 **Wait for a copy.** A track with no copy, or with no good one, can go on the wishlist. A checker in the bot
 process wakes every hour, takes each wish whose `WISHLIST_CHECK_HOURS` have passed and runs one search for it,
 with `WISHLIST_PAUSE_SECS` between two searches, skipping a chat whose own search or download is running. A copy

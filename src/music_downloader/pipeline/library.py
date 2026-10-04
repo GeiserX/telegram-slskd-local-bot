@@ -30,6 +30,17 @@ async def embed_artwork(sp, filepath: str, track: TrackInfo) -> None:
         logger.debug("Artwork embedding failed for %s", filepath, exc_info=True)
 
 
+async def embed_artwork_bytes(filepath: str, art: bytes | None) -> None:
+    """Embed cover *art* already fetched (an album's, shared by its files); nothing when there is none."""
+    if not art:
+        return
+    try:
+        if await asyncio.to_thread(embed_artwork_into_file, filepath, art):
+            logger.info("Embedded album artwork into %s (%d KB)", filepath, len(art) // 1024)
+    except Exception:
+        logger.debug("Artwork embedding failed for %s", filepath, exc_info=True)
+
+
 def remove_file(path: str | None) -> None:
     """Delete a file from the downloads dir, never letting failure break the flow.
 
@@ -52,8 +63,9 @@ async def record_history(
     result: SearchResult,
     status: str,
     filename: str | None = None,
+    note: str = "",
 ) -> None:
-    """Add an entry to download history (persisted in SQLite)."""
+    """Add an entry to download history (persisted in SQLite); *note* is "album" for an album file."""
     await asyncio.to_thread(
         history_repo.add,
         artist=track.artist,
@@ -65,6 +77,7 @@ async def record_history(
         status=status,
         duration_secs=track.duration_secs,
         file_size=result.size,
+        note=note,
     )
 
 

@@ -19,6 +19,7 @@ from music_downloader import __version__
 from music_downloader.config import BYTES_PER_MB
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.wishlist_repo import WANTED_ANY, WANTED_BETTER, Wish
+from music_downloader.pipeline.album import FolderListing
 from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, FILE_NOT_FOUND
 from music_downloader.pipeline.search import RankedResults, clean_search_title
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
@@ -95,6 +96,30 @@ def _track_dict(track: TrackInfo) -> dict:
 
 def _verdict_dict(verdict: LosslessVerdict | None) -> dict | None:
     return None if verdict is None else dataclasses.asdict(verdict)
+
+
+def _listing_dict(listing: FolderListing) -> dict:
+    return {
+        "answered": listing.answered,
+        "reason": listing.reason or None,
+        "source": listing.username,
+        "folder": listing.remote_dir,
+        "count": len(listing.files),
+        "total_size_bytes": listing.total_size,
+        "total_size_mb": round(listing.total_size / BYTES_PER_MB, 1),
+        "formats": listing.formats,
+        "files": [
+            {
+                "filename": f.basename,
+                "format": f.extension,
+                "size_bytes": f.size,
+                "size_mb": round(f.size / BYTES_PER_MB, 1),
+                "quality": f.as_result(listing.username).quality_display,
+                "duration_secs": f.length,
+            }
+            for f in listing.files
+        ],
+    }
 
 
 def _wish_dict(wish: Wish) -> dict:
@@ -211,6 +236,65 @@ class McpTools:
             return {"ok": False, "error": "process_failed", "path": outcome.path, "lossless_check": verdict}
         return {"ok": True, "deliver": DELIVER_LIBRARY, "path": target, "lossless_check": verdict}
 
+    def _copy(self, copy_id: str) -> _CopyEntry:
+        entry = self.copies.get(copy_id)
+        if entry is None:
+            raise ToolError(f"Unknown or expired copy id {copy_id!r}: run search_copies again.")
+        return entry
+
+    async def album_listing(self, copy_id: str) -> dict:
+        """The audio files of the peer folder a copy came from: names, formats, sizes, total."""
+        entry = self._copy(copy_id)
+        listing = await self.pipeline.album_listing(entry.result)
+        return _listing_dict(listing)
+
+    async def album_download(
+        self, copy_id: str, deliver: str = DELIVER_LIBRARY, progress: Progress | None = None
+    ) -> dict:
+        """Fetch every audio file of the folder a copy came from; one outcome per file.
+
+        deliver="library" saves each file into the library as it lands (a file
+        the library already has is skipped: skipped true, path the library's
+        file); "path" leaves them in DOWNLOAD_DIR. A failed file never stops the others.
+        """
+        if deliver not in (DELIVER_LIBRARY, DELIVER_PATH):
+            raise ToolError(f"deliver must be {DELIVER_LIBRARY!r} or {DELIVER_PATH!r}, not {deliver!r}.")
+        entry = self._copy(copy_id)
+
+        async def on_progress(index: int, total: int, state: str, percent: float) -> None:
+            if progress is not None:
+                await progress(index + percent / 100.0, float(total), f"{index + 1}/{total} {state} {percent:.0f}%")
+
+        self.downloads_in_progress += 1
+        try:
+            job, listing = await self.pipeline.album(entry.result, entry.track, deliver, on_progress)
+        finally:
+            self.downloads_in_progress -= 1
+        if not listing.files:
+            return {"ok": False, "error": listing.reason, "detail": listing.detail or None, **_listing_dict(listing)}
+        outcomes = [o for o in job.outcomes if o is not None]
+        return {
+            "ok": bool(outcomes) and all(o.ok for o in outcomes) and len(outcomes) == len(job.files),
+            "job_id": job.id,
+            "deliver": deliver,
+            "source": job.username,
+            "folder": job.remote_dir,
+            "total": len(job.files),
+            "landed": len(job.landed),
+            "failed": len(job.failed),
+            "files": [
+                {
+                    "filename": f.basename,
+                    "ok": o is not None and o.ok,
+                    "path": o.path if o is not None else None,
+                    "skipped": o is not None and o.skipped,
+                    "error": (o.error if o is not None else "unfinished"),
+                    "state": (o.state or None) if o is not None else None,
+                }
+                for f, o in zip(job.files, job.outcomes, strict=True)
+            ],
+        }
+
     async def history(self, limit: int = 20) -> dict:
         records = await asyncio.to_thread(self.pipeline.history_repo.get_recent, min(max(1, limit), 200))
         return {"downloads": [dataclasses.asdict(r) for r in records]}
@@ -261,7 +345,8 @@ class McpTools:
         return {
             "version": __version__,
             "slskd_reachable": bool(slskd_up),
-            "pending_downloads": len(pending),
+            # A delivered row only backs an album button: nothing waits on it.
+            "pending_downloads": sum(1 for dl in pending.values() if not dl.delivered),
             "mcp_downloads_in_progress": self.downloads_in_progress,
             "wishes": len(self.pipeline.wishlist_repo.list_all()),
             "upload_cap_mb": self.pipeline.upload_limit_bytes // BYTES_PER_MB,

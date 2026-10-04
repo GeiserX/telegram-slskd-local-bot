@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-10-04
+
+### Added
+
+- **Whole album from this source.** Once a track is saved to the library or
+  sent into the chat, its message offers the folder it came from on the same
+  peer, which is usually the complete release in the same quality. The tap
+  lists the folder (file count, size, formats, the first six names) and asks;
+  a peer that does not answer gets Retry. Get all queues every audio file in
+  one slskd request and follows them in one status message. Library delivery
+  saves each file as it lands, named from its tags through
+  `FILENAME_TEMPLATE` (`{track}` adds the track number) with the album's
+  Spotify cover, and skips files the library already has. Chat delivery sends
+  each file in the `/format` format under the upload cap, captioned
+  "03/09 Artist - Title". A failed file is listed with its reason and the
+  rest go on; the summary says how many arrived, were skipped or failed
+- `ALBUM_TIMEOUT_SECS` (default 7200): the most a whole album may take. An
+  album file gives up only when its transfer moves no byte for
+  `DOWNLOAD_TIMEOUT_SECS`, so a slow peer is waited on
+- `/cancel` stops a running album: what arrived stays and slskd keeps the
+  transfers still queued. A new search does not stop it
+- After a restart the bot tells the chat how far an interrupted album got,
+  and saves the files that landed while it was down (library delivery; a
+  chat-delivery album leaves them for the hourly sweep). Albums a stdio MCP
+  server runs are its own: the bot's restart leaves them alone
+- MCP: `album_listing` and `album_download` take the folder of a copy id;
+  `album_download` reports a skipped file with `skipped` true
+
+### Changed
+
+- A saved or sent track keeps its pending row (no file, no transfer) for the
+  album button until `DOWNLOAD_CLEANUP_HOURS`; `/status` and the MCP
+  `status` do not count it as a pending download
+
+### Fixed
+
+- When slskd lists a file twice (an earlier attempt's finished or failed
+  transfer next to a new one), the download wait follows the running one
+  instead of the old record, which failed a retry within seconds
+
 ## [0.16.2] - 2026-10-04
 
 ### Fixed

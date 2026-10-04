@@ -24,7 +24,7 @@ lossless", with the frequency where it stops. Then you tap Save to library or Re
 |---------|-------------|
 | *(any text)* | Search for a song and show download options |
 | `/import <spotify url>` | Import a Spotify playlist or album — review each track or auto-save all |
-| `/cancel` | Cancel the active import or search |
+| `/cancel` | Cancel the active import, album download or search |
 | `/auto` | Toggle auto-download per chat: best match is downloaded and saved without picking or approval (persists across restarts) |
 | `/deliver` | Switch this chat between library delivery (save after you approve) and chat delivery (the track is sent here, nothing is saved). Persists across restarts |
 | `/format` | Pick the format of tracks sent into this chat: Original (default), MP3 320 kbps or Opus 192 kbps. Chat delivery only; persists across restarts |
@@ -79,6 +79,45 @@ Turn it on per chat with `/deliver`, or fix it for some accounts with `TELEGRAM_
 accounts always get chat delivery and `/deliver` cannot move them to the library, which keeps the library yours.
 In a group chat without a `/deliver` setting, the user who started the search or import decides where that track goes.
 One bot token can only run one bot process, so both modes live in the same instance.
+
+## Album delivery
+
+The best copy of a song usually sits inside the whole release on the same peer. Once a track is saved to the
+library or sent into the chat, its message gets a **💿 Whole album from this source** button. It is the only way
+in: the result list keeps its usual buttons.
+
+1. Tap it. The bot lists the folder the track came from on that peer and edits the message to show it, for
+   example "1971 - Meddle on vinylhoarder: 6 audio files, 268 MB, FLAC", with the first six file names. Only
+   audio files count; covers, cue sheets and logs are left out. When the peer does not answer within 30 seconds,
+   or is offline, the message says so and offers **Retry**.
+2. Tap **Get all N**, or **Cancel** to go back to the album button. One status message follows the download
+   file by file, with the file being fetched, its progress, and how many arrived, were skipped or failed so far.
+3. The bot delivers each file as it lands, the way this chat delivers when you tap **Get all**:
+    - **Library delivery**: saved into `OUTPUT_DIR` with no preview, named from its tags (or its file name when
+      the tags are missing) through `FILENAME_TEMPLATE`, where `{track}` puts the track number in. Every file gets
+      the album's Spotify cover. A file the library already has under the same name, accents and case aside, is
+      skipped and its download deleted; the chosen track itself is usually one of them. The check goes by name
+      only: a different track saved earlier under that exact name (an "Intro" from another album) counts too.
+      Two files of this album with the same title are both kept, the second as "Artist - Title (1)".
+    - **Chat delivery**: sent into the chat under the upload cap and in the `/format` format, converted when
+      needed exactly like a single track, with the caption "03/09 Artist - Title".
+4. A file that fails (the peer refused it, the transfer timed out, it was too big to send) is listed and skipped;
+   the others go on. The status message ends with the summary: saved or sent N of M, how many were already in
+   the library, and each failed file with the reason.
+
+As with one track, the bot deletes each download once it is saved or sent and removes its finished transfer
+from slskd. A file that could not be sent stays in `DOWNLOAD_DIR` for the hourly sweep. A file gives up when its
+transfer moves no byte for `DOWNLOAD_TIMEOUT_SECS`; one still queued at the peer keeps waiting. The whole album
+waits at most `ALBUM_TIMEOUT_SECS`, two hours by default (see [Configuration](configuration.md)). Files still
+waiting when that runs out fail as timed out, and the summary says so: slskd keeps their transfers, but a file
+that lands later is not saved, and the hourly sweep removes it.
+
+One album runs per chat at a time, and a new search does not stop it. `/cancel` does: the bot stops waiting,
+keeps every file that already arrived, and leaves the transfers still queued in slskd (remove them there if you
+do not want them). After a restart the bot tells the chat how far an interrupted album got; files that landed
+while it was down are saved to the library (library delivery) or left for the hourly sweep (chat delivery), and
+slskd keeps the rest. The album button expires with its track
+after `DOWNLOAD_CLEANUP_HOURS`. `/import` tracks do not get one.
 
 ## Scoring Algorithm
 

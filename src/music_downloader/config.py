@@ -119,6 +119,10 @@ class Config:
         # How long to wait for a download to complete (seconds)
         self.download_timeout_secs = int(os.getenv("DOWNLOAD_TIMEOUT_SECS", "600"))
 
+        # The most an album fetch may take in total (each file still gets at
+        # most DOWNLOAD_TIMEOUT_SECS); files left when it runs out fail.
+        self.album_timeout_secs = max(1, int(os.getenv("ALBUM_TIMEOUT_SECS") or "7200"))
+
         # Hours before an abandoned file in DOWNLOAD_DIR is swept away (0 disables).
         # Abandoned = superseded search, restart, timeout — anything never
         # approved or rejected. Active transfers are safe (fresh mtime).
@@ -136,7 +140,8 @@ class Config:
         )
         self.exclude_keywords = [kw.strip().lower() for kw in exclude_kw.split(",") if kw.strip()]
 
-        # File naming template: {artist} - {title}
+        # File naming template: {artist}, {title}, and {track} (two-digit track
+        # number of an album file; dropped with its separator when unknown)
         self.filename_template = os.getenv("FILENAME_TEMPLATE", "{artist} - {title}")
 
         # =====================================================================

@@ -192,8 +192,8 @@ class TestRestart:
 
         bot2.pipeline.save.assert_awaited_once_with(source, _track(), _result(), "t1")
         assert "Saved" in _edited_text(update.callback_query)
-        assert "d1" not in bot2.downloads
-        assert "d1" not in _make_bot(config).downloads, "the row must be gone from the database too"
+        assert bot2.downloads["d1"].delivered and bot2.downloads["d1"].source_path is None
+        assert _make_bot(config).downloads["d1"].delivered, "the database row keeps only the album button"
 
     async def test_pick_button_works_on_a_second_bot(self):
         config = _make_config()
@@ -368,13 +368,13 @@ class TestSaveOrder:
         bot, _, seen = self._bot_with_entry()
         await bot._auto_save(CHAT, "d1", bot.downloads["d1"], AsyncMock(), "q", "#1")
         assert seen == [(True, True)]
-        assert "d1" not in bot.downloads
+        assert bot.downloads["d1"].delivered and bot.downloads["d1"].source_path is None
 
     async def test_approve(self):
         bot, _, seen = self._bot_with_entry()
         await bot.handle_callback(_tap("approve:d1"), _context())
         assert seen == [(True, True)]
-        assert "d1" not in bot.downloads
+        assert bot.downloads["d1"].delivered and bot.downloads["d1"].source_path is None
 
     async def test_import_approve(self):
         bot, _, seen = self._bot_with_entry(job_id=1, track_id=2)

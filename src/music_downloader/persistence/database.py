@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS download_history (
     status TEXT NOT NULL,
     duration_secs INTEGER DEFAULT 0,
     file_size INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    note TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS import_jobs (
@@ -68,7 +69,9 @@ CREATE TABLE IF NOT EXISTS chat_settings (
 );
 
 -- Buttons that must keep working across a restart: one row per download
--- waiting on a Save/Reject/Retry tap, one row per chat with a result list.
+-- waiting on a Save/Reject/Retry tap (delivered = 1: the track was saved or
+-- sent and the row only backs its album button), one row per chat with a
+-- result list.
 -- track/result are JSON; created_at is a Unix timestamp (pruned by age).
 CREATE TABLE IF NOT EXISTS pending_downloads (
     dl_id TEXT PRIMARY KEY,
@@ -84,7 +87,8 @@ CREATE TABLE IF NOT EXISTS pending_downloads (
     transfer_id TEXT NOT NULL DEFAULT '',
     job_id INTEGER,
     track_id INTEGER,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    delivered INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS pending_searches (
@@ -120,7 +124,8 @@ CREATE TABLE IF NOT EXISTS wish_searches (
 -- check. Rebuilt by walking the folder at startup and hourly, and updated by
 -- every save. rel_path is relative to OUTPUT_DIR; stem is the file name
 -- without extension; norm_stem is the stem casefolded with accents removed
--- (the LIKE prefilter); mtime is a Unix timestamp.
+-- (the LIKE prefilter, and the exact match an album file's duplicate check
+-- makes); mtime is a Unix timestamp.
 CREATE TABLE IF NOT EXISTS library_index (
     rel_path TEXT PRIMARY KEY,
     stem TEXT NOT NULL,
@@ -147,6 +152,30 @@ CREATE TABLE IF NOT EXISTS wishlist (
     notified_at REAL
 );
 
+-- Album fetches (the whole folder a chosen copy came from). files is the
+-- JSON list of the folder's audio files; outcomes is a JSON list in the same
+-- order, null for a file that has not finished. status is running, done,
+-- cancelled (/cancel) or interrupted (the process stopped mid-album; see
+-- Pipeline.album_recover).
+-- track is the chosen track (JSON), the album's fallback artist and name.
+-- Times are Unix timestamps.
+CREATE TABLE IF NOT EXISTS album_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER,
+    username TEXT NOT NULL,
+    remote_dir TEXT NOT NULL,
+    deliver TEXT NOT NULL,
+    track TEXT NOT NULL,
+    files TEXT NOT NULL,
+    outcomes TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'bot',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_album_jobs_status ON album_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_library_index_norm_stem ON library_index(norm_stem);
 CREATE INDEX IF NOT EXISTS idx_wishlist_chat ON wishlist(chat_id);
 CREATE INDEX IF NOT EXISTS idx_import_tracks_job_status ON import_tracks(job_id, status);
 CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
@@ -166,6 +195,8 @@ _CORRUPTION_MARKERS: tuple[str, ...] = ("malformed", "not a database", "file is 
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("chat_settings", "delivery_mode", "TEXT"),
     ("chat_settings", "send_format", "TEXT"),
+    ("download_history", "note", "TEXT NOT NULL DEFAULT ''"),
+    ("pending_downloads", "delivered", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 

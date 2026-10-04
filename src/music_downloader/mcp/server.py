@@ -20,7 +20,8 @@ HTTP_PATH = "/mcp"
 INSTRUCTIONS = (
     "Find a song on Soulseek through slskd and save it. Chain the ids: resolve_track(query) gives track ids, "
     "search_copies(track_id) gives copy ids ranked best first, download(copy_id) fetches one and saves it to the "
-    "library (or leaves it in the downloads folder with deliver='path'). Ids expire after an hour."
+    "library (or leaves it in the downloads folder with deliver='path'). album_listing(copy_id) and "
+    "album_download(copy_id) do the same for the whole folder the copy came from. Ids expire after an hour."
 )
 
 
@@ -51,6 +52,24 @@ def build_server(tools: McpTools) -> MCPServer:
         in DOWNLOAD_DIR and returns its path. Both return the lossless check verdict for lossless formats.
         """
         return await tools.download(copy_id, deliver, progress=ctx.report_progress)
+
+    @server.tool()
+    async def album_listing(copy_id: str) -> dict[str, Any]:
+        """The audio files of the peer folder a copy came from (usually its whole release): names, formats,
+        sizes and the total. answered=false with a reason when the peer is offline or does not answer."""
+        return await tools.album_listing(copy_id)
+
+    @server.tool()
+    async def album_download(
+        copy_id: str, ctx: Context, deliver: Literal["library", "path"] = "library"
+    ) -> dict[str, Any]:
+        """Download every audio file of the folder a copy came from, reporting progress per file.
+
+        deliver="library" saves each file into the library as it lands (named from its tags, the album cover
+        embedded); "path" leaves them in DOWNLOAD_DIR. Returns one outcome per file; a failed file never
+        stops the others. Each file waits up to DOWNLOAD_TIMEOUT_SECS, the album up to ALBUM_TIMEOUT_SECS.
+        """
+        return await tools.album_download(copy_id, deliver, progress=ctx.report_progress)
 
     @server.tool()
     async def history(limit: int = 20) -> dict[str, Any]:
@@ -155,9 +174,12 @@ async def serve_http(pipeline, config: Config) -> None:
 
 def run_stdio(config: Config) -> None:
     """`python -m music_downloader mcp`: serve MCP over stdin/stdout with its own Pipeline."""
+    from music_downloader.persistence.album_repo import ALBUM_OWNER_STDIO
     from music_downloader.pipeline import Pipeline
 
     pipeline = Pipeline(config)
+    # Its albums are its own: the bot's startup recovery leaves them alone.
+    pipeline.album_owner = ALBUM_OWNER_STDIO
     server = build_server(McpTools(pipeline))
 
     async def main() -> None:
