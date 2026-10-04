@@ -14,6 +14,7 @@ import threading
 from collections.abc import Awaitable, Callable
 
 from music_downloader.config import Config
+from music_downloader.formats import is_lossless
 from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.persistence.album_repo import (
@@ -395,11 +396,29 @@ class Pipeline:
         return _album.AlbumArt(self.spotify.sp, track.artist, track.album, track.title)
 
     async def library_copy(self, path: str, track: TrackInfo) -> str | None:
-        """The library file that saving *path* as *track* would duplicate: same name (accents and case aside)."""
+        """The library file that saving *path* as *track* would duplicate: same name, accents and case aside.
+
+        A library copy in another format counts unless it is lossy and the new
+        file is lossless: a 320 kbps MP3 saved earlier must not make the bot
+        throw away the FLAC of the same track.
+        """
         extension = os.path.splitext(path)[1].lstrip(".").lower() or "flac"
         name = self.processor.build_filename(track.artist, track.title, extension, track.track_number)
-        rel_path = await asyncio.to_thread(self.library_index.find_stem, os.path.splitext(name)[0])
-        return os.path.join(self.config.output_dir, rel_path) if rel_path else None
+        copies = await asyncio.to_thread(self.library_index.find_stems, os.path.splitext(name)[0])
+        if not copies:
+            return None
+
+        def ext_of(rel: str) -> str:
+            return os.path.splitext(rel)[1].lstrip(".").lower()
+
+        # Same format first, then any lossless copy: either one makes the new file a duplicate.
+        same = [c for c in copies if ext_of(c) == extension]
+        lossless = [c for c in copies if is_lossless(ext_of(c))]
+        if same:
+            return os.path.join(self.config.output_dir, same[0])
+        if lossless or not is_lossless(extension):
+            return os.path.join(self.config.output_dir, (lossless or copies)[0])
+        return None  # only lossy copies in the library and the new file is lossless
 
     async def _album_file_landed(
         self,

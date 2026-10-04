@@ -42,10 +42,17 @@ class FileProcessor:
         Returns:
             Sanitized filename like 'Artist - Title.flac'.
         """
-        name = self.filename_template.format(artist=artist, title=title, track=f"{track:02d}" if track else "")
-        if not track and "{track" in self.filename_template:
-            name = re.sub(r"(\s*-\s*){2,}", " - ", name)
-            name = re.sub(r"^[\s\-_.]+|[\s\-_]+$", "", name)
+        template = self.filename_template
+        if not track and "{track" in template:
+            # Drop the placeholder from the TEMPLATE, never from the artist or title text:
+            # first a bracketed "({track})" with its spaces, then the token plus the
+            # separator after it, else the separator before it.
+            template = re.sub(r"\s*[(\[]\{track\}[)\]]\s*", " ", template)
+            if "{track}" in template:
+                stripped = re.sub(r"\{track\}[\s\-_.]+", "", template)
+                template = stripped if stripped != template else re.sub(r"[\s\-_.]*\{track\}", "", template)
+            template = re.sub(r"\s{2,}", " ", template).strip()
+        name = template.format(artist=artist, title=title, track=f"{track:02d}" if track else "")
         name = self._sanitize_filename(name)
         return f"{name}.{extension}"
 

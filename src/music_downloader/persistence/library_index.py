@@ -129,12 +129,27 @@ class LibraryIndex:
             )
         return True
 
-    def find_stem(self, stem: str) -> str | None:
-        """A library file (path relative to root) named *stem*, accents and case aside; None when there is none."""
+    def find_stems(self, stem: str) -> list[str]:
+        """Every library file (paths relative to root) named *stem*, accents and case aside, by path."""
         with self._lock:
-            row = self._conn.execute(
-                "SELECT rel_path FROM library_index WHERE norm_stem = ? ORDER BY rel_path LIMIT 1", (normalise(stem),)
-            ).fetchone()
+            rows = self._conn.execute(
+                "SELECT rel_path FROM library_index WHERE norm_stem = ? ORDER BY rel_path", (normalise(stem),)
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def find_stem(self, stem: str, extension: str | None = None) -> str | None:
+        """A library file (path relative to root) named *stem*, accents and case aside; None when there is none.
+
+        With *extension* only a file of that format counts: a library MP3 is not
+        a copy of the FLAC about to be saved under the same name.
+        """
+        sql = "SELECT rel_path FROM library_index WHERE norm_stem = ?"
+        params: list = [normalise(stem)]
+        if extension:
+            sql += " AND extension = ?"
+            params.append(extension.lower().lstrip("."))
+        with self._lock:
+            row = self._conn.execute(sql + " ORDER BY rel_path LIMIT 1", params).fetchone()
         return row[0] if row else None
 
     def find_similar(self, query: str, threshold: float = DEFAULT_THRESHOLD) -> list[str]:
