@@ -345,7 +345,8 @@ class McpTools:
         return {
             "version": __version__,
             "slskd_reachable": bool(slskd_up),
-            "pending_downloads": len(pending),
+            # A delivered row only backs an album button: nothing waits on it.
+            "pending_downloads": sum(1 for dl in pending.values() if not dl.delivered),
             "mcp_downloads_in_progress": self.downloads_in_progress,
             "wishes": len(self.pipeline.wishlist_repo.list_all()),
             "upload_cap_mb": self.pipeline.upload_limit_bytes // BYTES_PER_MB,

@@ -13,7 +13,7 @@ from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.album_repo import AlbumJob, FileOutcome, FolderFile
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.history_repo import HistoryRepository
-from music_downloader.persistence.pending_repo import PendingRepository
+from music_downloader.persistence.pending_repo import PendingDownload, PendingRepository
 from music_downloader.persistence.wishlist_repo import WishlistRepository
 from music_downloader.pipeline import Pipeline
 from music_downloader.pipeline import library as _library
@@ -340,9 +340,13 @@ class TestStatus:
     async def test_status(self, tmp_path):
         tools, pipeline, _ = _tools(tmp_path)
         pipeline.wishlist_add(OWNER, OWNER, TRACK, "library", "any")
+        result = SearchResult("peer0", "\\M\\a.flac", 1)
+        pipeline.pending_repo.save_download("d1", PendingDownload(track=TRACK, result=result, chat_id=OWNER))
+        album_offer = PendingDownload(track=TRACK, result=result, chat_id=OWNER, delivered=True)
+        pipeline.pending_repo.save_download("d2", album_offer)
         status = await tools.status()
         assert status["slskd_reachable"] is True
-        assert status["pending_downloads"] == 0
+        assert status["pending_downloads"] == 1  # the album button's row waits on nothing
         assert status["mcp_downloads_in_progress"] == 0
         assert status["wishes"] == 1
         assert status["upload_cap_mb"] == 50
