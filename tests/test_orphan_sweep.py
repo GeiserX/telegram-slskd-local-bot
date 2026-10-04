@@ -37,6 +37,7 @@ def _handlers_config():
     config.search_timeout_secs = 30
     config.download_timeout_secs = 600
     config.download_cleanup_hours = 24
+    config.mcp_port = None
     return config
 
 

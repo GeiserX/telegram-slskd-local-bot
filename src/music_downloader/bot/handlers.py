@@ -2990,9 +2990,14 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
         bot._wishlist_task = asyncio.get_running_loop().create_task(
             bot.pipeline.wishlist_loop(lambda wish, matches: bot._deliver_wish(wish_context, wish, matches))
         )
+        if config.mcp_port:
+            # MCP over streamable HTTP on the same Pipeline (SQLite, slskd client, wishlist checker).
+            from music_downloader.mcp.server import serve_http
+
+            bot._mcp_task = asyncio.get_running_loop().create_task(serve_http(bot.pipeline, config))
 
     async def _post_shutdown(app: Application) -> None:
-        for name in ("_sweep_task", "_index_task", "_probe_task", "_wishlist_task"):
+        for name in ("_sweep_task", "_index_task", "_probe_task", "_wishlist_task", "_mcp_task"):
             task = getattr(bot, name, None)
             if task is not None:
                 task.cancel()

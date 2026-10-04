@@ -39,6 +39,10 @@ class Config:
         # If empty, anyone can use it (not recommended)
         allowed_users_str = os.getenv("TELEGRAM_ALLOWED_USERS", "")
         self.telegram_allowed_users = self._parse_id_set(allowed_users_str)
+        # The first id listed is the owner: wishes added over MCP notify that
+        # private chat (a private chat's id is the user's id).
+        listed = [uid.strip() for uid in allowed_users_str.split(",") if uid.strip()]
+        self.telegram_owner_id = int(listed[0]) if listed else None
 
         # Comma-separated Telegram user IDs whose chats default to chat delivery:
         # the track is sent into the chat (under the upload cap) and nothing is saved.
@@ -140,6 +144,19 @@ class Config:
         # HEALTH CHECK
         # =====================================================================
         self.health_port = int(os.getenv("HEALTH_PORT", "8080"))
+
+        # =====================================================================
+        # MCP SERVER (streamable HTTP, in the bot process)
+        # =====================================================================
+        # Unset = no MCP over HTTP (`python -m music_downloader mcp` still
+        # serves stdio). A port needs MCP_TOKEN: every request must carry
+        # "Authorization: Bearer <MCP_TOKEN>".
+        mcp_port = os.getenv("MCP_PORT", "").strip()
+        self.mcp_port = int(mcp_port) if mcp_port else None
+        self.mcp_host = os.getenv("MCP_HOST", "").strip() or "0.0.0.0"
+        self.mcp_token = os.getenv("MCP_TOKEN", "").strip() or None
+        if self.mcp_port is not None and not self.mcp_token:
+            raise ValueError("MCP_PORT is set but MCP_TOKEN is empty: the MCP server refuses to run without a token.")
 
         logger.info("Configuration loaded successfully")
         if self.auto_mode:

@@ -69,6 +69,16 @@ def cmd_run(args):
     bot_app.run_polling(drop_pending_updates=True)
 
 
+def cmd_mcp(args):
+    """Serve the MCP tools over stdin/stdout (logs go to stderr)."""
+    from music_downloader.mcp.server import run_stdio
+
+    config = Config()
+    setup_logging(config)
+    logger.info(f"Music Downloader v{__version__} MCP server on stdio")
+    run_stdio(config)
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -81,6 +91,7 @@ def main():
 
     # 'run' command (default)
     subparsers.add_parser("run", help="Start the bot and health server")
+    subparsers.add_parser("mcp", help="Serve the MCP tools over stdio")
 
     args = parser.parse_args()
 
@@ -90,6 +101,8 @@ def main():
 
     if args.command == "run":
         cmd_run(args)
+    elif args.command == "mcp":
+        cmd_mcp(args)
     else:
         parser.print_help()
         sys.exit(1)

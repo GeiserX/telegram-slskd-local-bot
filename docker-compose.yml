@@ -44,6 +44,16 @@ services:
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
+      # MCP over HTTP (optional, see docs/mcp.md): set MCP_PORT and MCP_TOKEN,
+      # then uncomment the ports block below
+      MCP_PORT: ${MCP_PORT:-}
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
+      MCP_TOKEN: ${MCP_TOKEN:-}
+
+    # ports:
+    #   # MCP over HTTP, LAN only: publish it on the host's LAN address, never 0.0.0.0 on a public host
+    #   - "192.168.1.10:8765:8765"
+
     volumes:
       # Mount slskd completed downloads directory (read-write: the bot
       # deletes rejected/cleaned-up files from here after processing)
