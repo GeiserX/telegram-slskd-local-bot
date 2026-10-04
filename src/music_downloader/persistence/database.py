@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS chat_settings (
     chat_id INTEGER PRIMARY KEY,
     auto_mode INTEGER NOT NULL DEFAULT 0,
     delivery_mode TEXT,
+    send_format TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -98,6 +99,23 @@ CREATE TABLE IF NOT EXISTS pending_searches (
     created_at REAL NOT NULL
 );
 
+-- Result lists the wishlist checker sent, one row per notification. Kept
+-- apart from pending_searches so a chat's own search and a wish's list never
+-- replace each other. wish_id is NULL once the wish is gone.
+CREATE TABLE IF NOT EXISTS wish_searches (
+    chat_id INTEGER NOT NULL,
+    search_id TEXT NOT NULL,
+    wish_id INTEGER,
+    query TEXT NOT NULL,
+    track TEXT,
+    results TEXT NOT NULL DEFAULT '[]',
+    message_id INTEGER,
+    page INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (chat_id, search_id)
+);
+
 -- Audio files under OUTPUT_DIR (subfolders included), for the duplicate
 -- check. Rebuilt by walking the folder at startup and hourly, and updated by
 -- every save. rel_path is relative to OUTPUT_DIR; stem is the file name
@@ -111,6 +129,25 @@ CREATE TABLE IF NOT EXISTS library_index (
     mtime REAL NOT NULL
 );
 
+-- Tracks to search again later (/wishlist). wanted is 'any' (nothing was
+-- found) or 'better' (only a copy above baseline_tier counts, see
+-- search.scorer.quality_tier). track is JSON; profile is the ranking profile
+-- of the search that made the wish; times are Unix timestamps, NULL = never.
+CREATE TABLE IF NOT EXISTS wishlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER,
+    track TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    wanted TEXT NOT NULL,
+    baseline_tier INTEGER,
+    created_at REAL NOT NULL,
+    last_checked_at REAL,
+    checks INTEGER NOT NULL DEFAULT 0,
+    notified_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wishlist_chat ON wishlist(chat_id);
 CREATE INDEX IF NOT EXISTS idx_import_tracks_job_status ON import_tracks(job_id, status);
 CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_download_history_created ON download_history(created_at);
@@ -126,7 +163,10 @@ _CORRUPTION_MARKERS: tuple[str, ...] = ("malformed", "not a database", "file is 
 # Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS never
 # touches an existing table, so a database created by an older release gets
 # them here. Each must be nullable (or have a default) for ALTER TABLE ADD.
-_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (("chat_settings", "delivery_mode", "TEXT"),)
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("chat_settings", "delivery_mode", "TEXT"),
+    ("chat_settings", "send_format", "TEXT"),
+)
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:

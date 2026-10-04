@@ -27,9 +27,30 @@ lossless", with the frequency where it stops. Then you tap Save to library or Re
 | `/cancel` | Cancel the active import or search |
 | `/auto` | Toggle auto-download per chat: best match is downloaded and saved without picking or approval (persists across restarts) |
 | `/deliver` | Switch this chat between library delivery (save after you approve) and chat delivery (the track is sent here, nothing is saved). Persists across restarts |
+| `/format` | Pick the format of tracks sent into this chat: Original (default), MP3 320 kbps or Opus 192 kbps. Chat delivery only; persists across restarts |
+| `/wishlist` | Tracks this chat is waiting for, each with a Remove button (see [Wishlist](#wishlist)) |
 | `/status` | Show active searches and downloads |
 | `/history` | Show recent download history |
 | `/help` | Show help message |
+
+## Wishlist
+
+A track can wait for a copy that does not exist yet:
+
+- When nothing is found, tap **🔔 Tell me when it appears**: any copy will do.
+- Under every result list, tap **⏳ Wait for a better copy**: only a copy of a higher quality tier than
+  the best one on the list counts. The tiers, lowest first: lossy under 128 kbps, 128, 192, 256 kbps or more (MP3-equivalent,
+  so Opus 128 counts as 256), lossless 16-bit, lossless 24-bit.
+
+The bot searches each wished track again once every `WISHLIST_CHECK_HOURS` (default 24), one search at a
+time with `WISHLIST_PAUSE_SECS` (default 20) between them. It leaves a chat alone while that chat's own search,
+download or import runs, and tries again an hour later. When a copy turns up, a chat with `/auto` on gets it
+fetched and delivered like an auto search. Any other chat gets the list of copies that qualify, with the usual
+pick buttons and **Stop waiting**. That list is a message of its own. It does not replace the chat's current
+result list, and a new search does not replace it. The wish is done once a copy from it is saved or sent into
+the chat; until then it stays and is not sent again before the next period, so a failed download leaves it
+waiting. A track already on the wishlist is not added twice. `/wishlist` lists the chat's wishes with when
+each was last checked.
 
 ## Chat delivery
 
@@ -37,13 +58,18 @@ Chat delivery is for someone who wants the song in Telegram and nowhere else. Yo
 as before, but nothing is written to the library or kept on disk: when the download finishes, the bot sends
 the track into the chat with no Save or Reject buttons and deletes the downloaded file.
 
-The upload cap is Telegram's 50 MB (50,000,000 bytes), set by `TELEGRAM_MAX_UPLOAD_MB` (see
-[Configuration](configuration.md)).
+The upload cap is Telegram's 50 MB (50,000,000 bytes), or 2000 MB when the bot talks to a
+[local Bot API server](getting-started.md#send-files-over-50-mb-a-local-bot-api-server). `TELEGRAM_MAX_UPLOAD_MB`
+overrides either (see [Configuration](configuration.md)).
 
 - A file at or under the cap is sent as it is, with the Spotify cover art embedded.
 - A bigger file is converted to Opus at the highest of 192, 160, 128 or 96 kbps that fits under the cap, and
   the caption says so (for example "Converted to Opus 192 kbps, original 61 MB FLAC"). When even 96 kbps
   cannot fit, the bot says so and offers Retry and Try next result.
+- `/format` picks MP3 320 kbps or Opus 192 kbps instead of the original: a file in another format is
+  converted before sending and the caption says so (for example "Sent as MP3 320 kbps (original 31 MB FLAC)");
+  a file already in that format goes as it is. When the converted file is still over the cap, the Opus steps
+  above apply. Library delivery always keeps the original file.
 - Copies are ranked by quality for their size, with no lossless-first split (see [Scoring](#scoring-algorithm)).
 - Copies that fit under the cap rank ahead of copies that would have to be converted.
 - `/auto` still decides whether you pick first; with both on, the best match arrives in the chat with no taps.
@@ -85,8 +111,9 @@ Search results are ranked by:
       (an Opus file at 128 kbps is top tier, an AAC one at 128 kbps is a step below).
     - **Chat delivery**: no lossless-first split; the points measure quality for the size. A lossless file and
       a lossy one at 256 kbps or more both start at 25 (192 kbps 20, 128 kbps 10, under 128 kbps 1), then lose
-      up to 5 points as the file grows from 5 MB to the upload cap (50 MB unless `TELEGRAM_MAX_UPLOAD_MB` says
-      otherwise; 1 MB = 1,000,000 bytes, as Telegram counts). A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
+      up to 5 points as the file grows from 5 MB to 50 MB, or to the upload cap when that is smaller
+      (1 MB = 1,000,000 bytes, as Telegram counts). With a 2000 MB cap a 300 MB file pays the same 5 points as a
+      50 MB one. A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
       FLAC of the same song, and a 20 MB FLAC beats a 20 MB MP3 at 128 kbps. A copy over the cap scores as the
       Opus it will be sent as: its tier minus 8.
 3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue

@@ -19,22 +19,37 @@ logger = logging.getLogger(__name__)
 BYTES_PER_MB = 1_000_000
 DEFAULT_MAX_UPLOAD_MB = 50
 DEFAULT_UPLOAD_LIMIT_BYTES = DEFAULT_MAX_UPLOAD_MB * BYTES_PER_MB
+# A local Bot API server (TELEGRAM_API_BASE_URL) accepts uploads up to 2000 MB,
+# and a 2 GB upload needs far longer than PTB's default timeouts allow.
+LOCAL_SERVER_MAX_UPLOAD_MB = 2000
+LOCAL_SERVER_UPLOAD_TIMEOUT_SECS = 600
 
 
 class Config:
     """Configuration settings loaded from environment variables."""
 
-    def __init__(self):
-        """Initialize configuration from environment variables."""
+    def __init__(self, require_telegram: bool = True):
+        """Initialize configuration from environment variables.
+
+        *require_telegram* False is for the stdio MCP server, which never talks
+        to Telegram: TELEGRAM_BOT_TOKEN may then be unset (None).
+        """
         # =====================================================================
         # TELEGRAM BOT
         # =====================================================================
-        self.telegram_bot_token = self._get_required_env("TELEGRAM_BOT_TOKEN")
+        if require_telegram:
+            self.telegram_bot_token = self._get_required_env("TELEGRAM_BOT_TOKEN")
+        else:
+            self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or None
 
         # Comma-separated Telegram user IDs allowed to use the bot
         # If empty, anyone can use it (not recommended)
         allowed_users_str = os.getenv("TELEGRAM_ALLOWED_USERS", "")
         self.telegram_allowed_users = self._parse_id_set(allowed_users_str)
+        # The first id listed is the owner: wishes added over MCP notify that
+        # private chat (a private chat's id is the user's id).
+        listed = [uid.strip() for uid in allowed_users_str.split(",") if uid.strip()]
+        self.telegram_owner_id = int(listed[0]) if listed else None
 
         # Comma-separated Telegram user IDs whose chats default to chat delivery:
         # the track is sent into the chat (under the upload cap) and nothing is saved.
@@ -42,10 +57,24 @@ class Config:
         chat_delivery_str = os.getenv("TELEGRAM_CHAT_DELIVERY_USERS", "")
         self.telegram_chat_delivery_users = self._parse_id_set(chat_delivery_str)
 
+        # A local Bot API server (e.g. http://telegram-bot-api:8081); empty
+        # means Telegram's cloud API.
+        self.telegram_api_base_url = os.getenv("TELEGRAM_API_BASE_URL", "").strip().rstrip("/")
+
         # Largest file the bot may send, in MB of 1,000,000 bytes. 50 is the
-        # cloud Bot API's cap; a local Bot API server raises it to 2000.
-        self.telegram_max_upload_mb = max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", str(DEFAULT_MAX_UPLOAD_MB))))
+        # cloud Bot API's cap; a local Bot API server raises it to 2000, which
+        # becomes the default when TELEGRAM_API_BASE_URL is set. Empty = default.
+        default_mb = LOCAL_SERVER_MAX_UPLOAD_MB if self.telegram_api_base_url else DEFAULT_MAX_UPLOAD_MB
+        self.telegram_max_upload_mb = max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB") or default_mb))
         self.telegram_upload_limit_bytes = self.telegram_max_upload_mb * BYTES_PER_MB
+
+        # Read/write timeouts (seconds) for requests to Telegram, uploads
+        # included. None keeps python-telegram-bot's defaults (the cloud API
+        # case); with a local server the default fits a 2 GB upload on a LAN.
+        timeout = os.getenv("TELEGRAM_UPLOAD_TIMEOUT_SECS") or (
+            LOCAL_SERVER_UPLOAD_TIMEOUT_SECS if self.telegram_api_base_url else None
+        )
+        self.telegram_upload_timeout_secs = None if timeout is None else max(1, int(timeout))
 
         # =====================================================================
         # SPOTIFY API (Client Credentials flow — no user login needed)
@@ -95,6 +124,11 @@ class Config:
         # approved or rejected. Active transfers are safe (fresh mtime).
         self.download_cleanup_hours = max(0, int(os.getenv("DOWNLOAD_CLEANUP_HOURS", "24")))
 
+        # Wishlist: hours between two searches for the same wish, and seconds
+        # between two wish searches in one pass (Soulseek etiquette).
+        self.wishlist_check_hours = max(1, int(os.getenv("WISHLIST_CHECK_HOURS") or "24"))
+        self.wishlist_pause_secs = max(0, int(os.getenv("WISHLIST_PAUSE_SECS") or "20"))
+
         # Keywords in file paths that indicate unwanted versions
         exclude_kw = os.getenv(
             "EXCLUDE_KEYWORDS",
@@ -117,6 +151,21 @@ class Config:
         # HEALTH CHECK
         # =====================================================================
         self.health_port = int(os.getenv("HEALTH_PORT", "8080"))
+
+        # =====================================================================
+        # MCP SERVER (streamable HTTP, in the bot process)
+        # =====================================================================
+        # Unset = no MCP over HTTP (`python -m music_downloader mcp` still
+        # serves stdio). A port needs MCP_TOKEN: every request must carry
+        # "Authorization: Bearer <MCP_TOKEN>".
+        mcp_port = os.getenv("MCP_PORT", "").strip()
+        self.mcp_port = int(mcp_port) if mcp_port else None
+        # Loopback by default, which also turns on the MCP SDK's Host/Origin
+        # check; the container sets 0.0.0.0 in docker-compose.yml.
+        self.mcp_host = os.getenv("MCP_HOST", "").strip() or "127.0.0.1"
+        self.mcp_token = os.getenv("MCP_TOKEN", "").strip() or None
+        if self.mcp_port is not None and not self.mcp_token:
+            raise ValueError("MCP_PORT is set but MCP_TOKEN is empty: the MCP server refuses to run without a token.")
 
         logger.info("Configuration loaded successfully")
         if self.auto_mode:

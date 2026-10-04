@@ -139,6 +139,7 @@ nav:
   - Get started:
       - Getting started: getting-started.md
       - Usage: usage.md
+      - MCP server: mcp.md
   - Reference:
       - Configuration: configuration.md
       - How it works: how-it-works.md

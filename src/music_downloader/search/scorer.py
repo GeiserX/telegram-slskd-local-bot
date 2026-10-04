@@ -51,10 +51,75 @@ PERCEIVED_UNKNOWN_POINTS = PERCEIVED_FAIR_POINTS  # lossy with no bitrate and no
 # extension cannot tell, so it takes the lower Vorbis factor.
 CODEC_MP3_EQUIVALENT = {"opus": 2.0, "aac": 1.5, "m4a": 1.5, "ogg": 1.5, "wma": 1.0, "mp3": 1.0}
 
+# One ordered quality scale, lowest first (quality_tier). Lossy copies go by
+# their MP3-equivalent bitrate, on the same thresholds as the perceived points
+# above; lossless copies by bit depth. The wishlist's "a better copy" means a
+# strictly higher tier.
+TIER_LOSSY_UNDER_128 = 0
+TIER_LOSSY_128 = 1
+TIER_LOSSY_192 = 2
+TIER_LOSSY_256 = 3
+TIER_LOSSLESS_16 = 4
+TIER_LOSSLESS_24 = 5
+TIER_LABELS = {
+    TIER_LOSSY_UNDER_128: "lossy under 128 kbps",
+    TIER_LOSSY_128: "lossy 128 kbps",
+    TIER_LOSSY_192: "lossy 192 kbps",
+    TIER_LOSSY_256: "lossy 256+ kbps",
+    TIER_LOSSLESS_16: "lossless 16-bit",
+    TIER_LOSSLESS_24: "lossless 24-bit",
+}
+_LOSSY_TIER_POINTS = {
+    TIER_LOSSY_UNDER_128: PERCEIVED_POOR_POINTS,
+    TIER_LOSSY_128: PERCEIVED_FAIR_POINTS,
+    TIER_LOSSY_192: PERCEIVED_GOOD_POINTS,
+    TIER_LOSSY_256: PERCEIVED_TOP_POINTS,
+}
+
+
+def mp3_equivalent_kbps(result: SearchResult) -> float | None:
+    """A lossy copy's bitrate scaled to the MP3 bitrate it sounds like, or None when unknown.
+
+    A copy without a reported bitrate gets one estimated from its size and
+    length (both known for nearly every Soulseek file).
+    """
+    kbps = result.bit_rate
+    if not kbps and result.size and result.length:
+        kbps = result.size * 8 / result.length / 1000
+    if not kbps:
+        return None
+    return kbps * CODEC_MP3_EQUIVALENT.get(result.extension, 1.0)
+
+
+def quality_tier(result: SearchResult) -> int:
+    """Where *result* sits on the quality scale (TIER_*).
+
+    Lossless: 24-bit or more is the top tier, anything else (16-bit, or no
+    bit depth reported) the one below. Lossy: by MP3-equivalent bitrate; an
+    unknown bitrate counts as 128, like PERCEIVED_UNKNOWN_POINTS.
+    """
+    if result.is_lossless:
+        return TIER_LOSSLESS_24 if (result.bit_depth or 0) >= 24 else TIER_LOSSLESS_16
+    kbps = mp3_equivalent_kbps(result)
+    if kbps is None:
+        return TIER_LOSSY_128
+    if kbps >= PERCEIVED_TOP_KBPS:
+        return TIER_LOSSY_256
+    if kbps >= PERCEIVED_GOOD_KBPS:
+        return TIER_LOSSY_192
+    if kbps >= PERCEIVED_FAIR_KBPS:
+        return TIER_LOSSY_128
+    return TIER_LOSSY_UNDER_128
+
+
 # Chat profile size cost, inside the range that fits Telegram's upload limit
 # (ResultScorer's chat_size_limit_bytes, TELEGRAM_MAX_UPLOAD_MB in config).
 CHAT_SIZE_FREE_BYTES = 5 * BYTES_PER_MB  # files this small cost nothing
-CHAT_SIZE_PENALTY_MAX_POINTS = 5.0  # cost at the limit, linear from the free size
+CHAT_SIZE_PENALTY_MAX_POINTS = 5.0  # cost at the end of the curve, linear from the free size
+# The curve ends at the upload limit or at 50 MB, whichever is lower. A local
+# Bot API server raises the limit to 2000 MB; a fitting file above 50 MB then
+# pays the full cost instead of a near-zero slice of a 2000 MB curve.
+CHAT_SIZE_PENALTY_FULL_BYTES = 50 * BYTES_PER_MB
 # A file over the limit is sent as Opus converted from it: scored as its own
 # tier minus this, with no size cost (the Opus that goes out fits).
 CHAT_OPUS_CONVERSION_POINTS = 8.0
@@ -236,39 +301,31 @@ class ResultScorer:
 
     @staticmethod
     def _perceived_points(result: SearchResult) -> float:
-        """Perceived-quality points: lossless is top tier, lossy goes by MP3-equivalent bitrate.
+        """Perceived-quality points: lossless is top tier, lossy goes by its quality_tier.
 
-        A lossy result without a reported bitrate gets one estimated from its
-        size and length (both known for nearly every Soulseek file).
+        A lossy result whose bitrate is neither reported nor estimable gets
+        PERCEIVED_UNKNOWN_POINTS.
         """
         if result.is_lossless:
             return PERCEIVED_TOP_POINTS
-        kbps = result.bit_rate
-        if not kbps and result.size and result.length:
-            kbps = result.size * 8 / result.length / 1000
-        if not kbps:
+        if mp3_equivalent_kbps(result) is None:
             return PERCEIVED_UNKNOWN_POINTS
-        kbps *= CODEC_MP3_EQUIVALENT.get(result.extension, 1.0)
-        if kbps >= PERCEIVED_TOP_KBPS:
-            return PERCEIVED_TOP_POINTS
-        if kbps >= PERCEIVED_GOOD_KBPS:
-            return PERCEIVED_GOOD_POINTS
-        if kbps >= PERCEIVED_FAIR_KBPS:
-            return PERCEIVED_FAIR_POINTS
-        return PERCEIVED_POOR_POINTS
+        return _LOSSY_TIER_POINTS[quality_tier(result)]
 
     def _chat_quality_points(self, result: SearchResult) -> float:
         """Chat profile: perceived quality minus a size cost ("best bang for buck").
 
         A fitting file pays up to CHAT_SIZE_PENALTY_MAX_POINTS, growing linearly
-        from CHAT_SIZE_FREE_BYTES to the limit. A file over the limit will be
-        converted to Opus, so it scores as its tier minus the conversion.
+        from CHAT_SIZE_FREE_BYTES to the limit or CHAT_SIZE_PENALTY_FULL_BYTES,
+        whichever is lower, and the full cost above that. A file over the limit
+        will be converted to Opus, so it scores as its tier minus the conversion.
         """
         points = self._perceived_points(result)
         if result.size > self.chat_size_limit:
             return max(0.0, points - CHAT_OPUS_CONVERSION_POINTS)
-        over_free = max(0, result.size - CHAT_SIZE_FREE_BYTES)
-        cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / max(1, self.chat_size_limit - CHAT_SIZE_FREE_BYTES)
+        curve_end = min(self.chat_size_limit, CHAT_SIZE_PENALTY_FULL_BYTES)
+        over_free = max(0, min(result.size, curve_end) - CHAT_SIZE_FREE_BYTES)
+        cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / max(1, curve_end - CHAT_SIZE_FREE_BYTES)
         return max(0.0, points - cost)
 
     @staticmethod

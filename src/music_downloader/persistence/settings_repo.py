@@ -4,7 +4,7 @@ from .database import Database
 
 
 class SettingsRepository:
-    """Per-chat settings that must survive restarts (auto-mode and delivery mode)."""
+    """Per-chat settings that must survive restarts (auto-mode, delivery mode, send format)."""
 
     def __init__(self, db: Database) -> None:
         self._conn = db.connection
@@ -48,5 +48,24 @@ class SettingsRepository:
             "VALUES (?, ?, ?, datetime('now')) "
             "ON CONFLICT(chat_id) DO UPDATE SET delivery_mode = excluded.delivery_mode, updated_at = datetime('now')",
             (chat_id, int(auto_mode), mode),
+        )
+        self._conn.commit()
+
+    def get_send_format(self, chat_id: int) -> str | None:
+        """Return the stored send format ('original', 'mp3', 'opus'), or None when never set."""
+        cursor = self._conn.execute(
+            "SELECT send_format FROM chat_settings WHERE chat_id = ?",
+            (chat_id,),
+        )
+        row = cursor.fetchone()
+        return None if row is None else row["send_format"]
+
+    def set_send_format(self, chat_id: int, fmt: str, auto_mode: bool) -> None:
+        """Store the send format for a chat; *auto_mode* as in set_delivery_mode."""
+        self._conn.execute(
+            "INSERT INTO chat_settings (chat_id, auto_mode, send_format, updated_at) "
+            "VALUES (?, ?, ?, datetime('now')) "
+            "ON CONFLICT(chat_id) DO UPDATE SET send_format = excluded.send_format, updated_at = datetime('now')",
+            (chat_id, int(auto_mode), fmt),
         )
         self._conn.commit()

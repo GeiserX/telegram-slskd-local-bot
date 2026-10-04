@@ -36,6 +36,8 @@ class PendingSearch:
     # Copies the title guard dropped as unrelated (shown in the results header).
     hidden: int = 0
     created_at: float = field(default_factory=time.time)
+    # Set on a list the wishlist checker sent: the wish it belongs to.
+    wish_id: int | None = None
 
 
 @dataclass
@@ -143,6 +145,47 @@ class PendingRepository:
     def delete_search(self, chat_id: int) -> None:
         self._conn.execute("DELETE FROM pending_searches WHERE chat_id = ?", (chat_id,))
         self._conn.commit()
+
+    def save_wish_search(self, key: tuple[int, str], search: PendingSearch) -> None:
+        """Store a wishlist checker's result list under (chat_id, search_id)."""
+        chat_id, search_id = key
+        self._conn.execute(
+            """INSERT OR REPLACE INTO wish_searches
+            (chat_id, search_id, wish_id, query, track, results, message_id, page, hidden, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                chat_id,
+                search_id,
+                search.wish_id,
+                search.query,
+                json.dumps(dataclasses.asdict(search.track)) if search.track is not None else None,
+                json.dumps([dataclasses.asdict(r) for r in search.results]),
+                search.message_id,
+                search.page,
+                search.hidden,
+                search.created_at,
+            ),
+        )
+        self._conn.commit()
+
+    def delete_wish_search(self, key: tuple[int, str]) -> None:
+        self._conn.execute("DELETE FROM wish_searches WHERE chat_id = ? AND search_id = ?", key)
+        self._conn.commit()
+
+    def load_wish_searches(self) -> dict[tuple[int, str], PendingSearch]:
+        loaded: dict[tuple[int, str], PendingSearch] = {}
+        for row in self._conn.execute("SELECT * FROM wish_searches"):
+            data = dict(row)
+            key = (data.pop("chat_id"), data["search_id"])
+            try:
+                track = data.pop("track")
+                data["track"] = _from_fields(TrackInfo, json.loads(track)) if track else None
+                data["results"] = [_from_fields(SearchResult, r) for r in json.loads(data["results"])]
+                loaded[key] = _from_fields(PendingSearch, data)
+            except (TypeError, ValueError):
+                logger.warning("Dropping unreadable wish result list %s", key)
+                self.delete_wish_search(key)
+        return loaded
 
     def load_searches(self) -> dict[int, PendingSearch]:
         loaded: dict[int, PendingSearch] = {}

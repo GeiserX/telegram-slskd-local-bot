@@ -44,6 +44,32 @@ Fix: let slskd write files its group can change, and put the bot in that group.
 Recreate both containers (`docker compose up -d`). The next save deletes its download, and the next sweep
 stops logging `Permission denied`.
 
+## Telegram says the bot is logged in elsewhere
+
+Cause: the bot was switched to a [local Bot API server](getting-started.md#send-files-over-50-mb-a-local-bot-api-server)
+without logging it out of Telegram's cloud server. A bot token is logged in to one server at a time, so the
+bot gets no updates, or errors that say it is logged in or logged out somewhere else.
+
+Fix: log it out of the cloud server once, then recreate the containers:
+
+```bash
+curl https://api.telegram.org/bot<your-bot-token>/logOut
+docker compose --profile bigfiles up -d
+```
+
+Going the other way, from the local server back to the cloud, needs `logOut` on the local server first, and
+Telegram can take up to 10 minutes before the cloud server accepts the token again. The steps are in
+[Getting started](getting-started.md#send-files-over-50-mb-a-local-bot-api-server).
+
+## Uploads time out
+
+Cause: a big file takes longer to upload than the request timeout allows. The log shows `Sending <file> to chat
+<id> failed` with a `TimedOut` error, and the chat says "Could not send the file to Telegram: Timed out". With a local Bot API server the timeout is 600 s, which covers a
+2 GB file on a LAN but not on a slow link.
+
+Fix: raise `TELEGRAM_UPLOAD_TIMEOUT_SECS` in `.env` (for example `1800`) and recreate the container with
+`docker compose up -d`. It sets the read and write timeouts of every request to Telegram except polling.
+
 ## Reporting a bug
 
 Open an [issue](https://github.com/GeiserX/telegram-slskd-local-bot/issues) with:
