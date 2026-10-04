@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import os
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -134,7 +135,39 @@ class TestRankingAboveFiftyMb:
         at_900 = scorer._chat_quality_points(_flac("c", 908_000_000))
         at_cap = scorer._chat_quality_points(_flac("d", 2_000_000_000))
         assert at_50 > at_60 > at_900 > at_cap
-        assert at_cap == pytest.approx(10.0)  # 5 + 10 points at the cap
+        assert at_cap == pytest.approx(0.0)  # 25 minus 5 minus 20 at the cap
+        # Log scale: the first doubling above 50 MB already costs a visible amount.
+        assert at_50 - scorer._chat_quality_points(_flac("e", 100_000_000)) == pytest.approx(
+            20.0 * math.log(2) / math.log(40), abs=0.01
+        )
+
+    def test_hires_907mb_with_the_best_peer_still_loses_to_a_57mb_mp3_with_the_worst(self):
+        # Live list on 0.16.1: a 907 MB 24/192 FLAC from a peer with a free slot and top speed sat at #5,
+        # above three 57 MB MP3 320 copies whose peers had no slot. Size must win that fight.
+        scorer = ResultScorer(chat_size_limit_bytes=2_000_000_000)
+        flac = SearchResult(
+            username="fast",
+            filename="\\x\\06. - Echoes.flac",
+            size=907_000_000,
+            bit_depth=24,
+            sample_rate=192000,
+            length=1413,
+            has_free_slot=True,
+            upload_speed=50_000_000,
+            queue_length=0,
+        )
+        mp3 = SearchResult(
+            username="slow",
+            filename="\\x\\06 Echoes.mp3",
+            size=57_000_000,
+            bit_rate=320,
+            length=1411,
+            has_free_slot=False,
+            upload_speed=1,
+            queue_length=50,
+        )
+        ranked = scorer.score_results([flac, mp3], _make_track(1_413_000), profile=PROFILE_CHAT)
+        assert [r.extension for r in ranked] == ["mp3", "flac"]
 
     def test_big_cap_57mb_mp3_beats_908mb_hires_flac(self):
         # The live list that showed the flaw: with a 2000 MB cap, eight 908 MB 24/192 FLACs

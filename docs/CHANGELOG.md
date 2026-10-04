@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.2] - 2026-10-04
+
+### Fixed
+
+- The chat ranking's size cost above 50 MB was linear to the cap and worth 10
+  points, so a 907 MB hi-res copy from a fast peer still outranked 57 MB MP3
+  320 copies from slow peers. The cost is now logarithmic and worth 20 points
+  at the cap, so a tenfold size difference beats any source advantage
+
 ## [0.16.1] - 2026-10-04
 
 ### Fixed

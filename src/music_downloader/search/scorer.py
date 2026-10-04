@@ -5,6 +5,7 @@ and filename analysis to filter out unwanted versions.
 """
 
 import logging
+import math
 import re
 
 from music_downloader.config import BYTES_PER_MB, DEFAULT_UPLOAD_LIMIT_BYTES
@@ -120,9 +121,11 @@ CHAT_SIZE_PENALTY_MAX_POINTS = 5.0  # cost at the end of the curve, linear from 
 # Bot API server raises the limit to 2000 MB; a fitting file above 50 MB then
 # pays the full cost instead of a near-zero slice of a 2000 MB curve.
 CHAT_SIZE_PENALTY_FULL_BYTES = 50 * BYTES_PER_MB
-# Above 50 MB (only reachable with a local Bot API server) the cost keeps growing, linearly
-# to the cap, by this much more: a 900 MB hi-res copy must not tie with a 57 MB MP3 320.
-CHAT_SIZE_OVER_FULL_POINTS = 10.0
+# Above 50 MB (only reachable with a local Bot API server) the cost keeps growing with the
+# logarithm of the size, by this much more at the cap. Log, not linear: a 900 MB hi-res copy
+# must lose to a 57 MB MP3 320 even when its peer has the best slot and speed (up to 15
+# source points), and the first doubling above 50 MB must already cost something.
+CHAT_SIZE_OVER_FULL_POINTS = 20.0
 # A file over the limit is sent as Opus converted from it: scored as its own
 # tier minus this, with no size cost (the Opus that goes out fits).
 CHAT_OPUS_CONVERSION_POINTS = 8.0
@@ -321,8 +324,8 @@ class ResultScorer:
         A fitting file pays up to CHAT_SIZE_PENALTY_MAX_POINTS, growing linearly
         from CHAT_SIZE_FREE_BYTES to the limit or CHAT_SIZE_PENALTY_FULL_BYTES,
         whichever is lower. When the limit is above that (a local Bot API
-        server), the cost keeps growing linearly by CHAT_SIZE_OVER_FULL_POINTS
-        more up to the limit. A file over the limit will be converted to Opus,
+        server), the cost keeps growing with the logarithm of the size, by
+        CHAT_SIZE_OVER_FULL_POINTS more at the limit. A file over the limit will be converted to Opus,
         so it scores as its tier minus the conversion.
         """
         points = self._perceived_points(result)
@@ -332,8 +335,10 @@ class ResultScorer:
         over_free = max(0, min(result.size, curve_end) - CHAT_SIZE_FREE_BYTES)
         cost = CHAT_SIZE_PENALTY_MAX_POINTS * over_free / max(1, curve_end - CHAT_SIZE_FREE_BYTES)
         if self.chat_size_limit > curve_end and result.size > curve_end:
-            over_full = min(result.size, self.chat_size_limit) - curve_end
-            cost += CHAT_SIZE_OVER_FULL_POINTS * over_full / (self.chat_size_limit - curve_end)
+            ratio = math.log(min(result.size, self.chat_size_limit) / curve_end) / math.log(
+                self.chat_size_limit / curve_end
+            )
+            cost += CHAT_SIZE_OVER_FULL_POINTS * ratio
         return max(0.0, points - cost)
 
     @staticmethod
