@@ -332,6 +332,7 @@ class MusicBot:
             )
             if expired or dead:
                 del self.downloads[dl_id]
+                self._album_listings.pop(dl_id, None)
                 self._remove_download(dl)
                 logger.info("Dropped pending download %s (%s)", dl_id, "expired" if expired else "gone after restart")
         if startup and cutoff is not None:
@@ -2020,12 +2021,15 @@ class MusicBot:
                 text=f"\U0001f4bf <b>{_esc(self._album_name(listing.remote_dir))}</b>: 0/{count}, queueing…",
                 parse_mode=ParseMode.HTML,
             )
+            # A plain asyncio task, not application.create_task: PTB's stop() awaits
+            # those, and an album can run for ALBUM_TIMEOUT_SECS. post_shutdown cancels
+            # it instead, leaving the job running for the next start's recovery.
+            run.task = asyncio.get_running_loop().create_task(
+                self._run_album(context, chat_id, dl, listing, status_msg, to_chat, run)
+            )
         except BaseException:
             self._album_runs.pop(chat_id, None)
             raise
-        run.task = context.application.create_task(
-            self._run_album(context, chat_id, dl, listing, status_msg, to_chat, run), update=update
-        )
 
     async def _run_album(
         self,
@@ -2128,7 +2132,7 @@ class MusicBot:
         total = len(job.files)
         landed = [o for o in job.landed if not o.skipped]
         skipped = sum(1 for o in job.landed if o.skipped)
-        where = "to this chat" if to_chat else f"to <code>{_esc(self.config.output_dir)}</code>"
+        where = "to this chat" if to_chat else "to the library"
         lines = [header, f"✅ {'Sent' if to_chat else 'Saved'} {len(landed)} of {total} {where}"]
         if skipped:
             lines.append(f"⏭ {skipped} already in the library, skipped")
@@ -2138,6 +2142,12 @@ class MusicBot:
             lines += [f"• <code>{_esc(job.files[i].basename[:70])}</code>: {reason}" for i, reason in shown]
             if len(failures) > len(shown):
                 lines.append(f"… and {len(failures) - len(shown)} more")
+        timed_out = sum(1 for o in job.failed if o.state == "Timeout")
+        if timed_out:
+            lines.append(
+                f"⏳ {timed_out} stopped moving or ran past the album's time limit: slskd keeps their transfers, "
+                "but a file that lands later is not saved (remove them in slskd if you do not want them)."
+            )
         if job.status == ALBUM_CANCELLED:
             lines.append(
                 f"⏹ Cancelled with {len(job.unfinished)} not fetched: slskd keeps their transfers "
@@ -3485,6 +3495,11 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
             bot._mcp_task = asyncio.get_running_loop().create_task(serve_http(bot.pipeline, config))
 
     async def _post_shutdown(app: Application) -> None:
+        # A running album stops here; its job stays running and the next start recovers it.
+        albums = [run.task for run in bot._album_runs.values() if run.task is not None]
+        for task in albums:
+            task.cancel()
+        await asyncio.gather(*albums, return_exceptions=True)
         for name in ("_sweep_task", "_index_task", "_album_recover_task", "_probe_task", "_wishlist_task", "_mcp_task"):
             task = getattr(bot, name, None)
             if task is not None:

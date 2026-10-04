@@ -1,6 +1,7 @@
 """Album delivery in Telegram: the button after a save or send, the listing, Get all, progress, /cancel, a restart."""
 
 import asyncio
+import dataclasses
 import datetime
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -279,7 +280,7 @@ class TestGetAll:
         assert any("⬇️ 1/3 <code>01 - One of These Days.flac</code> · 40%" in e for e in edits)
         assert len(edits) == len(set(edits))  # no edit repeats the one before
         summary = edits[-1]
-        assert f"✅ Saved 1 of 3 to <code>{music}</code>" in summary
+        assert "✅ Saved 1 of 3 to the library" in summary and str(music) not in summary
         assert "⏭ 1 already in the library, skipped" in summary
         assert "❌ Failed (1):\n• <code>02 - Pillow of Winds.flac</code>: Completed, Errored" in summary
         assert CHAT not in bot._album_runs
@@ -333,6 +334,49 @@ class TestGetAll:
             ("Echoes", "send_failed", "album"),
         }
 
+    async def test_timed_out_files_say_slskd_keeps_them_and_nothing_saves_them(self, tmp_path):
+        bot = _bot(tmp_path)
+        bot.slskd.wait_for_download = _waiter(tmp_path, {"02 - Pillow of Winds.flac": None})
+        _offer(bot)
+        context = _context()
+        status = context.bot.send_message.return_value
+        await _tap(bot, context, f"alb:{DL}")
+        await _tap(bot, context, f"albgo:{DL}")
+        await _finish(bot)
+        summary = _status_texts(status)[-1]
+        assert "• <code>02 - Pillow of Winds.flac</code>: Timeout" in summary
+        assert "⏳ 1 stopped moving or ran past the album's time limit: slskd keeps their transfers" in summary
+        assert "a file that lands later is not saved" in summary
+
+    async def test_the_album_runs_outside_ptbs_tasks_so_a_stop_never_waits_on_it(self, tmp_path):
+        bot = _bot(tmp_path)
+        bot.slskd.wait_for_download = _waiter(tmp_path, {})
+        _offer(bot)
+        context = _context()
+        await _tap(bot, context, f"alb:{DL}")
+        await _tap(bot, context, f"albgo:{DL}")
+        await _finish(bot)
+        # Application.stop() awaits every application.create_task task.
+        context.application.create_task.assert_not_called()
+
+    async def test_a_failed_start_frees_the_chats_album_slot(self, tmp_path):
+        bot = _bot(tmp_path)
+        _offer(bot)
+        context = _context()
+        await _tap(bot, context, f"alb:{DL}")
+        bot._run_album = MagicMock(side_effect=RuntimeError("no loop"))
+        with pytest.raises(RuntimeError):
+            await bot._handle_album_confirm(_update(_query(f"albgo:{DL}")), context, CHAT, f"albgo:{DL}")
+        assert CHAT not in bot._album_runs
+
+    def test_an_expired_offer_drops_its_listing(self, tmp_path):
+        bot = _bot(tmp_path)
+        _offer(bot)
+        bot._album_listings[DL] = _album.FolderListing(PEER, FOLDER)
+        bot.downloads[DL] = dataclasses.replace(bot.downloads[DL], created_at=0.0)
+        bot._prune_pending()
+        assert DL not in bot.downloads and DL not in bot._album_listings
+
     async def test_a_second_album_waits_for_the_first(self, tmp_path):
         bot = _bot(tmp_path)
         _offer(bot)
@@ -379,6 +423,50 @@ class TestCancel:
         # Only the saved file's finished transfer is forgotten; the unfinished ones stay in slskd.
         assert {c.args for c in bot.slskd.remove_transfer.call_args_list} <= {(PEER, "tx-01")}
         assert bot.slskd.wait_for_download.await_count == 2
+
+
+class TestShutdown:
+    async def test_post_shutdown_cancels_a_running_album_and_leaves_its_job_running(self, tmp_path):
+        from music_downloader.bot.handlers import create_bot
+
+        made = []
+        config = _make_config(str(tmp_path))
+        config.album_timeout_secs = 7200
+        with (
+            patch("music_downloader.pipeline.SpotifyResolver"),
+            patch("music_downloader.pipeline.SlskdClient"),
+            patch("music_downloader.bot.handlers.Application") as app_cls,
+            patch(
+                "music_downloader.bot.handlers.MusicBot",
+                side_effect=lambda *a, **k: made.append(MusicBot(*a, **k)) or made[-1],
+            ),
+        ):
+            builder = MagicMock()
+            for chain in ("token", "post_init", "post_shutdown"):
+                getattr(builder, chain).return_value = builder
+            app_cls.builder.return_value = builder
+            create_bot(config)
+            post_shutdown = builder.post_shutdown.call_args[0][0]
+        [bot] = made
+        bot.slskd = _slskd()
+        started = asyncio.Event()
+
+        async def wait(username, filename, timeout_secs, progress_cb):
+            started.set()
+            await asyncio.sleep(3600)
+
+        bot.slskd.wait_for_download = AsyncMock(side_effect=wait)
+        _offer(bot)
+        context = _context()
+        await _tap(bot, context, f"alb:{DL}")
+        await _tap(bot, context, f"albgo:{DL}")
+        await asyncio.wait_for(started.wait(), 5)
+        task = bot._album_runs[CHAT].task
+
+        await asyncio.wait_for(post_shutdown(MagicMock()), 5)
+        assert task.cancelled()
+        # The job stays running: the next start recovers it.
+        assert len(bot.pipeline.album_repo.list_by_status(ALBUM_RUNNING)) == 1
 
 
 class TestRestart:

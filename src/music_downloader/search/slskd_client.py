@@ -368,14 +368,12 @@ class SlskdClient:
         True when slskd accepted the list; False (logged) when it refused or failed.
         """
         try:
-            ok = self.client.transfers.enqueue(
+            # slskd_api raises on any non-2xx answer, so a refusal arrives here as requests.HTTPError.
+            self.client.transfers.enqueue(
                 username=username, files=[{"filename": name, "size": size} for name, size in files]
             )
         except Exception:
             logger.warning("Failed to enqueue %d files from %s in one request", len(files), username, exc_info=True)
-            return False
-        if ok is False:
-            logger.warning("slskd refused to enqueue %d files from %s", len(files), username)
             return False
         logger.info("Enqueued %d files from %s", len(files), username)
         return True
@@ -399,7 +397,9 @@ class SlskdClient:
             filename: The remote filename.
 
         Returns:
-            DownloadStatus or None if not found.
+            DownloadStatus or None if not found. When slskd lists the file more
+            than once (a finished or given-up transfer next to a new one), the
+            one still running wins, else the newest.
         """
         try:
             downloads = self.client.transfers.get_downloads(username=username)
@@ -408,21 +408,32 @@ class SlskdClient:
                 return None
 
             # Downloads response is a dict with 'directories' containing transfer info
-            for directory in downloads.get("directories", []):
-                for transfer in directory.get("files", []):
-                    if transfer.get("filename") == filename:
-                        return DownloadStatus(
-                            username=username,
-                            filename=filename,
-                            state=transfer.get("state", "Unknown"),
-                            percent_complete=transfer.get("percentComplete", 0),
-                            bytes_transferred=transfer.get("bytesTransferred", 0),
-                            size=transfer.get("size", 0),
-                            average_speed=transfer.get("averageSpeed", 0),
-                            transfer_id=transfer.get("id", ""),
-                        )
-
-            return None
+            matches = [
+                transfer
+                for directory in downloads.get("directories", [])
+                for transfer in directory.get("files", [])
+                if transfer.get("filename") == filename
+            ]
+            if not matches:
+                return None
+            statuses = [
+                DownloadStatus(
+                    username=username,
+                    filename=filename,
+                    state=transfer.get("state", "Unknown"),
+                    percent_complete=transfer.get("percentComplete", 0),
+                    bytes_transferred=transfer.get("bytesTransferred", 0),
+                    size=transfer.get("size", 0),
+                    average_speed=transfer.get("averageSpeed", 0),
+                    transfer_id=transfer.get("id", ""),
+                )
+                for transfer in matches
+            ]
+            newest = max(
+                range(len(matches)),
+                key=lambda i: (statuses[i].is_active, matches[i].get("requestedAt") or "", i),
+            )
+            return statuses[newest]
 
         except Exception:
             logger.exception(f"Failed to get download status for {filename}")

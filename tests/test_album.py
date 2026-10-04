@@ -14,6 +14,7 @@ from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.album_repo import (
     ALBUM_DONE,
     ALBUM_INTERRUPTED,
+    ALBUM_OWNER_STDIO,
     ALBUM_RUNNING,
     AlbumJob,
     AlbumRepository,
@@ -128,6 +129,19 @@ class TestBrowseFolder:
         assert listing.files == [] and listing.answered is False
         assert listing.reason == REASON_UNREACHABLE and "offline" in listing.detail
 
+    async def test_an_http_error_shows_slskds_reason_not_its_url(self):
+        response = requests.Response()
+        response.status_code, response.reason = 404, "Not Found"
+        response._content = b"User vinylhoarder appears to be offline"
+        slskd = _slskd()
+        slskd.browse_directory.side_effect = requests.exceptions.HTTPError(
+            "404 Client Error: Not Found for url: http://slskd:5030/api/v0/users/vinylhoarder/directory",
+            response=response,
+        )
+        listing = await browse_folder(slskd, PEER, FOLDER)
+        assert listing.reason == REASON_UNREACHABLE
+        assert listing.detail == "User vinylhoarder appears to be offline"
+
     async def test_peer_that_never_answers_times_out(self):
         slskd = _slskd()
         slskd.browse_directory.side_effect = lambda *_: time.sleep(0.5) or _raw_folder()
@@ -156,6 +170,26 @@ class TestBrowseFolder:
         )
         client.client.transfers.enqueue.side_effect = requests.exceptions.HTTPError("500")
         assert client.enqueue_files(PEER, [("a\\1.flac", 10)]) is False
+
+    def test_download_status_follows_the_live_transfer_not_an_old_record(self):
+        with patch("slskd_api.SlskdClient"):
+            client = SlskdClient("http://localhost:5030", "k")
+        name = f"{FOLDER}\\01 - A.flac"
+
+        def transfers(*states):
+            files = [{"filename": name, "state": st, "id": i, "requestedAt": at} for st, i, at in states]
+            return {"directories": [{"files": files}]}
+
+        # A given-up attempt left its record; the retry's transfer is the one to follow.
+        client.client.transfers.get_downloads.return_value = transfers(
+            ("Completed, Errored", "old", "2026-10-04T10:00:00"), ("InProgress", "new", "2026-10-04T11:00:00")
+        )
+        assert client.get_download_status(PEER, name).transfer_id == "new"
+        # Both finished: the newest request wins, wherever slskd lists it.
+        client.client.transfers.get_downloads.return_value = transfers(
+            ("Completed, Succeeded", "new", "2026-10-04T11:00:00"), ("Completed, Errored", "old", "2026-10-04T10:00:00")
+        )
+        assert client.get_download_status(PEER, name).transfer_id == "new"
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +315,40 @@ class TestFetchFolder:
         # The second file only had what was left of the album cap.
         assert slskd.wait_for_download.await_args_list[1].kwargs["timeout_secs"] == 50
 
+    @pytest.mark.parametrize(
+        "nones, later, waits, ok",
+        [
+            # Still moving when the first window ends: waited on again, and saved.
+            (1, ["InProgress"], 2, True),
+            # Still queued at the peer: waited on again.
+            (1, ["Queued, Remotely"], 2, True),
+            # Not one byte in a whole window: it gives up.
+            (1, ["InProgress, 0"], 1, False),
+            # Moved in the first window, not in the second: it gives up then.
+            (9, ["InProgress", "InProgress"], 2, False),
+        ],
+    )
+    async def test_a_slow_transfer_is_waited_on_a_stalled_one_gives_up(self, tmp_path, nones, later, waits, ok):
+        slskd = _slskd()
+        slskd.get_download_status.side_effect = [
+            DownloadStatus(PEER, "x", st.split(", 0")[0], bytes_transferred=0 if ", 0" in st else 500) for st in later
+        ]
+        landed = _waiter(tmp_path, {})
+        windows = []
+
+        async def wait(username, filename, timeout_secs, progress_cb):
+            windows.append(timeout_secs)
+            if len(windows) <= nones:
+                return None  # the window ends with the file not finished
+            return await landed(username, filename, timeout_secs, progress_cb)
+
+        slskd.wait_for_download = AsyncMock(side_effect=wait)
+        [outcome] = await fetch_folder(slskd, _processor(tmp_path), _listing(("01 - A.flac",)), 600, 7200)
+        assert windows == [600] * waits
+        assert outcome.ok is ok
+        if not ok:
+            assert (outcome.error, outcome.state) == (DOWNLOAD_FAILED, "Timeout")
+
     async def test_a_raising_progress_or_file_callback_is_contained(self, tmp_path):
         slskd = _slskd()
         slskd.wait_for_download = _waiter(tmp_path, {})
@@ -337,6 +405,14 @@ class TestLocate:
         flat.parent.mkdir(parents=True)
         flat.write_bytes(b"x")
         assert locate(processor, PEER, f"{FOLDER}\\03 - C.flac") == str(flat)
+
+    def test_folder_only_skips_the_bare_name_match(self, tmp_path):
+        other = tmp_path / "downloads" / "2001 - Other" / "01 - A.flac"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b"x")
+        processor = _processor(tmp_path)
+        assert locate(processor, PEER, f"{FOLDER}\\01 - A.flac") == str(other)
+        assert locate(processor, PEER, f"{FOLDER}\\01 - A.flac", folder_only=True) is None
 
     def test_never_leaves_the_downloads_dir(self, tmp_path):
         processor = _processor(tmp_path)
@@ -592,6 +668,23 @@ class TestPipelineAlbum:
         assert not os.path.exists(tmp_path / "downloads" / "1971 - Meddle" / "06 - Echoes.mp3")
         assert pipeline.album_repo.get(job.id).outcomes[2].skipped is True
 
+    async def test_repeated_titles_on_one_album_are_all_saved(self, tmp_path):
+        pipeline = _pipeline(tmp_path)
+        raw = [
+            {
+                "name": FOLDER,
+                "files": [{"filename": n, "size": 10} for n in ("01 - Untitled.flac", "02 - Untitled.flac")],
+            }
+        ]
+        pipeline.slskd.browse_directory.return_value = raw
+        pipeline.slskd.wait_for_download = _waiter(tmp_path, {})
+        job, _ = await pipeline.album(_chosen(), TRACK)
+        assert [(o.ok, o.skipped) for o in job.outcomes] == [(True, False), (True, False)]
+        assert sorted(os.listdir(tmp_path / "music")) == [
+            "Pink Floyd - Untitled (1).flac",
+            "Pink Floyd - Untitled.flac",
+        ]
+
     async def test_offline_peer_creates_no_job(self, tmp_path):
         pipeline = _pipeline(tmp_path)
         pipeline.slskd.browse_directory.side_effect = requests.exceptions.ConnectionError("offline")
@@ -630,6 +723,29 @@ class TestPipelineAlbum:
         assert [(r.title, r.note) for r in restarted.history_repo.get_recent(5)] == [("Pillow of Winds", "album")]
         # A second start finds nothing left running.
         assert await restarted.album_recover() == []
+
+    async def test_restart_leaves_another_owners_album_and_other_albums_files_alone(self, tmp_path):
+        stdio = _pipeline(tmp_path)
+        stdio.album_owner = ALBUM_OWNER_STDIO
+        stdio.slskd.wait_for_download = _waiter(tmp_path, {})
+        made, _ = await stdio.album(_chosen(), TRACK, deliver="path")
+        assert stdio.album_repo.get(made.id).owner == ALBUM_OWNER_STDIO
+
+        listing = _album.parse_directory(_raw_folder(), FOLDER)
+        # A stdio MCP server is running this album: file 2 has landed, it is still waiting on file 1.
+        theirs = stdio.album_repo.add(AlbumJob(PEER, FOLDER, listing, TRACK, owner=ALBUM_OWNER_STDIO))
+        landed = _land(tmp_path, listing[1].filename)
+        # The bot's own album: only a same-named file of another release is on disk.
+        other = "@@x\\Music\\2001 - Other"
+        mine = _album.parse_directory(_raw_folder(other), other)
+        ours = stdio.album_repo.add(AlbumJob(PEER, other, mine, TRACK, chat_id=42))
+
+        bot = _pipeline(tmp_path)
+        jobs = await bot.album_recover()
+        assert [j.id for j in jobs] == [ours.id]
+        assert bot.album_repo.get(theirs.id).status == ALBUM_RUNNING
+        assert os.path.isfile(landed)
+        assert bot.album_repo.get(ours.id).outcomes == [None, None, None]
 
 
 class TestAlbumRepository:

@@ -20,6 +20,7 @@ from music_downloader.persistence.album_repo import (
     ALBUM_CANCELLED,
     ALBUM_DONE,
     ALBUM_INTERRUPTED,
+    ALBUM_OWNER_BOT,
     ALBUM_RUNNING,
     AlbumJob,
     AlbumRepository,
@@ -104,6 +105,8 @@ class Pipeline:
         self.pending_repo = PendingRepository(self.db)
         self.wishlist_repo = WishlistRepository(self.db)
         self.album_repo = AlbumRepository(self.db)
+        # Written on every album job; album_recover takes over only this owner's jobs.
+        self.album_owner = ALBUM_OWNER_BOT
         self.library_index = LibraryIndex(self.db, config.output_dir)
         self.playlist_resolver = PlaylistResolver(self.spotify)
 
@@ -329,6 +332,7 @@ class Pipeline:
             track=track,
             deliver=deliver,
             chat_id=chat_id,
+            owner=self.album_owner,
         )
         if not listing.files:
             job.status = ALBUM_DONE
@@ -354,21 +358,24 @@ class Pipeline:
         return job, listing
 
     async def album_recover(self) -> list[AlbumJob]:
-        """At startup: mark every album job left running as interrupted and process what already landed.
+        """At startup: mark this owner's album jobs left running as interrupted and process what already landed.
 
-        Transfers are not re-enqueued (slskd keeps them). A file with no outcome
-        yet that is on disk in DOWNLOAD_DIR is saved (or recorded, for "path")
-        as if it had just finished; the rest stay without an outcome. A "chat"
-        job's files are left to the orphan sweep: nobody is there to send them.
-        Returns the interrupted jobs, so the front end can say what landed.
+        Only jobs whose owner is *album_owner* are touched: a stdio MCP server
+        sharing DATA_DIR may be running its own album right now. Transfers are
+        not re-enqueued (slskd keeps them). A file with no outcome yet that is
+        on disk in DOWNLOAD_DIR, inside a folder named like its remote one, is
+        saved (or recorded, for "path") as if it had just finished; the rest
+        stay without an outcome. A "chat" job's files are left to the orphan
+        sweep: nobody is there to send them. Returns the interrupted jobs, so
+        the front end can say what landed.
         """
-        jobs = await asyncio.to_thread(self.album_repo.list_by_status, ALBUM_RUNNING)
+        jobs = await asyncio.to_thread(self.album_repo.list_by_status, ALBUM_RUNNING, self.album_owner)
         for job in jobs:
             job.status = ALBUM_INTERRUPTED
             art = self.album_art(job.track)
             for index in job.unfinished if job.deliver != ALBUM_DELIVER_CHAT else ():
                 remote = job.files[index].filename
-                path = await asyncio.to_thread(_album.locate, self.processor, job.username, remote)
+                path = await asyncio.to_thread(_album.locate, self.processor, job.username, remote, True)
                 if path:
                     await self._album_file_landed(job, index, FileOutcome(filename=remote, path=path), art)
             await asyncio.to_thread(self.album_repo.save, job)
@@ -410,7 +417,10 @@ class Pipeline:
             info = await asyncio.to_thread(_album.track_info_for, outcome.path, job.track.artist, job.track.album)
             if job.deliver == ALBUM_DELIVER_LIBRARY:
                 existing = await self.library_copy(outcome.path, info)
-                if existing:
+                # A name this job saved itself is a repeated title on the album, not a
+                # copy the library had: save() gives it a " (1)" name.
+                ours = {os.path.normpath(o.path) for o in job.landed if o.path and not o.skipped}
+                if existing and os.path.normpath(existing) not in ours:
                     await self.discard(outcome.path, job.username, outcome.transfer_id)
                     outcome.path, outcome.skipped = existing, True
                     logger.info("Album file %s skipped: the library has %s", file.basename, existing)

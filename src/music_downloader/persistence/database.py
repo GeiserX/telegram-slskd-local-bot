@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS album_jobs (
     files TEXT NOT NULL,
     outcomes TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'bot',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );

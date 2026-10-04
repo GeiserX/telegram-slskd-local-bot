@@ -26,6 +26,11 @@ ALBUM_DONE = "done"
 ALBUM_INTERRUPTED = "interrupted"
 ALBUM_CANCELLED = "cancelled"
 
+# AlbumJob.owner: the process that runs the job. Only its owner recovers it after
+# a restart, so the bot never takes over an album a stdio MCP server is running.
+ALBUM_OWNER_BOT = "bot"  # the bot, and the MCP it serves over HTTP
+ALBUM_OWNER_STDIO = "stdio"  # a `music_downloader mcp` stdio server
+
 
 @dataclass
 class FolderFile:
@@ -87,6 +92,7 @@ class AlbumJob:
     outcomes: list[FileOutcome | None] = field(default_factory=list)
     status: str = ALBUM_RUNNING
     chat_id: int | None = None
+    owner: str = ALBUM_OWNER_BOT
     id: int | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -122,8 +128,8 @@ class AlbumRepository:
         """Insert *job* and set its id."""
         cursor = self._conn.execute(
             """INSERT INTO album_jobs
-            (chat_id, username, remote_dir, deliver, track, files, outcomes, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (chat_id, username, remote_dir, deliver, track, files, outcomes, status, owner, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job.chat_id,
                 job.username,
@@ -131,6 +137,7 @@ class AlbumRepository:
                 job.deliver,
                 *self._json(job),
                 job.status,
+                job.owner,
                 job.created_at,
                 job.updated_at,
             ),
@@ -153,8 +160,14 @@ class AlbumRepository:
         row = self._conn.execute("SELECT * FROM album_jobs WHERE id = ?", (job_id,)).fetchone()
         return self._load(row) if row else None
 
-    def list_by_status(self, status: str) -> list[AlbumJob]:
-        rows = self._conn.execute("SELECT * FROM album_jobs WHERE status = ? ORDER BY id", (status,)).fetchall()
+    def list_by_status(self, status: str, owner: str | None = None) -> list[AlbumJob]:
+        """The jobs in *status*, oldest first; only *owner*'s when given."""
+        if owner is None:
+            rows = self._conn.execute("SELECT * FROM album_jobs WHERE status = ? ORDER BY id", (status,)).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM album_jobs WHERE status = ? AND owner = ? ORDER BY id", (status, owner)
+            ).fetchall()
         return [job for job in (self._load(row) for row in rows) if job is not None]
 
     @staticmethod

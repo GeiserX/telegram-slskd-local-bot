@@ -137,16 +137,26 @@ async def browse_folder(
         return FolderListing(username, folder, answered=False, reason=REASON_NO_ANSWER)
     except Exception as exc:
         logger.info("Could not list %s on %s: %s", folder, username, exc)
-        return FolderListing(username, folder, answered=False, reason=REASON_UNREACHABLE, detail=str(exc))
+        return FolderListing(username, folder, answered=False, reason=REASON_UNREACHABLE, detail=_error_detail(exc))
     files = parse_directory(directories, folder)
     return FolderListing(username, folder, files, answered=True, reason="" if files else REASON_NO_AUDIO)
 
 
-def locate(processor: FileProcessor, username: str, remote_filename: str) -> str | None:
+def _error_detail(exc: Exception) -> str:
+    """What slskd said about a failed request, not the requests text that carries slskd's own URL."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    return (response.text or "").strip() or response.reason or f"HTTP {response.status_code}"
+
+
+def locate(processor: FileProcessor, username: str, remote_filename: str, folder_only: bool = False) -> str | None:
     """Where slskd put *remote_filename*: <download dir>[/<username>]/<remote folder name>/<file> first.
 
     Album files share names across releases ("01 - Intro.flac"), so the file
     inside a folder named like the remote one wins over a bare name match.
+    *folder_only* skips that bare name match: after a restart another album's
+    file of the same name may be the only one on disk.
     """
     parts = remote_filename.split("\\")
     basename, leaf = parts[-1], parts[-2] if len(parts) > 1 else ""
@@ -159,6 +169,8 @@ def locate(processor: FileProcessor, username: str, remote_filename: str) -> str
             real = os.path.realpath(candidate)
             if real.startswith(root + os.sep) and os.path.isfile(real):
                 return candidate
+    if folder_only:
+        return None
     return processor.find_downloaded_file(username, remote_filename)
 
 
@@ -206,6 +218,46 @@ async def _wait_unless_cancelled(wait: Awaitable, cancel: asyncio.Event | None):
     return None, True
 
 
+async def _wait_while_moving(
+    slskd: SlskdClient,
+    username: str,
+    filename: str,
+    window_secs: int,
+    time_left: Callable[[], float],
+    on_status,
+    cancel: asyncio.Event | None,
+) -> tuple[DownloadStatus | None, bool]:
+    """(slskd's final status, False); (None, False) once the transfer stalls or the album cap is spent;
+    (None, True) when *cancel* is set.
+
+    Waits in windows of *window_secs*. A window that ends with the transfer
+    still queued at the peer, or with more bytes than when it started, opens
+    another: a slow peer is waited on, only a stalled transfer gives up.
+    """
+    moved = 0
+    while True:
+        status, cancelled = await _wait_unless_cancelled(
+            slskd.wait_for_download(
+                username=username,
+                filename=filename,
+                timeout_secs=max(1, int(min(window_secs, time_left()))),
+                progress_cb=on_status,
+            ),
+            cancel,
+        )
+        if cancelled or status is not None:
+            return status, cancelled
+        now = await asyncio.to_thread(slskd.get_download_status, username, filename)
+        if now is not None and (now.is_complete or now.is_failed):
+            return now, False
+        if now is None or time_left() <= 0:
+            return None, False
+        if "queued" not in now.state.lower() and now.bytes_transferred <= moved:
+            logger.info("%s from %s stalled at %d bytes (%s)", filename, username, now.bytes_transferred, now.state)
+            return None, False
+        moved = max(moved, now.bytes_transferred)
+
+
 async def fetch_folder(
     slskd: SlskdClient,
     processor: FileProcessor,
@@ -219,9 +271,10 @@ async def fetch_folder(
 ) -> list[FileOutcome]:
     """Download every file of *listing*; one FileOutcome per file, in listing order.
 
-    Each file is waited on for at most *per_file_timeout_secs*, and the whole
-    album for at most *total_timeout_secs*: once that is spent the files left
-    fail with state "Timeout" (slskd keeps their transfers). Never raises on a
+    A file gives up when its transfer moves no byte for *per_file_timeout_secs*
+    (a file still queued at the peer keeps waiting), and the whole album
+    after *total_timeout_secs*: once that is spent the files left fail with
+    state "Timeout" (slskd keeps their transfers). Never raises on a
     failed file. *on_file* runs as each file finishes (the pipeline saves it
     there), so what landed is known even if the album never completes.
 
@@ -256,13 +309,13 @@ async def fetch_folder(
                 async def on_status(status: DownloadStatus, i=i) -> None:
                     await _call(progress_cb, i, total, status.state, status.percent_complete)
 
-                status, cancelled = await _wait_unless_cancelled(
-                    slskd.wait_for_download(
-                        username=username,
-                        filename=f.filename,
-                        timeout_secs=max(1, int(min(per_file_timeout_secs, remaining))),
-                        progress_cb=on_status,
-                    ),
+                status, cancelled = await _wait_while_moving(
+                    slskd,
+                    username,
+                    f.filename,
+                    per_file_timeout_secs,
+                    lambda: total_timeout_secs - (clock() - started),
+                    on_status,
                     cancel,
                 )
                 if cancelled:

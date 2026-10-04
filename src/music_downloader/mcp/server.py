@@ -174,9 +174,12 @@ async def serve_http(pipeline, config: Config) -> None:
 
 def run_stdio(config: Config) -> None:
     """`python -m music_downloader mcp`: serve MCP over stdin/stdout with its own Pipeline."""
+    from music_downloader.persistence.album_repo import ALBUM_OWNER_STDIO
     from music_downloader.pipeline import Pipeline
 
     pipeline = Pipeline(config)
+    # Its albums are its own: the bot's startup recovery leaves them alone.
+    pipeline.album_owner = ALBUM_OWNER_STDIO
     server = build_server(McpTools(pipeline))
 
     async def main() -> None:
