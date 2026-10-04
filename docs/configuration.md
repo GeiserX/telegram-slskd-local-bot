@@ -29,7 +29,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | `DURATION_TOLERANCE_SECS` | No | `5` | Duration match tolerance in seconds |
 | `SEARCH_TIMEOUT_SECS` | No | `30` | slskd search timeout |
 | `DOWNLOAD_TIMEOUT_SECS` | No | `600` | Download completion timeout |
-| `ALBUM_TIMEOUT_SECS` | No | `7200` | The most a whole album download (the Whole album button, or the MCP `album_download`) may take. Each file still gets at most `DOWNLOAD_TIMEOUT_SECS`; files left when this runs out fail as timed out (slskd keeps their transfers) |
+| `ALBUM_TIMEOUT_SECS` | No | `7200` | The most a whole album download (the Whole album button, or the MCP `album_download`) may take. An album file gives up when its transfer moves no byte for `DOWNLOAD_TIMEOUT_SECS` (one still queued at the peer keeps waiting); files left when this runs out fail as timed out (slskd keeps their transfers, nothing saves them) |
 | `WISHLIST_CHECK_HOURS` | No | `24` | Hours between two searches for the same wished track (`/wishlist`) |
 | `WISHLIST_PAUSE_SECS` | No | `20` | Seconds between two wish searches in one pass, to keep the load on Soulseek peers low |
 | `DOWNLOAD_CLEANUP_HOURS` | No | `24` | Hours before abandoned files in `DOWNLOAD_DIR` are auto-deleted (hourly sweep; `0` disables). In-flight transfers are never touched. Downloads still waiting on a button (Save, Reject, Retry) survive a restart for this long, then expire with their file. Result lists older than this are dropped at the next start |

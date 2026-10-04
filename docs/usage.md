@@ -92,11 +92,13 @@ in: the result list keeps its usual buttons.
    or is offline, the message says so and offers **Retry**.
 2. Tap **Get all N**, or **Cancel** to go back to the album button. One status message follows the download
    file by file, with the file being fetched, its progress, and how many arrived, were skipped or failed so far.
-3. The bot delivers each file as it lands, the same way it delivered the track:
+3. The bot delivers each file as it lands, the way this chat delivers when you tap **Get all**:
     - **Library delivery**: saved into `OUTPUT_DIR` with no preview, named from its tags (or its file name when
       the tags are missing) through `FILENAME_TEMPLATE`, where `{track}` puts the track number in. Every file gets
       the album's Spotify cover. A file the library already has under the same name, accents and case aside, is
-      skipped and its download deleted; the chosen track itself is usually one of them.
+      skipped and its download deleted; the chosen track itself is usually one of them. The check goes by name
+      only: a different track saved earlier under that exact name (an "Intro" from another album) counts too.
+      Two files of this album with the same title are both kept, the second as "Artist - Title (1)".
     - **Chat delivery**: sent into the chat under the upload cap and in the `/format` format, converted when
       needed exactly like a single track, with the caption "03/09 Artist - Title".
 4. A file that fails (the peer refused it, the transfer timed out, it was too big to send) is listed and skipped;
@@ -104,14 +106,17 @@ in: the result list keeps its usual buttons.
    the library, and each failed file with the reason.
 
 As with one track, the bot deletes each download once it is saved or sent and removes its finished transfer
-from slskd. A file that could not be sent stays in `DOWNLOAD_DIR` for the hourly sweep. Each file waits at most
-`DOWNLOAD_TIMEOUT_SECS` and the whole album at most `ALBUM_TIMEOUT_SECS`, two hours by default (see
-[Configuration](configuration.md)). Files still waiting when that runs out fail as timed out.
+from slskd. A file that could not be sent stays in `DOWNLOAD_DIR` for the hourly sweep. A file gives up when its
+transfer moves no byte for `DOWNLOAD_TIMEOUT_SECS`; one still queued at the peer keeps waiting. The whole album
+waits at most `ALBUM_TIMEOUT_SECS`, two hours by default (see [Configuration](configuration.md)). Files still
+waiting when that runs out fail as timed out, and the summary says so: slskd keeps their transfers, but a file
+that lands later is not saved, and the hourly sweep removes it.
 
 One album runs per chat at a time, and a new search does not stop it. `/cancel` does: the bot stops waiting,
 keeps every file that already arrived, and leaves the transfers still queued in slskd (remove them there if you
 do not want them). After a restart the bot tells the chat how far an interrupted album got; files that landed
-while it was down are saved to the library, and slskd keeps the rest. The album button expires with its track
+while it was down are saved to the library (library delivery) or left for the hourly sweep (chat delivery), and
+slskd keeps the rest. The album button expires with its track
 after `DOWNLOAD_CLEANUP_HOURS`. `/import` tracks do not get one.
 
 ## Scoring Algorithm
