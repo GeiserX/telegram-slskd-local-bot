@@ -112,12 +112,14 @@ Search results are ranked by:
     - **Chat delivery**: no lossless-first split; the points measure quality for the size. A lossless file and
       a lossy one at 256 kbps or more both start at 25 (192 kbps 20, 128 kbps 10, under 128 kbps 1), then lose
       up to 5 points as the file grows from 5 MB to 50 MB, or to the upload cap when that is smaller, and
-      with a local Bot API server up to 10 more points from 50 MB to the cap
+      with a local Bot API server up to 20 more points from 50 MB to the cap, on a logarithmic scale so the
+      first doubling already counts
       (1 MB = 1,000,000 bytes, as Telegram counts). With a 2000 MB cap a 300 MB file pays the same 5 points as a
       50 MB one. A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
       FLAC of the same song, and a 20 MB FLAC beats a 20 MB MP3 at 128 kbps. A copy over the cap scores as the
       Opus it will be sent as: its tier minus 8.
-3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue
+3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue. In chat delivery these
+   count half, so quality for its size can outweigh a fast peer
 4. **Filename relevance** (15 pts): Artist and title words found in the filename
 
 Results containing excluded keywords (live, remix, etc.) are automatically filtered out, unless the original track title also contains that keyword.
