@@ -404,13 +404,21 @@ class Pipeline:
         """
         extension = os.path.splitext(path)[1].lstrip(".").lower() or "flac"
         name = self.processor.build_filename(track.artist, track.title, extension, track.track_number)
-        rel_path = await asyncio.to_thread(self.library_index.find_stem, os.path.splitext(name)[0])
-        if not rel_path:
+        copies = await asyncio.to_thread(self.library_index.find_stems, os.path.splitext(name)[0])
+        if not copies:
             return None
-        existing_ext = os.path.splitext(rel_path)[1].lstrip(".").lower()
-        if is_lossless(extension) and not is_lossless(existing_ext):
-            return None
-        return os.path.join(self.config.output_dir, rel_path)
+
+        def ext_of(rel: str) -> str:
+            return os.path.splitext(rel)[1].lstrip(".").lower()
+
+        # Same format first, then any lossless copy: either one makes the new file a duplicate.
+        same = [c for c in copies if ext_of(c) == extension]
+        lossless = [c for c in copies if is_lossless(ext_of(c))]
+        if same:
+            return os.path.join(self.config.output_dir, same[0])
+        if lossless or not is_lossless(extension):
+            return os.path.join(self.config.output_dir, (lossless or copies)[0])
+        return None  # only lossy copies in the library and the new file is lossless
 
     async def _album_file_landed(
         self,

@@ -129,6 +129,14 @@ class LibraryIndex:
             )
         return True
 
+    def find_stems(self, stem: str) -> list[str]:
+        """Every library file (paths relative to root) named *stem*, accents and case aside, by path."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rel_path FROM library_index WHERE norm_stem = ? ORDER BY rel_path", (normalise(stem),)
+            ).fetchall()
+        return [row[0] for row in rows]
+
     def find_stem(self, stem: str, extension: str | None = None) -> str | None:
         """A library file (path relative to root) named *stem*, accents and case aside; None when there is none.
 
