@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from music_downloader.config import Config
+from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.settings_repo import SettingsRepository
 from music_downloader.pipeline import fetch as pipeline_fetch
@@ -125,13 +126,33 @@ def _flac(name, size):
     )
 
 
+def _make_track(duration_ms=162_000):
+    return TrackInfo(
+        artist="Pink Floyd", title="Echoes", album="Meddle", duration_ms=duration_ms, spotify_url="u", year="1971"
+    )
+
+
 class TestRankingAboveFiftyMb:
-    def test_penalty_stays_at_the_maximum_above_fifty_mb(self):
+    def test_penalty_keeps_growing_above_fifty_mb_up_to_the_cap(self):
         scorer = ResultScorer(chat_size_limit_bytes=2_000_000_000)
         at_50 = scorer._chat_quality_points(_flac("a", 50_000_000))
         assert at_50 == 20.0  # top tier 25 minus the full 5-point size cost
-        assert scorer._chat_quality_points(_flac("b", 60_000_000)) == at_50
-        assert scorer._chat_quality_points(_flac("c", 1_500_000_000)) == at_50
+        at_60 = scorer._chat_quality_points(_flac("b", 60_000_000))
+        at_900 = scorer._chat_quality_points(_flac("c", 908_000_000))
+        at_cap = scorer._chat_quality_points(_flac("d", 2_000_000_000))
+        assert at_50 > at_60 > at_900 > at_cap
+        assert at_cap == pytest.approx(10.0)  # 5 + 10 points at the cap
+
+    def test_big_cap_57mb_mp3_beats_908mb_hires_flac(self):
+        # The live list that showed the flaw: with a 2000 MB cap, eight 908 MB 24/192 FLACs
+        # led a 57 MB MP3 320 of the same 23-minute track.
+        scorer = ResultScorer(chat_size_limit_bytes=2_000_000_000)
+        mp3 = SearchResult(username="m", filename="\\x\\Echoes.mp3", size=57_000_000, bit_rate=320, length=1413)
+        flac = SearchResult(
+            username="f", filename="\\x\\Echoes.flac", size=908_000_000, bit_depth=24, sample_rate=192000, length=1413
+        )
+        ranked = scorer.score_results([flac, mp3], _make_track(1_413_000), profile=PROFILE_CHAT)
+        assert [r.extension for r in ranked] == ["mp3", "flac"]
         # The curve between 5 MB and 50 MB is the same as with the 50 MB cloud cap.
         cloud = ResultScorer(chat_size_limit_bytes=50_000_000)
         mid = _flac("d", 27_500_000)
