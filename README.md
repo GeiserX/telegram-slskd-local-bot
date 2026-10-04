@@ -16,12 +16,14 @@
 
 - Send a song name; the bot resolves artist, title, album and duration on Spotify and searches Soulseek through your slskd for every audio format: lossless (FLAC, WAV, AIFF, ALAC, APE, WavPack, TTA, TAK) and lossy (MP3, AAC, M4A, Ogg, Opus, WMA).
 - Lists every lossless copy of known length before every lossy one, so a song with no lossless copy still gets the best MP3 or AAC. Within each group it ranks by duration against Spotify, bit depth and sample rate (hi-res first) or bitrate, free slots, speed and file name; drops live, remix and karaoke cuts unless the title has them.
-- Sends you the track in the chat before it is saved: the file itself, or an Opus copy of the whole song when the file is over Telegram's 50 MB limit.
+- Sends you the track in the chat before it is saved: the file itself, or an Opus copy of the whole song when the file is over Telegram's 50 MB limit. With a [local Bot API server](https://geiserx.github.io/telegram-slskd-local-bot/getting-started/#send-files-over-50-mb-a-local-bot-api-server) (compose profile `bigfiles`) the limit is 2000 MB and originals go as they are.
 - Checks the spectrum of a lossless file found from a song name (by you or `/auto`) and flags an MP3-style cutoff ("Possible transcode", "Likely transcode", "Fake lossless") before Save. `/import` skips it. FLAC, WAV and AIFF are checked; other lossless formats say "not checked".
 - Warns when similar files are already in the library before it searches.
 - Saves as `Artist - Title` with its own extension (`.flac`, `.wav`, `.mp3`...) and the Spotify cover art embedded, in the folder your player or [audio-transcode-watcher](https://github.com/GeiserX/audio-transcode-watcher) watches.
 - `/import` a Spotify playlist or album and review each track or auto-save them all; `/status` shows the progress.
 - Chat delivery (`/deliver`, or fixed per account with `TELEGRAM_CHAT_DELIVERY_USERS`) sends the track into the chat under 50 MB and saves nothing anywhere, so you can share the bot without sharing your library. It ranks copies by quality for their size instead: an MP3 at 320 kbps counts as much as a lossless file, and the smaller file wins.
+- `/format` per chat sends tracks as the original, MP3 320 kbps or Opus 192 kbps, for whoever wants MP3 whatever the source.
+- A wishlist: "Tell me when it appears" when nothing is found, "Wait for a better copy" under every result list. The bot searches again every `WISHLIST_CHECK_HOURS` and tells you, or fetches the copy with `/auto` on; `/wishlist` lists and removes wishes.
 - `/auto` per chat saves the best match without a tap; a failed transfer gets Retry and Try next result; downloads show live progress.
 - Answers only allow-listed Telegram users, and denies everyone while the list is empty.
 - Sweeps abandoned downloads after `DOWNLOAD_CLEANUP_HOURS` and never touches a transfer in flight.
@@ -53,7 +55,7 @@ The docs are at [geiserx.github.io/telegram-slskd-local-bot](https://geiserx.git
 - [Usage](https://geiserx.github.io/telegram-slskd-local-bot/usage/): what the chat shows, the commands, how results are scored
 - [MCP server](https://geiserx.github.io/telegram-slskd-local-bot/mcp/): the tools, the stdio and HTTP setup for Claude Code and Claude Desktop, the token
 - [How it works](https://geiserx.github.io/telegram-slskd-local-bot/how-it-works/): the path from a message to a file in the library
-- [Troubleshooting](https://geiserx.github.io/telegram-slskd-local-bot/troubleshooting/): the four failures people hit and what to report in an issue
+- [Troubleshooting](https://geiserx.github.io/telegram-slskd-local-bot/troubleshooting/): the failures people hit and what to report in an issue
 - [Development](https://geiserx.github.io/telegram-slskd-local-bot/development/): running from a checkout, tests, releases
 
 Release notes are in the [changelog](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docs/CHANGELOG.md). Bugs and questions go to the [issues](https://github.com/GeiserX/telegram-slskd-local-bot/issues); security problems to the [security policy](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/SECURITY.md), never a public issue.

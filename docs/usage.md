@@ -54,8 +54,9 @@ Chat delivery is for someone who wants the song in Telegram and nowhere else. Yo
 as before, but nothing is written to the library or kept on disk: when the download finishes, the bot sends
 the track into the chat with no Save or Reject buttons and deletes the downloaded file.
 
-The upload cap is Telegram's 50 MB (50,000,000 bytes), set by `TELEGRAM_MAX_UPLOAD_MB` (see
-[Configuration](configuration.md)).
+The upload cap is Telegram's 50 MB (50,000,000 bytes), or 2000 MB when the bot talks to a
+[local Bot API server](getting-started.md#send-files-over-50-mb-a-local-bot-api-server). `TELEGRAM_MAX_UPLOAD_MB`
+overrides either (see [Configuration](configuration.md)).
 
 - A file at or under the cap is sent as it is, with the Spotify cover art embedded.
 - A bigger file is converted to Opus at the highest of 192, 160, 128 or 96 kbps that fits under the cap, and
@@ -106,8 +107,9 @@ Search results are ranked by:
       (an Opus file at 128 kbps is top tier, an AAC one at 128 kbps is a step below).
     - **Chat delivery**: no lossless-first split; the points measure quality for the size. A lossless file and
       a lossy one at 256 kbps or more both start at 25 (192 kbps 20, 128 kbps 10, under 128 kbps 1), then lose
-      up to 5 points as the file grows from 5 MB to the upload cap (50 MB unless `TELEGRAM_MAX_UPLOAD_MB` says
-      otherwise; 1 MB = 1,000,000 bytes, as Telegram counts). A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
+      up to 5 points as the file grows from 5 MB to 50 MB, or to the upload cap when that is smaller
+      (1 MB = 1,000,000 bytes, as Telegram counts). With a 2000 MB cap a 300 MB file pays the same 5 points as a
+      50 MB one. A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
       FLAC of the same song, and a 20 MB FLAC beats a 20 MB MP3 at 128 kbps. A copy over the cap scores as the
       Opus it will be sent as: its tier minus 8.
 3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue

@@ -30,7 +30,7 @@ and "we have a file ready to hand over". Its methods take and return plain datac
 |--------|--------------|
 | `pipeline/resolve.py` | Free text to Spotify candidates (`lookup`), "Artist - Title" parsing, the synthetic track a direct search uses |
 | `pipeline/search.py` | The search query helpers (version-noise stripping, keyword-reduction fallbacks), the title guard, and `rank`, which turns slskd responses into a `RankedResults` list for the `library` or `chat` profile |
-| `pipeline/fetch.py` | `fetch`: enqueue, wait, find the file on disk, run the lossless check, all returned as a `FetchOutcome`. Also the Opus conversion and the bitrate ladder that fits the upload cap |
+| `pipeline/fetch.py` | `fetch`: enqueue, wait, find the file on disk, run the lossless check, all returned as a `FetchOutcome`. Also the Opus conversion and the bitrate ladder that fits the upload cap, and the `/format` send formats (`transcode` to MP3 320 or Opus 192) |
 | `pipeline/library.py` | Cover art, the download-history row, deleting sources, the hourly orphan sweep |
 | `pipeline/wishlist.py` | The wishlist checker: which wishes are due, which copies satisfy one (`search/scorer.py` `quality_tier`), the sequential search pass that hands hits to the front end's delivery callback |
 
