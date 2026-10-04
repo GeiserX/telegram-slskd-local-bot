@@ -224,7 +224,8 @@ class McpTools:
         """Search a resolved track again every WISHLIST_CHECK_HOURS.
 
         "any": the first copy that turns up. "better": a copy above the best
-        one search_copies found. Hits go to the owner's Telegram chat.
+        one search_copies found. Hits go to the owner's Telegram chat. A track
+        the owner already waits for comes back as that wish, already_waiting true.
         """
         entry = self._track(track_id)
         if wanted not in (WANTED_ANY, WANTED_BETTER):
@@ -232,6 +233,9 @@ class McpTools:
         owner = self.pipeline.config.telegram_owner_id
         if owner is None:
             raise ToolError("TELEGRAM_ALLOWED_USERS is empty: there is no owner chat to notify.")
+        existing = self.pipeline.wishlist_find(owner, entry.track)
+        if existing is not None:
+            return {"wish": _wish_dict(existing), "already_waiting": True}
         baseline = None
         if wanted == WANTED_BETTER:
             if not entry.ranked:
@@ -240,7 +244,7 @@ class McpTools:
             if baseline >= TIER_LOSSLESS_24:
                 raise ToolError("A lossless 24-bit copy is already there: nothing ranks higher.")
         wish = self.pipeline.wishlist_add(owner, owner, entry.track, entry.profile or "library", wanted, baseline)
-        return {"wish": _wish_dict(wish)}
+        return {"wish": _wish_dict(wish), "already_waiting": False}
 
     async def wishlist_list(self) -> dict:
         """Every wish, from every chat (the MCP caller is the owner)."""

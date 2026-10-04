@@ -20,7 +20,17 @@ from music_downloader.search.scorer import quality_tier
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["WANTED_ANY", "WANTED_BETTER", "Wish", "WishDelivery", "check_due", "is_due", "satisfying", "wish_query"]
+__all__ = [
+    "WANTED_ANY",
+    "WANTED_BETTER",
+    "Wish",
+    "WishDelivery",
+    "WishSkip",
+    "check_due",
+    "is_due",
+    "satisfying",
+    "wish_query",
+]
 
 # How often the checker wakes to look for due wishes.
 WISHLIST_TICK_SECS = 3600
@@ -30,6 +40,9 @@ WISHLIST_TICK_SECS = 3600
 # copies (the wish stays and is not shown again until its next period).
 WishDelivery = Callable[[Wish, RankedResults], Awaitable[bool]]
 SearchFn = Callable[[str, TrackInfo, str], Awaitable[RankedResults]]
+# skip(wish) -> True while the wish's chat is busy (its own search or download
+# is running): the wish is left due and tried again at the next tick.
+WishSkip = Callable[[Wish], bool]
 
 
 def wish_query(track: TrackInfo) -> str:
@@ -62,17 +75,29 @@ async def check_due(
     pause_secs: float,
     sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
     now: Callable[[], float] = time.time,
+    skip: WishSkip | None = None,
 ) -> int:
     """Search every due wish once, sequentially; returns how many searches ran.
 
     A wish with no satisfying copy only gets its last_checked_at and checks
     updated. A hit goes to *deliver*: fulfilled wishes are removed, shown ones
-    get notified_at. A search or delivery that raises counts as a check.
+    get notified_at. A search or delivery that raises counts as a check. A
+    wish *skip* answers True for is not searched and stays due. A failed
+    database write is logged and the pass goes on.
     """
+
+    def write(wish: Wish, fn: Callable, *args) -> None:
+        try:
+            fn(*args)
+        except Exception:
+            logger.exception("Wishlist update %s failed for wish %s", fn.__name__, wish.id)
+
     due = [w for w in repo.list_all() if is_due(w, now(), period_secs)]
     searched = 0
     for wish in due:
         if repo.get(wish.id) is None:  # removed while earlier wishes were searched
+            continue
+        if skip is not None and skip(wish):
             continue
         if searched:
             await sleep(pause_secs)
@@ -81,21 +106,22 @@ async def check_due(
             ranked = await search(wish_query(wish.track), wish.track, wish.profile)
         except Exception:
             logger.warning("Wishlist search failed for wish %s", wish.id, exc_info=True)
-            repo.mark_checked(wish.id, now())
+            write(wish, repo.mark_checked, wish.id, now())
             continue
         matches = satisfying(wish, ranked)
         if not matches:
-            repo.mark_checked(wish.id, now())
+            write(wish, repo.mark_checked, wish.id, now())
             continue
         try:
             fulfilled = await deliver(wish, matches)
         except Exception:
             logger.exception("Wishlist delivery failed for wish %s", wish.id)
-            repo.mark_checked(wish.id, now())
+            write(wish, repo.mark_checked, wish.id, now())
             continue
+        # notified_at first: if the removal fails, the wish still waits a
+        # full period instead of being delivered again at the next tick.
+        write(wish, repo.mark_notified, wish.id, now())
         if fulfilled:
-            repo.remove(wish.chat_id, wish.id)
+            write(wish, repo.remove, wish.chat_id, wish.id)
             logger.info("Wish %s fulfilled: %s - %s", wish.id, wish.track.artist, wish.track.title)
-        else:
-            repo.mark_notified(wish.id, now())
     return searched

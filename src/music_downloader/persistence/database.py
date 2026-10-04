@@ -99,6 +99,23 @@ CREATE TABLE IF NOT EXISTS pending_searches (
     created_at REAL NOT NULL
 );
 
+-- Result lists the wishlist checker sent, one row per notification. Kept
+-- apart from pending_searches so a chat's own search and a wish's list never
+-- replace each other. wish_id is NULL once the wish is gone.
+CREATE TABLE IF NOT EXISTS wish_searches (
+    chat_id INTEGER NOT NULL,
+    search_id TEXT NOT NULL,
+    wish_id INTEGER,
+    query TEXT NOT NULL,
+    track TEXT,
+    results TEXT NOT NULL DEFAULT '[]',
+    message_id INTEGER,
+    page INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (chat_id, search_id)
+);
+
 -- Audio files under OUTPUT_DIR (subfolders included), for the duplicate
 -- check. Rebuilt by walking the folder at startup and hourly, and updated by
 -- every save. rel_path is relative to OUTPUT_DIR; stem is the file name

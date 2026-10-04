@@ -244,6 +244,14 @@ class Pipeline:
         )
         return self.wishlist_repo.add(wish)
 
+    def wishlist_find(self, chat_id: int, track: TrackInfo) -> Wish | None:
+        """The chat's wish for the same artist and title as *track*, if it has one."""
+        key = (track.artist.casefold(), track.title.casefold())
+        return next(
+            (w for w in self.wishlist_list(chat_id) if (w.track.artist.casefold(), w.track.title.casefold()) == key),
+            None,
+        )
+
     def wishlist_list(self, chat_id: int) -> list[Wish]:
         """The chat's wishes, oldest first."""
         return self.wishlist_repo.list_for_chat(chat_id)
@@ -252,10 +260,12 @@ class Pipeline:
         """Drop a wish of *chat_id*; False when it was not there."""
         return self.wishlist_repo.remove(chat_id, wish_id)
 
-    async def wishlist_check_due(self, deliver: WishDelivery, sleep=asyncio.sleep) -> int:
+    async def wishlist_check_due(
+        self, deliver: WishDelivery, sleep=asyncio.sleep, skip: _wishlist.WishSkip | None = None
+    ) -> int:
         """Search every due wish once (WISHLIST_CHECK_HOURS, WISHLIST_PAUSE_SECS between searches).
 
-        Returns how many searches ran; see pipeline.wishlist.check_due.
+        Returns how many searches ran; see pipeline.wishlist.check_due (and *skip* there).
         """
         return await _wishlist.check_due(
             self.wishlist_repo,
@@ -264,13 +274,14 @@ class Pipeline:
             period_secs=self.config.wishlist_check_hours * 3600,
             pause_secs=self.config.wishlist_pause_secs,
             sleep=sleep,
+            skip=skip,
         )
 
-    async def wishlist_loop(self, deliver: WishDelivery) -> None:
+    async def wishlist_loop(self, deliver: WishDelivery, skip: _wishlist.WishSkip | None = None) -> None:
         """Check due wishes now, then every WISHLIST_TICK_SECS."""
         while True:
             try:
-                await self.wishlist_check_due(deliver)
+                await self.wishlist_check_due(deliver, skip=skip)
             except Exception:
                 logger.exception("Wishlist check failed")
             await asyncio.sleep(_wishlist.WISHLIST_TICK_SECS)

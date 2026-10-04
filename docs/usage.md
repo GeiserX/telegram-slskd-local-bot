@@ -39,14 +39,18 @@ A track can wait for a copy that does not exist yet:
 
 - When nothing is found, tap **🔔 Tell me when it appears**: any copy will do.
 - Under every result list, tap **⏳ Wait for a better copy**: only a copy of a higher quality tier than
-  result #1 counts. The tiers, lowest first: lossy under 128 kbps, 128, 192, 256 kbps or more (MP3-equivalent,
+  the best one on the list counts. The tiers, lowest first: lossy under 128 kbps, 128, 192, 256 kbps or more (MP3-equivalent,
   so Opus 128 counts as 256), lossless 16-bit, lossless 24-bit.
 
 The bot searches each wished track again once every `WISHLIST_CHECK_HOURS` (default 24), one search at a
-time with `WISHLIST_PAUSE_SECS` (default 20) between them. When a copy turns up, a chat with `/auto` on gets
-it fetched and delivered like an auto search, and the wish is done. Any other chat gets the list of copies
-that qualify, with the usual pick buttons and **Stop waiting**; the wish stays and is not sent again before the
-next period. `/wishlist` lists the chat's wishes with when each was last checked.
+time with `WISHLIST_PAUSE_SECS` (default 20) between them. It leaves a chat alone while that chat's own search,
+download or import runs, and tries again an hour later. When a copy turns up, a chat with `/auto` on gets it
+fetched and delivered like an auto search. Any other chat gets the list of copies that qualify, with the usual
+pick buttons and **Stop waiting**. That list is a message of its own. It does not replace the chat's current
+result list, and a new search does not replace it. The wish is done once a copy from it is saved or sent into
+the chat; until then it stays and is not sent again before the next period, so a failed download leaves it
+waiting. A track already on the wishlist is not added twice. `/wishlist` lists the chat's wishes with when
+each was last checked.
 
 ## Chat delivery
 

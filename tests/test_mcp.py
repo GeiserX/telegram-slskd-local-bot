@@ -48,6 +48,7 @@ class FakePipeline:
     """The Pipeline surface McpTools uses, with real SQLite repos and canned slskd/Spotify answers."""
 
     wishlist_add = Pipeline.wishlist_add
+    wishlist_find = Pipeline.wishlist_find
     wishlist_list = Pipeline.wishlist_list
     wishlist_remove = Pipeline.wishlist_remove
 
@@ -246,6 +247,16 @@ class TestWishlistTools:
         assert await tools.wishlist_remove(wish["id"]) == {"removed": True}
         assert await tools.wishlist_remove(wish["id"]) == {"removed": False}
         assert (await tools.wishlist_list())["wishes"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_track_already_waited_for_is_not_added_twice(self, tmp_path):
+        tools, pipeline, _ = _tools(tmp_path)
+        track_id = (await tools.resolve_track("bang bang"))["candidates"][0]["id"]
+        first = await tools.wishlist_add(track_id)
+        assert first["already_waiting"] is False
+        again = await tools.wishlist_add(track_id, "any")
+        assert again == {"wish": first["wish"], "already_waiting": True}
+        assert len(pipeline.wishlist_repo.list_all()) == 1
 
     @pytest.mark.asyncio
     async def test_list_and_remove_cover_every_chat(self, tmp_path):

@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from telegram import InlineKeyboardMarkup
 
+from music_downloader.bot.handlers import MusicBot
 from music_downloader.persistence.database import Database
+from music_downloader.persistence.pending_repo import PendingDownload, PendingSearch
 from music_downloader.persistence.wishlist_repo import Wish, WishlistRepository
 from music_downloader.pipeline import wishlist as pw
 from music_downloader.pipeline.search import RankedResults
@@ -259,6 +261,38 @@ class TestChecker:
         assert repo.get(wish.id) is None
 
     @pytest.mark.asyncio
+    async def test_a_failed_write_does_not_stop_the_pass(self, tmp_path):
+        repo = _repo(tmp_path)
+        first = _wish(repo)
+        second = _wish(repo, chat_id=OTHER)
+        real_remove = repo.remove
+
+        def remove(chat_id, wish_id):
+            if wish_id == first.id:
+                raise sqlite3.OperationalError("database is locked")
+            return real_remove(chat_id, wish_id)
+
+        repo.remove = remove
+        deliver = AsyncMock(return_value=True)
+        n = await pw.check_due(repo, _search_returning(_mp3(320)), deliver, DAY, 0, sleep=AsyncMock(), now=lambda: DAY)
+        assert n == 2 and deliver.await_count == 2
+        assert repo.get(second.id) is None
+        # The removal failed, but notified_at holds the wish back for a period.
+        assert repo.get(first.id).notified_at == DAY
+        assert not pw.is_due(repo.get(first.id), DAY + 3600, DAY)
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_wish_is_not_searched_and_stays_due(self, tmp_path):
+        repo = _repo(tmp_path)
+        wish = _wish(repo)
+        search = _search_returning()
+        n = await pw.check_due(
+            repo, search, AsyncMock(), DAY, 0, sleep=AsyncMock(), now=lambda: DAY, skip=lambda w: True
+        )
+        assert n == 0 and search.await_count == 0
+        assert repo.get(wish.id).checks == 0 and pw.is_due(repo.get(wish.id), DAY, DAY)
+
+    @pytest.mark.asyncio
     async def test_searches_are_sequential_with_the_pause_between(self, tmp_path):
         bot = _make_bot(_config(tmp_path))
         events = []
@@ -343,6 +377,31 @@ class TestButtons:
         remaining = _callbacks(kwargs["reply_markup"])
         assert not any(c.startswith("wish:") for c in remaining)
         assert any(c.startswith("dl:") for c in remaining)
+
+    @pytest.mark.asyncio
+    async def test_better_baseline_is_the_best_copy_on_the_list_not_number_one(self, tmp_path):
+        bot = _make_bot(_config(tmp_path, chat_users={CHAT}))
+        call = await _search_and_capture(bot, [_flac(16, 2), _mp3(320, 1)])
+        assert [r.extension for r in bot.pending[CHAT].results] == ["mp3", "flac"]  # chat ranking: MP3 first
+        markup = call.kwargs["reply_markup"]
+        update = _callback(_wish_button(markup, "better"), MagicMock(text_html="list", reply_markup=markup))
+        await bot.handle_callback(update, _make_context())
+        [wish] = bot.pipeline.wishlist_list(CHAT)
+        assert wish.baseline_tier == TIER_LOSSLESS_16
+        assert "better than lossless 16-bit" in update.callback_query.edit_message_text.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_track_already_on_the_wishlist_is_not_added_twice(self, tmp_path):
+        bot = _make_bot(_config(tmp_path))
+        existing = _wish(bot.pipeline.wishlist_repo, "any")
+        call = await _search_and_capture(bot, [_mp3(320, 1)])
+        markup = call.kwargs["reply_markup"]
+        update = _callback(_wish_button(markup, "better"), MagicMock(text_html="list", reply_markup=markup))
+        await bot.handle_callback(update, _make_context())
+        assert [w.id for w in bot.pipeline.wishlist_list(CHAT)] == [existing.id]
+        assert update.callback_query.edit_message_text.call_args.args[0] == (
+            "list\n\nThis track is already on the wishlist (/wishlist)."
+        )
 
     @pytest.mark.asyncio
     async def test_auto_mode_list_also_offers_wait(self, tmp_path):
@@ -430,19 +489,40 @@ class TestDelivery:
         context.bot.send_message.return_value = MagicMock(message_id=77)
         return bot, context
 
+    @staticmethod
+    def _wish_list(bot):
+        [(key, search)] = bot.wish_searches.items()
+        assert key == (CHAT, search.search_id)
+        return search
+
     @pytest.mark.asyncio
-    async def test_auto_chat_fetches_the_best_match_and_drops_the_wish(self, tmp_path):
+    async def test_auto_chat_fetches_the_best_match_and_keeps_the_wish_until_it_is_saved(self, tmp_path):
         bot, context = self._bot(tmp_path, auto=True)
         wish = _wish(bot.pipeline.wishlist_repo, "better", TIER_LOSSY_192)
         await bot.pipeline.wishlist_check_due(lambda w, m: bot._deliver_wish(context, w, m), sleep=AsyncMock())
 
         bot._launch_download.assert_awaited_once()
         args, kwargs = bot._launch_download.call_args
-        pending = bot.pending[CHAT]
-        assert args[:6] == (context, CHAT, wish.track, pending.results[0], 0, pending.search_id)
-        assert pending.results[0].is_lossless  # library ranking: lossless leads
-        assert kwargs["user_id"] == CHAT
+        listed = self._wish_list(bot)
+        assert CHAT not in bot.pending  # the chat's own search state is untouched
+        assert args[:6] == (context, CHAT, wish.track, listed.results[0], 0, listed.search_id)
+        assert listed.results[0].is_lossless  # library ranking: lossless leads
+        assert listed.wish_id == wish.id and kwargs["user_id"] == CHAT
+        # Launched is not fulfilled: a failed fetch must leave the wish in place.
+        assert bot.pipeline.wishlist_repo.get(wish.id).notified_at is not None
+
+        dl = PendingDownload(
+            track=wish.track, result=listed.results[0], chat_id=CHAT, source_path="/x.flac", search_id=listed.search_id
+        )
+        bot.downloads["d1"] = dl
+        bot.pipeline.save = AsyncMock(return_value=None)
+        await bot._auto_save(CHAT, "d1", dl, AsyncMock(), "", "#1")
+        assert bot.pipeline.wishlist_repo.get(wish.id) is not None
+        bot.downloads["d1"] = dl
+        bot.pipeline.save = AsyncMock(return_value="/music/Nancy Sinatra - Bang Bang.flac")
+        await bot._auto_save(CHAT, "d1", dl, AsyncMock(), "", "#1")
         assert bot.pipeline.wishlist_repo.get(wish.id) is None
+        assert listed.wish_id is None
 
     @pytest.mark.asyncio
     async def test_other_chats_get_the_list_with_stop_waiting(self, tmp_path):
@@ -455,10 +535,11 @@ class TestDelivery:
         assert kwargs["chat_id"] == CHAT
         assert "a copy better than lossy 256+ kbps turned up" in kwargs["text"]
         callbacks = _callbacks(kwargs["reply_markup"])
+        listed = self._wish_list(bot)
         assert f"wish:stop:{wish.id}" in callbacks
-        assert f"dl:{bot.pending[CHAT].search_id}:0" in callbacks
+        assert f"dl:{listed.search_id}:0" in callbacks
         assert not any(c.startswith("wish:better:") for c in callbacks)
-        assert [r.is_lossless for r in bot.pending[CHAT].results] == [True]  # only copies above the baseline
+        assert [r.is_lossless for r in listed.results] == [True]  # only copies above the baseline
         stored = bot.pipeline.wishlist_repo.get(wish.id)
         assert stored.notified_at is not None and stored.checks == 1
 
@@ -469,3 +550,152 @@ class TestDelivery:
         assert args[0] == "list\n\n🔕 Stopped waiting for this track."
         assert isinstance(edit_kwargs["reply_markup"], InlineKeyboardMarkup)
         assert not any(c.startswith("wish:") for c in _callbacks(edit_kwargs["reply_markup"]))
+
+    @pytest.mark.asyncio
+    async def test_own_search_and_wish_list_never_replace_each_other(self, tmp_path):
+        bot, context = self._bot(tmp_path, auto=False)
+        await _search_and_capture(bot, [_mp3(128, 3)])
+        own = bot.pending[CHAT]
+        own_id = own.search_id
+        wish = _wish(bot.pipeline.wishlist_repo, "any")
+        await bot.pipeline.wishlist_check_due(lambda w, m: bot._deliver_wish(context, w, m), sleep=AsyncMock())
+        listed = self._wish_list(bot)
+        assert bot.pending[CHAT].search_id == own_id  # the wish did not take over the chat's list
+
+        # The owner's own list still works after the notification...
+        await bot.handle_callback(_callback(f"dl:{own_id}:0"), context)
+        args = bot._launch_download.call_args.args
+        assert (args[3], args[5]) == (own.results[0], own_id)
+
+        # ...and the owner's next search neither marks the notification superseded nor stales it.
+        bot._do_search = AsyncMock()
+        bot.pipeline.find_similar = AsyncMock(return_value=None)
+        update = _update()
+        update.message.text = "Daft Punk - One More Time"
+        await bot.handle_text(update, context)
+        edited = [c.kwargs.get("message_id") for c in context.bot.edit_message_text.call_args_list]
+        assert 77 not in edited
+        await _search_and_capture(bot, [_mp3(96, 4)])
+        await bot.handle_callback(_callback(f"dl:{listed.search_id}:0"), context)
+        args = bot._launch_download.call_args.args
+        assert (args[3], args[5]) == (listed.results[0], listed.search_id)
+        assert bot.pipeline.wishlist_repo.get(wish.id) is not None
+
+    @pytest.mark.asyncio
+    async def test_saving_or_sending_a_copy_from_the_list_fulfils_the_wish(self, tmp_path):
+        bot, context = self._bot(tmp_path, auto=False)
+        await _search_and_capture(bot, [_mp3(128, 3)])
+        own_id = bot.pending[CHAT].search_id
+        wish = _wish(bot.pipeline.wishlist_repo, "any")
+        await bot.pipeline.wishlist_check_due(lambda w, m: bot._deliver_wish(context, w, m), sleep=AsyncMock())
+        listed = self._wish_list(bot)
+
+        # Library: Save on the preview of a copy picked from the wish list.
+        bot.downloads["d1"] = PendingDownload(
+            track=wish.track, result=listed.results[0], chat_id=CHAT, source_path="/x.flac", search_id=listed.search_id
+        )
+        bot.pipeline.save = AsyncMock(return_value="/music/Nancy Sinatra - Bang Bang.flac")
+        await bot.handle_callback(_callback("approve:d1"), context)
+        assert bot.pipeline.wishlist_repo.get(wish.id) is None
+        assert (CHAT, listed.search_id) not in bot.wish_searches  # its keyboard is dismissed
+        assert bot.pending[CHAT].search_id == own_id  # the chat's own list is not
+
+        # Chat delivery: the copy was sent into the chat.
+        wish = _wish(bot.pipeline.wishlist_repo, "any")
+        await bot.pipeline.wishlist_check_due(lambda w, m: bot._deliver_wish(context, w, m), sleep=AsyncMock())
+        listed = self._wish_list(bot)
+        dl = PendingDownload(
+            track=wish.track, result=listed.results[0], chat_id=CHAT, source_path="/x.flac", search_id=listed.search_id
+        )
+        bot._send_to_chat = AsyncMock(return_value=("sent", "Nancy Sinatra - Bang Bang.flac"))
+        bot.pipeline.discard = AsyncMock()
+        await bot._deliver_download(context, CHAT, "d2", dl, AsyncMock(), "", "#1")
+        assert bot.pipeline.wishlist_repo.get(wish.id) is None
+
+    @pytest.mark.asyncio
+    async def test_paging_a_wish_list_keeps_stop_waiting(self, tmp_path):
+        bot, context = self._bot(tmp_path, auto=False)
+        bot.slskd.parse_results = MagicMock(return_value=[_mp3(320, i) for i in range(7)])
+        wish = _wish(bot.pipeline.wishlist_repo, "any")
+        await bot.pipeline.wishlist_check_due(lambda w, m: bot._deliver_wish(context, w, m), sleep=AsyncMock())
+        listed = self._wish_list(bot)
+        update = _callback(f"dl_page:{listed.search_id}:1")
+        await bot.handle_callback(update, context)
+        callbacks = _callbacks(update.callback_query.edit_message_text.call_args.kwargs["reply_markup"])
+        assert f"wish:stop:{wish.id}" in callbacks
+        assert not any(c.startswith("wish:better:") for c in callbacks)
+        assert listed.page == 1
+
+    @pytest.mark.asyncio
+    async def test_wish_lists_survive_a_restart(self, tmp_path):
+        bot, context = self._bot(tmp_path, auto=False)
+        wish = _wish(bot.pipeline.wishlist_repo, "any")
+        await bot.pipeline.wishlist_check_due(lambda w, m: bot._deliver_wish(context, w, m), sleep=AsyncMock())
+        listed = self._wish_list(bot)
+        bot.wish_searches[(CHAT, "old")] = PendingSearch(query="q", track=wish.track, search_id="old", created_at=0.0)
+        again = _make_bot(bot.config)
+        restored = again.wish_searches[(CHAT, listed.search_id)]
+        assert (restored.wish_id, restored.results, restored.message_id) == (wish.id, listed.results, 77)
+        assert (CHAT, "old") not in again.wish_searches  # older than DOWNLOAD_CLEANUP_HOURS
+
+    @pytest.mark.asyncio
+    async def test_a_busy_chat_is_left_alone_until_the_next_tick(self, tmp_path):
+        bot, context = self._bot(tmp_path, auto=False)
+        wish = _wish(bot.pipeline.wishlist_repo, "any")
+        busy_during_search = []
+
+        async def slskd_search(*a, **k):
+            busy_during_search.append(bot._chat_busy(wish))
+            return []
+
+        bot.slskd.search = slskd_search
+        await _search_and_capture_with(bot)
+        assert busy_during_search and all(busy_during_search) and not bot._chat_busy(wish)
+
+        bot._searching[CHAT] = 1
+        deliver = AsyncMock(return_value=False)
+        assert await bot.pipeline.wishlist_check_due(deliver, sleep=AsyncMock(), skip=bot._chat_busy) == 0
+        assert bot.pipeline.wishlist_repo.get(wish.id).checks == 0
+        del bot._searching[CHAT]
+        bot.slskd.search = AsyncMock(return_value=[])
+        bot.slskd.parse_results = MagicMock(return_value=[_mp3(320, 1)])
+        assert await bot.pipeline.wishlist_check_due(deliver, sleep=AsyncMock(), skip=bot._chat_busy) == 1
+        deliver.assert_awaited_once()
+
+
+async def _search_and_capture_with(bot):
+    """Run the bot's own slskd search with whatever bot.slskd.search is."""
+    bot.slskd.parse_results = MagicMock(return_value=[])
+    with patch("music_downloader.bot.handlers._safe_edit", new_callable=AsyncMock):
+        await bot._do_slskd_search(_make_context(), CHAT, _make_track(), AsyncMock(), generation=0, user_id=CHAT)
+
+
+@pytest.mark.asyncio
+async def test_the_bot_checker_skips_busy_chats():
+    from music_downloader.bot.handlers import create_bot
+    from music_downloader.pipeline import Pipeline
+    from tests.test_orphan_sweep import _handlers_config
+
+    seen = {}
+
+    async def fake_loop(self, deliver, skip=None):
+        seen["skip"] = skip
+        await asyncio.Event().wait()
+
+    with (
+        patch("music_downloader.pipeline.SpotifyResolver"),
+        patch("music_downloader.pipeline.SlskdClient"),
+        patch("music_downloader.bot.handlers.Application") as app_cls,
+        patch.object(Pipeline, "wishlist_loop", fake_loop),
+    ):
+        builder = MagicMock()
+        for chain in ("token", "post_init", "post_shutdown"):
+            getattr(builder, chain).return_value = builder
+        app_cls.builder.return_value = builder
+        create_bot(_handlers_config())
+        app = MagicMock()
+        app.bot = AsyncMock()
+        await builder.post_init.call_args[0][0](app)
+        await asyncio.sleep(0)
+        await builder.post_shutdown.call_args[0][0](app)
+    assert getattr(seen["skip"], "__func__", None) is MusicBot._chat_busy

@@ -64,10 +64,11 @@ with `CREATE TABLE IF NOT EXISTS`):
 | `chat_settings` | Per-chat `/auto` and `/deliver` choices | `settings_repo.py` |
 | `pending_searches` | One row per chat with a live result list: the query, the track, the ranked results (JSON), the page, the profile and how many copies the title guard hid | `pending_repo.py` |
 | `pending_downloads` | One row per download waiting on Save, Reject, Retry or Try next: track and result (JSON), the file path, the slskd transfer id, the import job if any | `pending_repo.py` |
+| `wish_searches` | One row per list the wishlist checker sent, keyed by chat and search id: the same fields as `pending_searches` plus the wish it belongs to (NULL once the wish is gone). Kept apart so a chat's own search and a wish's list never replace each other | `pending_repo.py` |
 | `wishlist` | One row per wished track: chat, track (JSON), profile, `any` or `better` than a baseline quality tier, last check, number of checks, last notification | `wishlist_repo.py` |
 | `library_index` | One row per audio file under `OUTPUT_DIR`, subfolders included: relative path, stem, accent-free lowercase stem, extension, mtime | `library_index.py` |
 
-The bot keeps the pending rows in two dicts (`WriteThroughDict`): every set and delete is written through, so
+The bot keeps the pending rows in three dicts (`WriteThroughDict`): every set and delete is written through, so
 after a restart the buttons on old messages still work. A button whose row is gone answers that it expired
 after a restart. At startup and in the hourly sweep, pending downloads older than `DOWNLOAD_CLEANUP_HOURS`
 are dropped with their files and their slskd transfers.

@@ -17,8 +17,10 @@ In a chat-delivery chat (`/deliver`) the copies are ranked by quality for their 
 
 **Wait for a copy.** A track with no copy, or with no good one, can go on the wishlist. A checker in the bot
 process wakes every hour, takes each wish whose `WISHLIST_CHECK_HOURS` have passed and runs one search for it,
-with `WISHLIST_PAUSE_SECS` between two searches. A copy that qualifies is fetched and delivered in a chat with
-`/auto` on, or listed with pick buttons in any other chat. Wishes added over MCP go to the owner's chat.
+with `WISHLIST_PAUSE_SECS` between two searches, skipping a chat whose own search or download is running. A copy
+that qualifies is fetched and delivered in a chat with `/auto` on, or listed with pick buttons in any other
+chat, in a message of its own. The wish ends when a copy from it is saved or sent. Wishes added over MCP go to
+the owner's chat.
 
 ```
 ┌──────────────────┐     ┌──────────────┐     ┌──────────────────┐

@@ -32,9 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   higher quality tier than the best one listed (lossy under 128 kbps, 128,
   192, 256 kbps or more, lossless 16-bit, lossless 24-bit). The bot searches
   each wish again every `WISHLIST_CHECK_HOURS` (default 24), one search at a
-  time with `WISHLIST_PAUSE_SECS` between them. A chat with `/auto` on gets the
-  copy fetched; any other chat gets the list to pick from. `/wishlist` lists
-  the wishes with a Remove button each.
+  time with `WISHLIST_PAUSE_SECS` between them, and skips a chat while its own
+  search or download runs. A chat with `/auto` on gets the copy fetched; any
+  other chat gets the list to pick from, in a message that neither replaces nor
+  is replaced by the chat's own searches. A wish ends when a copy from it is
+  saved or sent, not when the download starts. A track is never on the list
+  twice. `/wishlist` lists the wishes with a Remove button each.
 - **An MCP front end.** An agent such as Claude Code can resolve a track,
   search copies, download one into the library or to a path, read the
   history, check the library and manage the wishlist, through the same

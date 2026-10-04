@@ -32,6 +32,11 @@ next call takes; an id is valid for an hour.
 
 A typical chain: `resolve_track` → `search_copies` with the track id → `download` with the copy id → `history`.
 
+Errors come in two shapes. A bad argument, an expired id or a refused wish is a tool error (`is_error` true)
+with a one-line reason. A `download` that ran and failed is a normal result with `ok` false, the error and the
+slskd state. `wishlist_add` for a track the owner already waits for returns that wish with
+`already_waiting` true instead of adding a second one.
+
 A wish added over MCP belongs to the owner, the first id in `TELEGRAM_ALLOWED_USERS`. The bot's wishlist
 checker announces it in that private chat, and with `/auto` on there it fetches the copy as an auto search
 does. The stdio server runs no checker: its wishes wait for the bot, which reads the same database when both

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import dataclasses
 import datetime
+import functools
 import html
 import logging
 import os
@@ -168,6 +169,24 @@ def _component(name: str) -> property:
     )
 
 
+def _counts_as_search(method):
+    """Count the chat as searching while *method* (self, context, chat_id, ...) runs (MusicBot._chat_busy)."""
+
+    @functools.wraps(method)
+    async def wrapper(self, context, chat_id, *args, **kwargs):
+        self._searching[chat_id] = self._searching.get(chat_id, 0) + 1
+        try:
+            return await method(self, context, chat_id, *args, **kwargs)
+        finally:
+            left = self._searching.get(chat_id, 1) - 1
+            if left > 0:
+                self._searching[chat_id] = left
+            else:
+                self._searching.pop(chat_id, None)
+
+    return wrapper
+
+
 class MusicBot:
     """Telegram bot for music discovery and download."""
 
@@ -198,6 +217,12 @@ class MusicBot:
         self.downloads: dict[str, PendingDownload] = WriteThroughDict(
             repo.load_downloads(), repo.save_download, repo.delete_download
         )
+        # Lists the wishlist checker sent ((chat_id, search_id) -> PendingSearch),
+        # apart from self.pending: a chat's own search and a wish's list must
+        # never replace each other. Written through like the two above.
+        self.wish_searches: dict[tuple[int, str], PendingSearch] = WriteThroughDict(
+            repo.load_wish_searches(), repo.save_wish_search, repo.delete_wish_search
+        )
 
         # Per-chat Spotify candidates when multiple tracks match (chat_id -> list[TrackInfo])
         self._spotify_candidates: dict[int, list[TrackInfo]] = {}
@@ -213,6 +238,9 @@ class MusicBot:
         self._chat_generation: dict[int, int] = {}
         # Background tasks (downloads) tracked per chat for cancellation.
         self._active_tasks: dict[int, set[asyncio.Task]] = {}
+        # slskd searches running per chat (chat_id -> count): the wishlist
+        # checker leaves a busy chat alone.
+        self._searching: dict[int, int] = {}
         # Downloads whose fetch is still running: the hourly prune never expires them.
         self._fetching: set[str] = set()
         # Downloads whose Save is running: a second tap must not save twice.
@@ -275,6 +303,9 @@ class MusicBot:
             for chat_id, search in list(self.pending.items()):
                 if search.created_at < cutoff:
                     del self.pending[chat_id]
+            for key, search in list(self.wish_searches.items()):
+                if search.created_at < cutoff:
+                    del self.wish_searches[key]
 
     def _remove_download(self, dl: PendingDownload) -> None:
         """Delete a download's file and remove its finished transfer from slskd."""
@@ -749,6 +780,7 @@ class MusicBot:
             self._spotify_page.pop(chat_id, None)
             await _safe_edit(searching_msg, "Something went wrong. Please try again.")
 
+    @_counts_as_search
     async def _do_slskd_search(
         self, context, chat_id: int, track: TrackInfo, searching_msg, generation: int, user_id: int | None = None
     ):
@@ -1071,16 +1103,20 @@ class MusicBot:
     async def _handle_results_page(self, update, context, chat_id: int, data: str):
         """Handle slskd results page navigation (◀️ / ▶️)."""
         query = update.callback_query
-        pending = self.pending.get(chat_id)
-        if not pending or not pending.track:
+        search_id, action = self._split_search_callback(data)
+        pending = self._search_for(chat_id, search_id)
+        if pending is None:
+            if self.pending.get(chat_id) is None:
+                await query.edit_message_text(
+                    self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
+                )
+            else:
+                await _safe_query_edit(query, "⌛ These results are out of date. Send a new search.")
+            return
+        if not pending.track:
             await query.edit_message_text(
                 self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
             )
-            return
-
-        search_id, action = self._split_search_callback(data)
-        if search_id != pending.search_id:
-            await _safe_query_edit(query, "⌛ These results are out of date. Send a new search.")
             return
 
         try:
@@ -1089,7 +1125,7 @@ class MusicBot:
             return
 
         pending.page = page
-        self.pending.save(chat_id)
+        self._save_search(chat_id, pending)
         results_text = self._format_results(
             pending.track,
             pending.results,
@@ -1101,29 +1137,35 @@ class MusicBot:
             results_text,
             parse_mode=ParseMode.HTML,
             reply_markup=build_results_keyboard(
-                pending.results, page=page, page_size=self.config.max_results, search_id=pending.search_id
+                pending.results,
+                page=page,
+                page_size=self.config.max_results,
+                search_id=pending.search_id,
+                stop_wish_id=pending.wish_id,
             ),
         )
 
     async def _handle_download_selection(self, update, context, chat_id: int, data: str):
         """Handle when user picks a file to download from results."""
         query = update.callback_query
-        pending = self.pending.get(chat_id)
-        if not pending:
-            await query.edit_message_text(
-                self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
-            )
-            return
-
         search_id, action = self._split_search_callback(data)
-        if search_id != pending.search_id:
-            # Button belongs to an older search; acting on it would download
-            # from the CURRENT result list under the old labels.
-            await _safe_query_edit(query, "⌛ These results are out of date. Send a new search.")
+        pending = self._search_for(chat_id, search_id)
+        if pending is None:
+            if self.pending.get(chat_id) is None:
+                await query.edit_message_text(
+                    self._expired_text(query, "Search expired. Send a new query."), parse_mode=ParseMode.HTML
+                )
+            else:
+                # Button belongs to an older search; acting on it would download
+                # from the CURRENT result list under the old labels.
+                await _safe_query_edit(query, "⌛ These results are out of date. Send a new search.")
             return
 
         if action == "cancel":
-            del self.pending[chat_id]
+            if (chat_id, search_id) in self.wish_searches:
+                del self.wish_searches[(chat_id, search_id)]
+            else:
+                del self.pending[chat_id]
             await query.edit_message_text("Cancelled.", parse_mode=ParseMode.HTML)
             return
 
@@ -1187,8 +1229,8 @@ class MusicBot:
         """
         return uuid4().hex[:8]
 
-    def _has_next_result(self, chat_id: int, current_index: int) -> bool:
-        pending = self.pending.get(chat_id)
+    def _has_next_result(self, chat_id: int, current_index: int, search_id: str) -> bool:
+        pending = self._search_for(chat_id, search_id)
         return pending is not None and current_index + 1 < len(pending.results)
 
     async def _do_download(
@@ -1226,7 +1268,7 @@ class MusicBot:
                     user_id=user_id,
                 )
                 self.downloads[dl_id] = pending_dl
-                has_next = self._has_next_result(chat_id, result_index)
+                has_next = self._has_next_result(chat_id, result_index, search_id)
                 await status_msg.edit_text(
                     f"❌ Failed to enqueue download from <code>{_esc(result.username)}</code>.\nThe user might be offline.",
                     parse_mode=ParseMode.HTML,
@@ -1246,7 +1288,7 @@ class MusicBot:
                     user_id=user_id,
                 )
                 self.downloads[dl_id] = pending_dl
-                has_next = self._has_next_result(chat_id, result_index)
+                has_next = self._has_next_result(chat_id, result_index, search_id)
                 await status_msg.edit_text(
                     f"❌ Download failed: {_esc(state)}\nFile: <code>{_esc(result.basename)}</code>",
                     parse_mode=ParseMode.HTML,
@@ -1373,6 +1415,7 @@ class MusicBot:
         # from the orphan sweep until it is gone.
         self.downloads.pop(dl_id, None)
         if target_path:
+            self._wish_done(chat_id, pending_dl.search_id)
             target_name = os.path.basename(target_path)
             await _safe_edit(
                 status_msg,
@@ -1406,6 +1449,7 @@ class MusicBot:
             # Popped only after cleanup: the entry keeps the source protected
             # from the orphan sweep until it is gone.
             self.downloads.pop(dl_id, None)
+            self._wish_done(chat_id, pending_dl.search_id)
             await _safe_edit(
                 status_msg,
                 f"✅ <b>{label} Sent:</b> <code>{_esc(note)}</code>\n{quality_line}",
@@ -1419,7 +1463,7 @@ class MusicBot:
         # keep the entry so Retry / Try next still work.
         pending_dl.source_path = None
         self.downloads[dl_id] = pending_dl
-        has_next = self._has_next_result(chat_id, pending_dl.result_index)
+        has_next = self._has_next_result(chat_id, pending_dl.result_index, pending_dl.search_id)
         await _safe_edit(
             status_msg,
             f"❌ {label} {note}",
@@ -1676,9 +1720,10 @@ class MusicBot:
                     target_name = os.path.basename(target_path)
                     await self._edit_approval_message(query, f"✅ Saved: <code>{_esc(target_name)}</code>")
                     logger.info(f"Approved and saved: {target_name}")
+                    self._wish_done(chat_id, pending_dl.search_id)
 
                     # Dismiss every other pending download for this chat.
-                    await self._dismiss_other_downloads(context, chat_id)
+                    await self._dismiss_other_downloads(context, chat_id, pending_dl.search_id)
                 else:
                     await self._edit_approval_message(query, "❌ Failed to save file. Check logs.")
             else:
@@ -1693,10 +1738,14 @@ class MusicBot:
             await self.pipeline.record_history(track, result, "rejected")
             logger.info(f"Rejected: {track.artist} - {track.title} ({result.basename})")
 
-    async def _dismiss_other_downloads(self, context, chat_id: int):
+    async def _dismiss_other_downloads(self, context, chat_id: int, search_id: str = ""):
         """Cancel all remaining pending downloads for a chat after one is approved."""
-        # Remove the results keyboard so no more downloads can be started.
-        pending = self.pending.pop(chat_id, None)
+        # Remove the results keyboard so no more downloads can be started: the
+        # wish list the approved copy came from, or else the chat's own list.
+        if (chat_id, search_id) in self.wish_searches:
+            pending = self.wish_searches.pop((chat_id, search_id))
+        else:
+            pending = self.pending.pop(chat_id, None)
         if pending and pending.message_id:
             with contextlib.suppress(Exception):
                 await context.bot.edit_message_reply_markup(
@@ -1791,6 +1840,7 @@ class MusicBot:
             parse_mode=ParseMode.HTML,
         )
 
+    @_counts_as_search
     async def _do_direct_slskd_search(
         self,
         context,
@@ -2645,7 +2695,11 @@ class MusicBot:
             # The import must still be able to move on when there is nothing next.
             markup = build_import_skip_keyboard(pending_dl.job_id, pending_dl.track_id)
         else:
-            pending = self.pending.get(chat_id) or self._import_pending.get(chat_id)
+            pending = (
+                self._search_for(chat_id, pending_dl.search_id) or self._import_pending.get(chat_id)
+                if pending_dl
+                else None
+            )
             markup = None
 
         if not pending_dl:
@@ -2720,7 +2774,8 @@ class MusicBot:
                 wish_id = int(arg)
             except ValueError:
                 return
-            self.pipeline.wishlist_remove(chat_id, wish_id)
+            if self.pipeline.wishlist_remove(chat_id, wish_id):
+                self._forget_wish(wish_id)
             if action == "rm":
                 text, markup = self._wishlist_view(self.pipeline.wishlist_list(chat_id))
                 await _safe_query_edit(query, text, reply_markup=markup)
@@ -2730,11 +2785,14 @@ class MusicBot:
 
         if action not in (WANTED_ANY, WANTED_BETTER):
             return
-        pending = self.pending.get(chat_id)
-        if not pending or pending.search_id != arg or not pending.track:
+        pending = self._search_for(chat_id, arg)
+        if not pending or not pending.track:
             await _safe_query_edit(
                 query, self._expired_text(query, "⌛ These results are out of date. Send a new search.")
             )
+            return
+        if self.pipeline.wishlist_find(chat_id, pending.track) is not None:
+            await self._append_wish_line(query, "This track is already on the wishlist (/wishlist).")
             return
 
         hours = self.config.wishlist_check_hours
@@ -2742,10 +2800,12 @@ class MusicBot:
         if action == WANTED_BETTER:
             if not pending.results:
                 return
-            baseline = quality_tier(pending.results[0])
+            # The best copy on the list, not #1: the chat ranking can put an MP3
+            # above a FLAC, and the FLAC must not come back as "better" later.
+            baseline = max(quality_tier(r) for r in pending.results)
             if baseline >= TIER_LOSSLESS_24:
                 await self._append_wish_line(
-                    query, f"#1 is already {TIER_LABELS[baseline]}: no better copy to wait for."
+                    query, f"The list already has {TIER_LABELS[baseline]}: no better copy to wait for."
                 )
                 return
             line = f"⏳ Waiting for a copy better than {TIER_LABELS[baseline]}, searched again every {hours} h (/wishlist)."
@@ -2764,13 +2824,51 @@ class MusicBot:
         markup = without_wish_buttons(markup) if isinstance(markup, InlineKeyboardMarkup) else None
         await _safe_query_edit(query, text, reply_markup=markup)
 
+    def _search_for(self, chat_id: int, search_id: str) -> PendingSearch | None:
+        """The result list *search_id* of this chat: its own search, or a list the wishlist checker sent."""
+        pending = self.pending.get(chat_id)
+        if pending is not None and pending.search_id == search_id:
+            return pending
+        return self.wish_searches.get((chat_id, search_id))
+
+    def _save_search(self, chat_id: int, search: PendingSearch) -> None:
+        """Write *search* again after changing it in place, in whichever store holds it."""
+        key = (chat_id, search.search_id)
+        if key in self.wish_searches:
+            self.wish_searches.save(key)
+        else:
+            self.pending.save(chat_id)
+
+    def _chat_busy(self, wish: Wish) -> bool:
+        """The wishlist checker's skip: the chat runs its own search, download or import right now."""
+        chat_id = wish.chat_id
+        return bool(self._active_tasks.get(chat_id) or self._searching.get(chat_id) or chat_id in self._active_import)
+
+    def _forget_wish(self, wish_id: int) -> None:
+        """The wish is gone: its lists keep working but no longer offer Stop waiting."""
+        for key, search in list(self.wish_searches.items()):
+            if search.wish_id == wish_id:
+                search.wish_id = None
+                self.wish_searches.save(key)
+
+    def _wish_done(self, chat_id: int, search_id: str) -> None:
+        """A copy from a wish's list was saved or delivered: that wish is fulfilled and removed."""
+        search = self.wish_searches.get((chat_id, search_id))
+        if search is None or search.wish_id is None:
+            return
+        wish_id = search.wish_id
+        self.pipeline.wishlist_remove(chat_id, wish_id)
+        self._forget_wish(wish_id)
+        logger.info("Wish %s fulfilled", wish_id)
+
     async def _deliver_wish(self, context, wish: Wish, matches: list[SearchResult]) -> bool:
         """The wishlist checker found copies that satisfy *wish* (pipeline.wishlist.WishDelivery).
 
         With /auto on, the best one is fetched and delivered like an auto
-        search and the wish is done (True). Otherwise the list goes to the
-        chat with the pick buttons and Stop waiting, and the wish stays (False).
-        Either way the list becomes the chat's live result list.
+        search. Otherwise the list goes to the chat with the pick buttons and
+        Stop waiting. The list is kept apart from the chat's own search
+        (self.wish_searches), and the wish stays until a copy from it is saved
+        or delivered (_wish_done), so this always answers False.
         """
         chat_id = wish.chat_id
         track = wish.track
@@ -2798,17 +2896,22 @@ class MusicBot:
                     matches, page=0, page_size=page_size, search_id=search_id, stop_wish_id=wish.id
                 ),
             )
-        self.pending[chat_id] = PendingSearch(
+        # One live list per wish: an older one's buttons answer "out of date".
+        for key, search in list(self.wish_searches.items()):
+            if search.wish_id == wish.id:
+                del self.wish_searches[key]
+        self.wish_searches[(chat_id, search_id)] = PendingSearch(
             query=f"{track.artist} {track.title}",
             track=track,
             results=list(matches),
             message_id=msg.message_id,
             search_id=search_id,
             hidden=hidden,
+            wish_id=wish.id,
         )
         if auto:
             await self._launch_download(context, chat_id, track, matches[0], 0, search_id, user_id=wish.user_id)
-        return auto
+        return False
 
     # =========================================================================
     # HELPERS
@@ -2988,7 +3091,9 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
         # Wishlist checker: hourly tick, each wish searched once per WISHLIST_CHECK_HOURS.
         wish_context = CallbackContext(app)
         bot._wishlist_task = asyncio.get_running_loop().create_task(
-            bot.pipeline.wishlist_loop(lambda wish, matches: bot._deliver_wish(wish_context, wish, matches))
+            bot.pipeline.wishlist_loop(
+                lambda wish, matches: bot._deliver_wish(wish_context, wish, matches), skip=bot._chat_busy
+            )
         )
         if config.mcp_port:
             # MCP over streamable HTTP on the same Pipeline (SQLite, slskd client, wishlist checker).
