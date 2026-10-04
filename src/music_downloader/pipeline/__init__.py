@@ -11,12 +11,13 @@ import asyncio
 import logging
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from music_downloader.config import Config
 from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.persistence.album_repo import (
+    ALBUM_CANCELLED,
     ALBUM_DONE,
     ALBUM_INTERRUPTED,
     ALBUM_RUNNING,
@@ -64,9 +65,16 @@ logger = logging.getLogger(__name__)
 # How often the library index is rebuilt from OUTPUT_DIR (the first pass runs at startup).
 LIBRARY_RESCAN_SECS = 3600
 
-# Pipeline.album deliver values: save into OUTPUT_DIR, or leave the files in DOWNLOAD_DIR.
+# Pipeline.album deliver values: save into OUTPUT_DIR, leave the files in DOWNLOAD_DIR,
+# or hand each file to the front end (Telegram chat delivery sends it, then discards it).
 ALBUM_DELIVER_LIBRARY = "library"
 ALBUM_DELIVER_PATH = "path"
+ALBUM_DELIVER_CHAT = "chat"
+_ALBUM_DELIVER = (ALBUM_DELIVER_LIBRARY, ALBUM_DELIVER_PATH, ALBUM_DELIVER_CHAT)
+
+# The front end's per-file hook: (index, outcome, the file's TrackInfo or None when it never landed).
+# Runs after the pipeline handled the file and before the outcome is written; may change the outcome.
+AlbumFileHook = Callable[[int, FileOutcome, TrackInfo | None], Awaitable[None]]
 
 
 class Pipeline:
@@ -149,14 +157,17 @@ class Pipeline:
     async def convert_to_opus(self, path: str, bitrate_kbps: int = 128) -> str | None:
         return await _fetch.convert_to_opus(path, bitrate_kbps)
 
-    async def transcode(self, path: str, fmt: str, track: TrackInfo) -> str | None:
+    async def transcode(
+        self, path: str, fmt: str, track: TrackInfo, album_art: _album.AlbumArt | None = None
+    ) -> str | None:
         """*path* transcoded to send format *fmt* (fetch.SEND_FORMATS) with title, artist and cover.
 
+        The cover is *album_art*'s when given (an album file), else the track's on Spotify.
         Returns a temporary file the caller deletes, or None when ffmpeg failed.
         """
         out_path = await _fetch.transcode(path, fmt, track.title, track.artist)
         if out_path:
-            await self.embed_artwork(out_path, track)
+            await self._embed(out_path, track, album_art)
         return out_path
 
     async def preview_clip(self, path: str, duration_secs: float = 60.0) -> str | None:
@@ -224,17 +235,25 @@ class Pipeline:
             except Exception:
                 logger.warning("Could not add %s to the library index", target_path, exc_info=True)
             await self.discard(source_path, result.username, transfer_id)
-            if album_art is None:
-                await self.embed_artwork(target_path, track)
-            else:
-                await _library.embed_artwork_bytes(target_path, await album_art.get())
+            await self._embed(target_path, track, album_art)
             await self.record_history(track, result, "success", filename=saved_name, note=note)
         else:
             await self.record_history(track, result, "process_failed", note=note)
         return target_path
 
-    async def embed_artwork(self, path: str, track: TrackInfo) -> None:
-        await _library.embed_artwork(self.spotify.sp, path, track)
+    async def embed_artwork(self, path: str, track: TrackInfo, album_art: _album.AlbumArt | None = None) -> None:
+        """Embed the track's Spotify cover, or *album_art*'s (looked up once per album) when given."""
+        if album_art is None:
+            await _library.embed_artwork(self.spotify.sp, path, track)
+        else:
+            await _library.embed_artwork_bytes(path, await album_art.get())
+
+    async def _embed(self, path: str, track: TrackInfo, album_art: _album.AlbumArt | None) -> None:
+        """embed_artwork with the album's cover when there is one (callers of a single track pass none)."""
+        if album_art is None:
+            await self.embed_artwork(path, track)
+        else:
+            await self.embed_artwork(path, track, album_art)
 
     async def discard(self, path: str, username: str = "", transfer_id: str = "") -> None:
         """Delete a source file from the downloads dir once it has been saved or sent.
@@ -280,18 +299,27 @@ class Pipeline:
         progress_cb: _album.FolderProgress | None = None,
         listing: FolderListing | None = None,
         chat_id: int | None = None,
+        *,
+        on_file: AlbumFileHook | None = None,
+        album_art: _album.AlbumArt | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> tuple[AlbumJob, FolderListing]:
         """Fetch every audio file of the folder *result* came from; *track* is the chosen copy's track.
 
         deliver "library" saves each file into OUTPUT_DIR as it lands (tags or
         file name for artist and title, the album's cover looked up once,
-        history rows noted "album"); "path" leaves the files in DOWNLOAD_DIR.
-        Pass *listing* when album_listing already ran. The job is kept in
-        SQLite from the start; one failed file never stops the others.
-        Returns the job (one outcome per file) and the listing it used.
+        history rows noted "album"), except a file the library already has
+        under the name it would get: that download is deleted and the outcome
+        marked skipped. "path" leaves the files in DOWNLOAD_DIR. "chat" does
+        nothing with a file: *on_file* (the front end) sends it and discards it.
+        Pass *listing* when album_listing already ran, and *album_art* to share
+        the cover lookup with the front end. Setting *cancel* stops the
+        waiting: the job ends "cancelled" with the files left unfinished. The
+        job is kept in SQLite from the start; one failed file never stops the
+        others. Returns the job (one outcome per file) and the listing it used.
         """
-        if deliver not in (ALBUM_DELIVER_LIBRARY, ALBUM_DELIVER_PATH):
-            raise ValueError(f"deliver must be {ALBUM_DELIVER_LIBRARY!r} or {ALBUM_DELIVER_PATH!r}, not {deliver!r}")
+        if deliver not in _ALBUM_DELIVER:
+            raise ValueError(f"deliver must be one of {', '.join(map(repr, _ALBUM_DELIVER))}, not {deliver!r}")
         if listing is None:
             listing = await self.album_listing(result)
         job = AlbumJob(
@@ -306,10 +334,10 @@ class Pipeline:
             job.status = ALBUM_DONE
             return job, listing
         await asyncio.to_thread(self.album_repo.add, job)
-        art = self._album_art(track)
+        art = album_art or self.album_art(track)
 
-        async def on_file(index: int, outcome: FileOutcome) -> None:
-            await self._album_file_landed(job, index, outcome, art)
+        async def landed(index: int, outcome: FileOutcome) -> None:
+            await self._album_file_landed(job, index, outcome, art, on_file)
 
         await _album.fetch_folder(
             self.slskd,
@@ -318,9 +346,10 @@ class Pipeline:
             self.config.download_timeout_secs,
             self.config.album_timeout_secs,
             progress_cb,
-            on_file,
+            landed,
+            cancel=cancel,
         )
-        job.status = ALBUM_DONE
+        job.status = ALBUM_CANCELLED if cancel is not None and cancel.is_set() and job.unfinished else ALBUM_DONE
         await asyncio.to_thread(self.album_repo.save, job)
         return job, listing
 
@@ -329,14 +358,15 @@ class Pipeline:
 
         Transfers are not re-enqueued (slskd keeps them). A file with no outcome
         yet that is on disk in DOWNLOAD_DIR is saved (or recorded, for "path")
-        as if it had just finished; the rest stay without an outcome. Returns
-        the interrupted jobs, so the front end can say what landed.
+        as if it had just finished; the rest stay without an outcome. A "chat"
+        job's files are left to the orphan sweep: nobody is there to send them.
+        Returns the interrupted jobs, so the front end can say what landed.
         """
         jobs = await asyncio.to_thread(self.album_repo.list_by_status, ALBUM_RUNNING)
         for job in jobs:
             job.status = ALBUM_INTERRUPTED
-            art = self._album_art(job.track)
-            for index in job.unfinished:
+            art = self.album_art(job.track)
+            for index in job.unfinished if job.deliver != ALBUM_DELIVER_CHAT else ():
                 remote = job.files[index].filename
                 path = await asyncio.to_thread(_album.locate, self.processor, job.username, remote)
                 if path:
@@ -353,23 +383,52 @@ class Pipeline:
             )
         return jobs
 
-    def _album_art(self, track: TrackInfo) -> _album.AlbumArt:
+    def album_art(self, track: TrackInfo) -> _album.AlbumArt:
+        """The album cover of *track*'s album, looked up on first use and shared by every file."""
         return _album.AlbumArt(self.spotify.sp, track.artist, track.album, track.title)
 
-    async def _album_file_landed(self, job: AlbumJob, index: int, outcome: FileOutcome, art: _album.AlbumArt) -> None:
-        """Save (or record) one finished album file, then write its outcome to the job row."""
+    async def library_copy(self, path: str, track: TrackInfo) -> str | None:
+        """The library file that saving *path* as *track* would duplicate: same name (accents and case aside)."""
+        extension = os.path.splitext(path)[1].lstrip(".").lower() or "flac"
+        name = self.processor.build_filename(track.artist, track.title, extension, track.track_number)
+        rel_path = await asyncio.to_thread(self.library_index.find_stem, os.path.splitext(name)[0])
+        return os.path.join(self.config.output_dir, rel_path) if rel_path else None
+
+    async def _album_file_landed(
+        self,
+        job: AlbumJob,
+        index: int,
+        outcome: FileOutcome,
+        art: _album.AlbumArt,
+        on_file: AlbumFileHook | None = None,
+    ) -> None:
+        """Save (or record) one finished album file, run the front end's hook, then write its outcome."""
         file = job.files[index]
         result = file.as_result(job.username)
+        info = None
         if outcome.ok and outcome.path:
             info = await asyncio.to_thread(_album.track_info_for, outcome.path, job.track.artist, job.track.album)
             if job.deliver == ALBUM_DELIVER_LIBRARY:
-                target = await self.save(outcome.path, info, result, outcome.transfer_id, album_art=art, note="album")
-                if target:
-                    outcome.path = target
+                existing = await self.library_copy(outcome.path, info)
+                if existing:
+                    await self.discard(outcome.path, job.username, outcome.transfer_id)
+                    outcome.path, outcome.skipped = existing, True
+                    logger.info("Album file %s skipped: the library has %s", file.basename, existing)
                 else:
-                    outcome.error = "process_failed"
-            else:
+                    target = await self.save(
+                        outcome.path, info, result, outcome.transfer_id, album_art=art, note="album"
+                    )
+                    if target:
+                        outcome.path = target
+                    else:
+                        outcome.error = "process_failed"
+            elif job.deliver == ALBUM_DELIVER_PATH:
                 await self.record_history(info, result, "delivered", filename=outcome.path, note="album")
+        if on_file is not None:
+            try:
+                await on_file(index, outcome, info)
+            except Exception:
+                logger.exception("The front end's handling of album file %s failed", file.basename)
         job.outcomes[index] = outcome
         try:
             await asyncio.to_thread(self.album_repo.save, job)

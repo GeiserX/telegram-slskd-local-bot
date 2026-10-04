@@ -714,7 +714,7 @@ class TestMusicBotCallbackHandler:
         update = _make_callback_update(data="approve:1")
         context = _make_context()
         await bot.handle_callback(update, context)
-        assert "1" not in bot.downloads
+        assert bot.downloads["1"].delivered and bot.downloads["1"].source_path is None
         assert bot.history_repo.count() == 1
 
     @patch("music_downloader.pipeline.SpotifyResolver")

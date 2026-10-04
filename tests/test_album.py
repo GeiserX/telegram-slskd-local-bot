@@ -288,6 +288,29 @@ class TestFetchFolder:
         outcomes = await fetch_folder(slskd, _processor(tmp_path), _listing(), 600, 7200, boom, boom)
         assert [o.ok for o in outcomes] == [True, True, True]
 
+    async def test_cancel_drops_the_wait_and_leaves_the_rest(self, tmp_path):
+        slskd = _slskd()
+        cancel = asyncio.Event()
+        landed = _waiter(tmp_path, {})
+
+        async def wait(username, filename, timeout_secs, progress_cb):
+            if "02 - " in filename:
+                cancel.set()  # /cancel while the second file is still downloading
+                await asyncio.sleep(3600)
+            return await landed(username, filename, timeout_secs, progress_cb)
+
+        slskd.wait_for_download = AsyncMock(side_effect=wait)
+        finished = []
+
+        async def on_file(i, outcome):
+            finished.append(i)
+
+        outcomes = await asyncio.wait_for(
+            fetch_folder(slskd, _processor(tmp_path), _listing(), 600, 7200, None, on_file, cancel=cancel), 5
+        )
+        assert [o.ok for o in outcomes] == [True] and finished == [0]
+        assert slskd.wait_for_download.await_count == 2
+
     async def test_empty_listing_does_nothing(self, tmp_path):
         slskd = _slskd()
         assert await fetch_folder(slskd, _processor(tmp_path), FolderListing(PEER, FOLDER), 600, 7200) == []
@@ -536,6 +559,39 @@ class TestPipelineAlbum:
         assert all(o.ok and o.path.startswith(str(tmp_path / "downloads")) for o in job.outcomes)
         assert {(r.status, r.note) for r in pipeline.history_repo.get_recent(10)} == {("delivered", "album")}
 
+    async def test_chat_delivery_hands_each_file_to_the_front_end(self, tmp_path):
+        pipeline = _pipeline(tmp_path)
+        pipeline.slskd.wait_for_download = _waiter(tmp_path, {"02 - Pillow of Winds.flac": "Completed, Errored"})
+        seen = []
+
+        async def on_file(index, outcome, info):
+            seen.append((index, outcome.ok, info.title if info else None))
+            if index == 2:
+                outcome.error = "send_failed"  # the front end could not send it
+
+        job, _ = await pipeline.album(_chosen(), TRACK, deliver="chat", on_file=on_file)
+        assert seen == [(0, True, "One of These Days"), (1, False, None), (2, True, "Echoes")]
+        # The pipeline saved nothing and recorded nothing: sending is the front end's.
+        assert not os.path.exists(tmp_path / "music") or os.listdir(tmp_path / "music") == []
+        assert pipeline.history_repo.get_recent(10) == []
+        assert os.path.isfile(job.outcomes[0].path)
+        assert [o.error for o in pipeline.album_repo.get(job.id).outcomes] == [None, DOWNLOAD_FAILED, "send_failed"]
+
+    async def test_library_skips_a_file_it_already_has_accents_and_case_aside(self, tmp_path):
+        pipeline = _pipeline(tmp_path)
+        music = tmp_path / "music"
+        (music / "Old").mkdir(parents=True)
+        (music / "Old" / "PINK FLOYD - ÉCHOES.flac").write_bytes(b"old")
+        pipeline.library_index.rebuild()
+        pipeline.slskd.wait_for_download = _waiter(tmp_path, {})
+        with patch.object(_album, "fetch_spotify_album_artwork", return_value=None):
+            job, _ = await pipeline.album(_chosen(), TRACK)
+        assert [o.skipped for o in job.outcomes] == [False, False, True]
+        assert job.outcomes[2].ok and job.outcomes[2].path == str(music / "Old" / "PINK FLOYD - ÉCHOES.flac")
+        assert "Pink Floyd - Echoes.mp3" not in os.listdir(music)
+        assert not os.path.exists(tmp_path / "downloads" / "1971 - Meddle" / "06 - Echoes.mp3")
+        assert pipeline.album_repo.get(job.id).outcomes[2].skipped is True
+
     async def test_offline_peer_creates_no_job(self, tmp_path):
         pipeline = _pipeline(tmp_path)
         pipeline.slskd.browse_directory.side_effect = requests.exceptions.ConnectionError("offline")
@@ -545,7 +601,7 @@ class TestPipelineAlbum:
 
     async def test_bad_deliver_is_refused(self, tmp_path):
         with pytest.raises(ValueError):
-            await _pipeline(tmp_path).album(_chosen(), TRACK, deliver="chat")
+            await _pipeline(tmp_path).album(_chosen(), TRACK, deliver="nowhere")
 
     async def test_restart_marks_interrupted_and_processes_what_landed(self, tmp_path):
         pipeline = _pipeline(tmp_path)
@@ -621,3 +677,23 @@ def test_album_timeout_setting(monkeypatch):
     assert Config().album_timeout_secs == 900
     monkeypatch.setenv("ALBUM_TIMEOUT_SECS", "0")
     assert Config().album_timeout_secs == 1
+
+
+def test_old_pending_table_gets_the_delivered_column(tmp_path):
+    path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE pending_downloads (dl_id TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, user_id INTEGER,
+        track TEXT NOT NULL, result TEXT NOT NULL, source_path TEXT, status_message_id INTEGER,
+        approval_message_id INTEGER, result_index INTEGER NOT NULL DEFAULT 0, search_id TEXT NOT NULL DEFAULT '',
+        transfer_id TEXT NOT NULL DEFAULT '', job_id INTEGER, track_id INTEGER, created_at REAL NOT NULL)"""
+    )
+    conn.commit()
+    conn.close()
+    from music_downloader.persistence.pending_repo import PendingDownload, PendingRepository
+
+    repo = PendingRepository(Database(path))
+    repo.save_download("a", PendingDownload(track=TRACK, result=_chosen(), chat_id=1, delivered=True))
+    repo.save_download("b", PendingDownload(track=TRACK, result=_chosen(), chat_id=1))
+    loaded = repo.load_downloads()
+    assert (loaded["a"].delivered, loaded["b"].delivered) == (True, False)

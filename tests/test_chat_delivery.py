@@ -450,7 +450,7 @@ class TestChatDownload:
         bot.processor.process_file.assert_not_called()
         bot.processor.cleanup_download.assert_called_once_with(source)
         assert seen_during_cleanup == [True]  # entry still protected the file during cleanup
-        assert bot.downloads == {}
+        assert [dl.delivered for dl in bot.downloads.values()] == [True]  # only the album button's row is left
         bot.pipeline.embed_artwork.assert_awaited_once()
         assert "#1 Sent" in _edits(status)[-1]
         assert bot.history_repo.get_recent(1)[0].status == "delivered"
@@ -613,7 +613,7 @@ class TestChatDownload:
         bot.processor.process_file.assert_not_called()
         context.bot.send_audio.assert_awaited_once()
         assert not os.path.exists(source)
-        assert bot.downloads == {}
+        assert bot.downloads["d1"].delivered  # only the album button's row is left
         # The preview under the user's finger ends with the outcome, not "Sending..."
         assert "Sent to this chat" in update.callback_query.edit_message_caption.call_args.kwargs["caption"]
 

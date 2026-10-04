@@ -64,6 +64,9 @@ class PendingDownload:
     track_id: int | None = None
     generation: int = 0
     created_at: float = field(default_factory=time.time)
+    # The track was saved or sent: the row only backs the "Whole album from
+    # this source" button (no file, no transfer), until it expires with the rest.
+    delivered: bool = False
 
 
 def _from_fields(cls, data: dict):
@@ -82,8 +85,8 @@ class PendingRepository:
         self._conn.execute(
             """INSERT OR REPLACE INTO pending_downloads
             (dl_id, chat_id, user_id, track, result, source_path, status_message_id, approval_message_id,
-             result_index, search_id, transfer_id, job_id, track_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             result_index, search_id, transfer_id, job_id, track_id, created_at, delivered)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 dl_id,
                 dl.chat_id,
@@ -99,6 +102,7 @@ class PendingRepository:
                 dl.job_id,
                 dl.track_id,
                 dl.created_at,
+                int(dl.delivered),
             ),
         )
         self._conn.commit()
@@ -115,6 +119,7 @@ class PendingRepository:
             try:
                 data["track"] = _from_fields(TrackInfo, json.loads(data["track"]))
                 data["result"] = _from_fields(SearchResult, json.loads(data["result"]))
+                data["delivered"] = bool(data.get("delivered"))
                 loaded[dl_id] = _from_fields(PendingDownload, data)
             except (TypeError, ValueError):
                 logger.warning("Dropping unreadable pending download %s", dl_id)

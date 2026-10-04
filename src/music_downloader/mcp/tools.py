@@ -253,8 +253,9 @@ class McpTools:
     ) -> dict:
         """Fetch every audio file of the folder a copy came from; one outcome per file.
 
-        deliver="library" saves each file into the library as it lands; "path"
-        leaves them in DOWNLOAD_DIR. A failed file never stops the others.
+        deliver="library" saves each file into the library as it lands (a file
+        the library already has is skipped: skipped true, path the library's
+        file); "path" leaves them in DOWNLOAD_DIR. A failed file never stops the others.
         """
         if deliver not in (DELIVER_LIBRARY, DELIVER_PATH):
             raise ToolError(f"deliver must be {DELIVER_LIBRARY!r} or {DELIVER_PATH!r}, not {deliver!r}.")
@@ -286,6 +287,7 @@ class McpTools:
                     "filename": f.basename,
                     "ok": o is not None and o.ok,
                     "path": o.path if o is not None else None,
+                    "skipped": o is not None and o.skipped,
                     "error": (o.error if o is not None else "unfinished"),
                     "state": (o.state or None) if o is not None else None,
                 }

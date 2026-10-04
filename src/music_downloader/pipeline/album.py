@@ -185,6 +185,27 @@ def _enqueue(slskd: SlskdClient, username: str, files: list[FolderFile]) -> set[
     return failed
 
 
+async def _wait_unless_cancelled(wait: Awaitable, cancel: asyncio.Event | None):
+    """(result of *wait*, False), or (None, True) when *cancel* is set first (the wait is dropped)."""
+    if cancel is None:
+        return await wait, False
+    waiting = asyncio.ensure_future(wait)
+    stopping = asyncio.ensure_future(cancel.wait())
+    try:
+        await asyncio.wait({waiting, stopping}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        waiting.cancel()
+        raise
+    finally:
+        stopping.cancel()
+    if waiting.done():
+        return waiting.result(), False
+    waiting.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiting
+    return None, True
+
+
 async def fetch_folder(
     slskd: SlskdClient,
     processor: FileProcessor,
@@ -194,6 +215,7 @@ async def fetch_folder(
     progress_cb: FolderProgress | None = None,
     on_file: FileDone | None = None,
     clock: Callable[[], float] = time.monotonic,
+    cancel: asyncio.Event | None = None,
 ) -> list[FileOutcome]:
     """Download every file of *listing*; one FileOutcome per file, in listing order.
 
@@ -202,6 +224,10 @@ async def fetch_folder(
     fail with state "Timeout" (slskd keeps their transfers). Never raises on a
     failed file. *on_file* runs as each file finishes (the pipeline saves it
     there), so what landed is known even if the album never completes.
+
+    Setting *cancel* stops the waiting: the file being waited on and the ones
+    after it get no outcome (the list comes back shorter) and slskd keeps
+    their transfers. A file already handed to *on_file* is finished first.
     """
     files, username, total = listing.files, listing.username, len(listing.files)
     outcomes: list[FileOutcome] = []
@@ -215,6 +241,8 @@ async def fetch_folder(
     started = clock()
 
     for i, f in enumerate(files):
+        if cancel is not None and cancel.is_set():
+            break
         outcome = FileOutcome(filename=f.filename)
         try:
             remaining = total_timeout_secs - (clock() - started)
@@ -228,12 +256,18 @@ async def fetch_folder(
                 async def on_status(status: DownloadStatus, i=i) -> None:
                     await _call(progress_cb, i, total, status.state, status.percent_complete)
 
-                status = await slskd.wait_for_download(
-                    username=username,
-                    filename=f.filename,
-                    timeout_secs=max(1, int(min(per_file_timeout_secs, remaining))),
-                    progress_cb=on_status,
+                status, cancelled = await _wait_unless_cancelled(
+                    slskd.wait_for_download(
+                        username=username,
+                        filename=f.filename,
+                        timeout_secs=max(1, int(min(per_file_timeout_secs, remaining))),
+                        progress_cb=on_status,
+                    ),
+                    cancel,
                 )
+                if cancelled:
+                    logger.info("Album fetch of %s from %s cancelled at %s", listing.remote_dir, username, f.basename)
+                    break
                 if status is None or status.is_failed:
                     outcome.error, outcome.state = DOWNLOAD_FAILED, status.state if status else "Timeout"
                 else:

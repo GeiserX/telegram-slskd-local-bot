@@ -425,11 +425,19 @@ class TestAlbumTools:
         assert done["ok"] is False and done["job_id"] == 7 and done["deliver"] == "path"
         assert (done["total"], done["landed"], done["failed"]) == (2, 1, 1)
         assert done["files"] == [
-            {"filename": "01 - Boots.flac", "ok": True, "path": "/music/01 - Boots.flac", "error": None, "state": None},
+            {
+                "filename": "01 - Boots.flac",
+                "ok": True,
+                "path": "/music/01 - Boots.flac",
+                "skipped": False,
+                "error": None,
+                "state": None,
+            },
             {
                 "filename": "02 - Bang Bang.mp3",
                 "ok": False,
                 "path": None,
+                "skipped": False,
                 "error": "failed",
                 "state": "Completed, Errored",
             },

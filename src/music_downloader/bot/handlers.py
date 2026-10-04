@@ -28,6 +28,9 @@ from telegram.ext import (
 )
 
 from music_downloader.bot.keyboards import (
+    build_album_confirm_keyboard,
+    build_album_offer_keyboard,
+    build_album_retry_keyboard,
     build_approve_keyboard,
     build_auto_mode_keyboard,
     build_delivery_mode_keyboard,
@@ -52,12 +55,16 @@ from music_downloader.config import BYTES_PER_MB, Config
 from music_downloader.health import HealthState, slskd_probe_loop
 from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import TrackInfo
+from music_downloader.persistence.album_repo import ALBUM_CANCELLED, AlbumJob, FileOutcome
 from music_downloader.persistence.import_repo import JobStatus, TrackStatus
 from music_downloader.persistence.pending_repo import PendingDownload, PendingSearch, WriteThroughDict
-from music_downloader.pipeline import Pipeline
+from music_downloader.pipeline import ALBUM_DELIVER_CHAT, ALBUM_DELIVER_LIBRARY, Pipeline
+from music_downloader.pipeline.album import BROWSE_TIMEOUT_SECS, REASON_NO_ANSWER, AlbumArt, FolderListing
+from music_downloader.pipeline.album import remote_dir as album_remote_dir
 from music_downloader.pipeline.fetch import (
     DOWNLOAD_FAILED,
     ENQUEUE_FAILED,
+    FILE_NOT_FOUND,
     FORMAT_LABELS,
     FORMAT_ORIGINAL,
     SEND_FORMATS,
@@ -84,6 +91,28 @@ DELIVERY_CHAT = "chat"
 
 # Shown when a button from before a restart points at state that no longer exists.
 RESTART_EXPIRED = "⌛ This button expired after a restart. Send a new search."
+# An album button whose download row is gone (expired with DOWNLOAD_CLEANUP_HOURS, or already used).
+ALBUM_EXPIRED = "⌛ This button expired."
+# File names shown under an album listing before "Get all".
+ALBUM_SAMPLE = 6
+# Why an album file failed, by FileOutcome.error (a download failure shows slskd's state instead).
+ALBUM_FAILURES = {
+    ENQUEUE_FAILED: "not queued",
+    FILE_NOT_FOUND: "not found on disk",
+    "process_failed": "could not be saved",
+    "too_large": "too big even as Opus",
+    "convert_failed": "conversion failed",
+    "send_failed": "Telegram refused it",
+}
+
+
+@dataclasses.dataclass
+class AlbumRun:
+    """The album download running in a chat: /cancel sets *cancel*; *line* is its /status line."""
+
+    cancel: asyncio.Event
+    task: asyncio.Task | None = None
+    line: str = ""
 
 
 def _esc(text) -> str:
@@ -249,6 +278,12 @@ class MusicBot:
         self._sweep_task: asyncio.Task | None = None
         # slskd health probe loop (only when create_bot got a HealthState).
         self._probe_task: asyncio.Task | None = None
+
+        # One album download per chat (chat_id -> AlbumRun). Apart from
+        # _active_tasks on purpose: a new search must not stop an album, /cancel does.
+        self._album_runs: dict[int, AlbumRun] = {}
+        # Folder listings shown under "Get all", by download id (lost on restart: Get all lists again).
+        self._album_listings: dict[str, FolderListing] = {}
 
         # Active import tracking (chat_id -> job_id)
         self._active_import: dict[int, int] = {}
@@ -431,7 +466,8 @@ class MusicBot:
         self._spotify_page.pop(chat_id, None)
         self._awaiting_direct_metadata.pop(chat_id, None)
 
-        stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
+        # A delivered row only backs an album button: a new search leaves it.
+        stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id and not v.delivered]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
             # The file is left to the orphan sweep; the finished transfer goes now.
@@ -468,10 +504,11 @@ class MusicBot:
         await update.message.reply_text(
             "Send me a song name (e.g., <code>Nancy Sinatra Bang Bang</code>) "
             "and I'll find the best copy on Soulseek: lossless first, or the best quality "
-            "for its size in chat delivery.\n\n"
+            "for its size in chat delivery. Once a track is saved or sent, "
+            "\U0001f4bf Whole album from this source fetches the folder it came from.\n\n"
             "Commands:\n"
             "/import — Import a Spotify playlist or album\n"
-            "/cancel — Cancel the active import or search\n"
+            "/cancel — Cancel the active import, album download or search\n"
             "/auto — Toggle auto-download mode\n"
             "/deliver — Toggle chat delivery (send tracks here instead of saving)\n"
             "/format — Format of tracks sent in the chat (Original, MP3 320, Opus 192)\n"
@@ -569,11 +606,15 @@ class MusicBot:
                     # Search still resolving on Spotify (or awaiting a pick)
                     lines.append(f"• {_esc(pending.query)}")
 
-        chat_downloads = [d for d in self.downloads.values() if d.chat_id == chat_id]
+        chat_downloads = [d for d in self.downloads.values() if d.chat_id == chat_id and not d.delivered]
         if chat_downloads:
             lines.append("\n<b>Active downloads:</b>\n")
             for dl in chat_downloads:
                 lines.append(f"• {_esc(dl.track.artist)} - {_esc(dl.track.title)} ({_esc(dl.result.basename)})")
+
+        run = self._album_runs.get(chat_id)
+        if run is not None and run.line:
+            lines.append(f"\n<b>Album:</b> {run.line}")
 
         job_id = self._active_import.get(chat_id)
         if job_id:
@@ -699,7 +740,7 @@ class MusicBot:
         stale_message_ids += [
             dl.status_message_id
             for dl in self.downloads.values()
-            if dl.chat_id == chat_id and dl.status_message_id and dl.source_path is None
+            if dl.chat_id == chat_id and dl.status_message_id and dl.source_path is None and not dl.delivered
         ]
         self._cancel_chat_operations(chat_id)
         generation = self._chat_generation[chat_id]
@@ -972,6 +1013,9 @@ class MusicBot:
             "approve": self._handle_approval,
             "reject": self._handle_approval,
             "wish": self._handle_wish_callback,
+            "alb": self._handle_album_offer,
+            "albgo": self._handle_album_confirm,
+            "albno": self._handle_album_drop,
         }.get(prefix)
 
         if handler:
@@ -1411,19 +1455,21 @@ class MusicBot:
         result = pending_dl.result
 
         target_path = await self.pipeline.save(pending_dl.source_path, track, result, pending_dl.transfer_id)
-        # Popped only after saving: the entry keeps the source protected
+        # Released only after saving: the entry keeps the source protected
         # from the orphan sweep until it is gone.
-        self.downloads.pop(dl_id, None)
         if target_path:
+            markup = self._offer_album(dl_id, pending_dl)
             self._wish_done(chat_id, pending_dl.search_id)
             target_name = os.path.basename(target_path)
             await _safe_edit(
                 status_msg,
                 f"✅ <b>{label} Auto-saved:</b> <code>{_esc(target_name)}</code>\n{quality_line}",
                 parse_mode=ParseMode.HTML,
+                reply_markup=markup,
             )
             logger.info(f"Auto-saved: {target_name}")
         else:
+            self.downloads.pop(dl_id, None)
             await _safe_edit(
                 status_msg,
                 f"❌ {label} Downloaded but failed to save. Check logs.",
@@ -1446,14 +1492,15 @@ class MusicBot:
         )
         if outcome == "sent":
             await self.pipeline.discard(source_path, result.username, pending_dl.transfer_id)
-            # Popped only after cleanup: the entry keeps the source protected
+            # Released only after cleanup: the entry keeps the source protected
             # from the orphan sweep until it is gone.
-            self.downloads.pop(dl_id, None)
+            markup = self._offer_album(dl_id, pending_dl)
             self._wish_done(chat_id, pending_dl.search_id)
             await _safe_edit(
                 status_msg,
                 f"✅ <b>{label} Sent:</b> <code>{_esc(note)}</code>\n{quality_line}",
                 parse_mode=ParseMode.HTML,
+                reply_markup=markup,
             )
             await self.pipeline.record_history(track, result, "delivered", filename=note)
             logger.info(f"Delivered to chat: {note}")
@@ -1474,7 +1521,15 @@ class MusicBot:
         return False
 
     async def _send_to_chat(
-        self, context, chat_id: int, track: TrackInfo, result: SearchResult, source_path: str, caption: str
+        self,
+        context,
+        chat_id: int,
+        track: TrackInfo,
+        result: SearchResult,
+        source_path: str,
+        caption: str,
+        *,
+        album_art: AlbumArt | None = None,
     ) -> tuple[str, str]:
         """Send a finished download into the chat as the deliverable (chat delivery).
 
@@ -1487,15 +1542,17 @@ class MusicBot:
 
         ``caption`` is HTML. Returns (outcome, note): outcome is "sent" (note = the
         sent filename, raw) or "too_large" / "convert_failed" / "send_failed"
-        (note = an HTML-safe reason).
+        (note = an HTML-safe reason). An album file passes *album_art*, the
+        album's cover looked up once, instead of a Spotify lookup per file.
         """
+        art = (album_art,) if album_art is not None else ()
         size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
         original = f"original {size / BYTES_PER_MB:.0f} MB {result.extension.upper()}"
         fmt = self._send_format(chat_id)
         try_original = True
         if fmt != FORMAT_ORIGINAL and not already_in_format(source_path, result.extension, fmt):
             send_format = SEND_FORMATS[fmt]
-            out_path = await self.pipeline.transcode(source_path, fmt, track)
+            out_path = await self.pipeline.transcode(source_path, fmt, track, *art)
             if out_path:
                 try:
                     if os.path.getsize(out_path) <= self.pipeline.upload_limit_bytes:
@@ -1515,7 +1572,7 @@ class MusicBot:
 
         if try_original and size <= self.pipeline.upload_limit_bytes:
             # The source is deleted right after sending, so tagging it is free.
-            await self.pipeline.embed_artwork(source_path, track)
+            await self.pipeline.embed_artwork(source_path, track, *art)
             size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
         if try_original and size <= self.pipeline.upload_limit_bytes:
             target_name = self.pipeline.target_filename(track, result.extension)
@@ -1685,7 +1742,7 @@ class MusicBot:
             await self._edit_approval_message(query, self._expired_text(query, "⏹ Cancelled"))
             return
 
-        if pending_dl.chat_id != chat_id or dl_id in self._saving:
+        if pending_dl.chat_id != chat_id or dl_id in self._saving or pending_dl.delivered:
             return
 
         track = pending_dl.track
@@ -1715,16 +1772,19 @@ class MusicBot:
                     )
                 finally:
                     self._saving.discard(dl_id)
-                self.downloads.pop(dl_id, None)
                 if target_path:
+                    markup = self._offer_album(dl_id, pending_dl)
                     target_name = os.path.basename(target_path)
-                    await self._edit_approval_message(query, f"✅ Saved: <code>{_esc(target_name)}</code>")
+                    await self._edit_approval_message(
+                        query, f"✅ Saved: <code>{_esc(target_name)}</code>", reply_markup=markup
+                    )
                     logger.info(f"Approved and saved: {target_name}")
                     self._wish_done(chat_id, pending_dl.search_id)
 
                     # Dismiss every other pending download for this chat.
                     await self._dismiss_other_downloads(context, chat_id, pending_dl.search_id)
                 else:
+                    self.downloads.pop(dl_id, None)
                     await self._edit_approval_message(query, "❌ Failed to save file. Check logs.")
             else:
                 self.downloads.pop(dl_id, None)
@@ -1753,8 +1813,9 @@ class MusicBot:
                     message_id=pending.message_id,
                 )
 
-        # Dismiss other pending download approval messages and clean up files.
-        stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id]
+        # Dismiss other pending download approval messages and clean up files
+        # (a delivered row holds no file, only an album button: it stays).
+        stale = [(k, v) for k, v in self.downloads.items() if v.chat_id == chat_id and not v.delivered]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
             self._remove_download(dl)
@@ -1814,6 +1875,304 @@ class MusicBot:
         except Exception:
             with contextlib.suppress(Exception):
                 await query.edit_message_text(text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+    # =========================================================================
+    # ALBUM DELIVERY (the whole folder a saved or sent track came from)
+    # =========================================================================
+
+    def _offer_album(self, dl_id: str, dl: PendingDownload) -> InlineKeyboardMarkup | None:
+        """The track of *dl* was saved or sent: keep its row for the album button and return the button.
+
+        The row keeps no file and no transfer (both are gone), so the sweep,
+        a new search and /cancel leave it; it expires with DOWNLOAD_CLEANUP_HOURS.
+        An /import track, or a copy with no remote folder, gets no button and its row goes.
+        """
+        if dl.job_id is not None or not album_remote_dir(dl.result.filename):
+            self.downloads.pop(dl_id, None)
+            return None
+        self.downloads[dl_id] = dataclasses.replace(dl, source_path=None, transfer_id="", delivered=True)
+        return build_album_offer_keyboard(dl_id)
+
+    def _album_row(self, dl_id: str, chat_id: int) -> PendingDownload | None:
+        dl = self.downloads.get(dl_id)
+        return dl if dl is not None and dl.delivered and dl.chat_id == chat_id else None
+
+    @staticmethod
+    def _album_head(dl: PendingDownload) -> str:
+        return f"✅ {_esc(dl.track.artist)} - {_esc(dl.track.title)}"
+
+    @staticmethod
+    def _album_name(remote_dir: str) -> str:
+        return remote_dir.rsplit("\\", 1)[-1] or remote_dir
+
+    def _album_listing_text(self, listing: FolderListing) -> str:
+        """The folder, its peer, file count, size and formats, then the first ALBUM_SAMPLE names."""
+        count = len(listing.files)
+        files = "1 audio file" if count == 1 else f"{count} audio files"
+        lines = [
+            f"\U0001f4bf <b>{_esc(self._album_name(listing.remote_dir))}</b> on <code>{_esc(listing.username)}</code>: "
+            f"{files}, {listing.total_size / BYTES_PER_MB:.0f} MB, {_esc(', '.join(f.upper() for f in listing.formats))}"
+        ]
+        lines += [f"• <code>{_esc(f.basename[:70])}</code>" for f in listing.files[:ALBUM_SAMPLE]]
+        if count > ALBUM_SAMPLE:
+            lines.append(f"… and {count - ALBUM_SAMPLE} more")
+        return "\n".join(lines)
+
+    def _album_unavailable(self, listing: FolderListing) -> str:
+        """Why *listing* has no files, for the message."""
+        peer = f"<code>{_esc(listing.username)}</code>"
+        if listing.reason == REASON_NO_ANSWER:
+            return f"\U0001f4bf {peer} did not answer the folder listing within {BROWSE_TIMEOUT_SECS} s."
+        if not listing.answered:
+            detail = f" ({_esc(listing.detail[:200])})" if listing.detail else ""
+            return f"\U0001f4bf Could not list the folder on {peer}: offline or not sharing it{detail}."
+        return f"\U0001f4bf The folder on {peer} holds no audio files."
+
+    async def _album_busy(self, context, chat_id: int) -> bool:
+        """True (and says so) when this chat already runs an album download."""
+        if chat_id not in self._album_runs:
+            return False
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="\U0001f4bf An album download is already running in this chat. /cancel stops it.",
+            parse_mode=ParseMode.HTML,
+        )
+        return True
+
+    async def _album_list(self, query, dl_id: str, dl: PendingDownload) -> FolderListing | None:
+        """Browse the folder of *dl*'s copy, editing the message; None (and Retry) when the peer gives nothing."""
+        head = self._album_head(dl)
+        await self._edit_approval_message(
+            query, f"{head}\n\n\U0001f50e Listing the folder on <code>{_esc(dl.result.username)}</code>…"
+        )
+        listing = await self.pipeline.album_listing(dl.result)
+        if listing.files:
+            return listing
+        if listing.answered:
+            # Nothing to retry: the folder has no audio. The offer is spent.
+            self.downloads.pop(dl_id, None)
+            await self._edit_approval_message(query, f"{head}\n\n{self._album_unavailable(listing)}")
+        else:
+            await self._edit_approval_message(
+                query, f"{head}\n\n{self._album_unavailable(listing)}", reply_markup=build_album_retry_keyboard(dl_id)
+            )
+        return None
+
+    async def _handle_album_offer(self, update, context, chat_id: int, data: str):
+        """alb:<dl_id>: list the folder the track came from and ask before fetching it."""
+        query = update.callback_query
+        dl_id = data.split(":", 1)[1]
+        dl = self._album_row(dl_id, chat_id)
+        if dl is None:
+            await self._edit_approval_message(query, self._expired_text(query, ALBUM_EXPIRED))
+            return
+        if await self._album_busy(context, chat_id):
+            return
+        listing = await self._album_list(query, dl_id, dl)
+        if listing is None:
+            return
+        self._album_listings[dl_id] = listing
+        await self._edit_approval_message(
+            query,
+            f"{self._album_head(dl)}\n\n{self._album_listing_text(listing)}",
+            reply_markup=build_album_confirm_keyboard(dl_id, len(listing.files)),
+        )
+
+    async def _handle_album_drop(self, update, context, chat_id: int, data: str):
+        """albno:<dl_id>: back to the album button, nothing fetched."""
+        query = update.callback_query
+        dl_id = data.split(":", 1)[1]
+        self._album_listings.pop(dl_id, None)
+        dl = self._album_row(dl_id, chat_id)
+        if dl is None:
+            await self._edit_approval_message(query, self._expired_text(query, ALBUM_EXPIRED))
+            return
+        await self._edit_approval_message(query, self._album_head(dl), reply_markup=build_album_offer_keyboard(dl_id))
+
+    async def _handle_album_confirm(self, update, context, chat_id: int, data: str):
+        """albgo:<dl_id>: fetch the whole folder, one status message, delivered like the track was."""
+        query = update.callback_query
+        dl_id = data.split(":", 1)[1]
+        dl = self._album_row(dl_id, chat_id)
+        if dl is None:
+            await self._edit_approval_message(query, self._expired_text(query, ALBUM_EXPIRED))
+            return
+        if await self._album_busy(context, chat_id):
+            return
+        # Claimed before the first await, so a second tap cannot start the album twice.
+        run = self._album_runs[chat_id] = AlbumRun(cancel=asyncio.Event())
+        try:
+            listing = self._album_listings.pop(dl_id, None) or await self._album_list(query, dl_id, dl)
+            if listing is None:
+                self._album_runs.pop(chat_id, None)
+                return
+            # The offer is spent: the album runs from here.
+            self.downloads.pop(dl_id, None)
+            count = len(listing.files)
+            await self._edit_approval_message(
+                query,
+                f"{self._album_head(dl)}\n\n\U0001f4bf Getting {count} file{'s' if count != 1 else ''} "
+                f"from <code>{_esc(listing.username)}</code>, progress below.",
+            )
+            to_chat = self._is_chat_delivery(chat_id, query.from_user.id)
+            status_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"\U0001f4bf <b>{_esc(self._album_name(listing.remote_dir))}</b>: 0/{count}, queueing…",
+                parse_mode=ParseMode.HTML,
+            )
+        except BaseException:
+            self._album_runs.pop(chat_id, None)
+            raise
+        run.task = context.application.create_task(
+            self._run_album(context, chat_id, dl, listing, status_msg, to_chat, run), update=update
+        )
+
+    async def _run_album(
+        self,
+        context,
+        chat_id: int,
+        dl: PendingDownload,
+        listing: FolderListing,
+        status_msg: Message,
+        to_chat: bool,
+        run: AlbumRun,
+    ) -> None:
+        """Fetch every file of *listing*, save (library) or send (chat) each one as it lands, then sum up."""
+        total = len(listing.files)
+        name = _esc(self._album_name(listing.remote_dir))
+        header = f"\U0001f4bf <b>{name}</b> from <code>{_esc(listing.username)}</code>"
+        art = self.pipeline.album_art(dl.track)
+        finished: dict[int, FileOutcome] = {}
+        failures: dict[int, str] = {}  # index -> reason (HTML-safe)
+        current = ""
+        last_text = ""
+
+        def counts() -> str:
+            ok = sum(1 for o in finished.values() if o.ok and not o.skipped)
+            skipped = sum(1 for o in finished.values() if o.skipped)
+            parts = [f"{len(finished)}/{total} done", f"✅ {ok} {'sent' if to_chat else 'saved'}"]
+            if skipped:
+                parts.append(f"⏭ {skipped} already in the library")
+            if failures:
+                parts.append(f"❌ {len(failures)} failed")
+            return " · ".join(parts)
+
+        async def show() -> None:
+            nonlocal last_text
+            run.line = f"{name}: {counts()}"
+            text = f"{header}\n{counts()}" + (f"\n{current}" if current else "")
+            if text == last_text:  # Telegram rejects an edit that changes nothing
+                return
+            last_text = text
+            await _safe_edit(status_msg, text, parse_mode=ParseMode.HTML)
+
+        async def on_progress(index: int, count: int, state: str, percent: float) -> None:
+            nonlocal current
+            where = "⏳ queued at the source" if "queue" in (state or "").lower() else f"{percent:.0f}%"
+            current = f"⬇️ {index + 1}/{count} <code>{_esc(listing.files[index].basename)}</code> · {where}"
+            await show()
+
+        async def on_file(index: int, outcome: FileOutcome, info: TrackInfo | None) -> None:
+            nonlocal current
+            file = listing.files[index]
+            if to_chat and outcome.ok and outcome.path and info is not None:
+                current = f"\U0001f4e8 {index + 1}/{total} sending <code>{_esc(file.basename)}</code>…"
+                await show()
+                result = file.as_result(listing.username)
+                caption = f"{index + 1:02d}/{total:02d} {_esc(info.artist)} - {_esc(info.title)}"
+                sent, note = await self._send_to_chat(
+                    context, chat_id, info, result, outcome.path, caption, album_art=art
+                )
+                if sent == "sent":
+                    await self.pipeline.discard(outcome.path, listing.username, outcome.transfer_id)
+                    await self.pipeline.record_history(info, result, "delivered", filename=note, note="album")
+                    outcome.path = None
+                else:
+                    # Left to the orphan sweep, like a single track that could not be sent.
+                    outcome.error = sent
+                    await self.pipeline.record_history(info, result, sent, note="album")
+            finished[index] = outcome
+            if not outcome.ok:
+                failures[index] = ALBUM_FAILURES.get(outcome.error) or _esc(outcome.state or outcome.error or "failed")
+            current = ""
+            await show()
+
+        try:
+            job, _ = await self.pipeline.album(
+                dl.result,
+                dl.track,
+                ALBUM_DELIVER_CHAT if to_chat else ALBUM_DELIVER_LIBRARY,
+                on_progress,
+                listing=listing,
+                chat_id=chat_id,
+                on_file=on_file,
+                album_art=art,
+                cancel=run.cancel,
+            )
+            await _safe_edit(status_msg, self._album_summary(header, job, failures, to_chat), parse_mode=ParseMode.HTML)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Album download of %s from %s failed", listing.remote_dir, listing.username)
+            await _safe_edit(
+                status_msg,
+                f"{header}\n❌ The album download stopped: {counts()}. Check logs.",
+                parse_mode=ParseMode.HTML,
+            )
+        finally:
+            if self._album_runs.get(chat_id) is run:
+                del self._album_runs[chat_id]
+
+    def _album_summary(self, header: str, job: AlbumJob, failures: dict[int, str], to_chat: bool) -> str:
+        """The finished (or cancelled) album: what arrived, what was skipped, what failed and why."""
+        total = len(job.files)
+        landed = [o for o in job.landed if not o.skipped]
+        skipped = sum(1 for o in job.landed if o.skipped)
+        where = "to this chat" if to_chat else f"to <code>{_esc(self.config.output_dir)}</code>"
+        lines = [header, f"✅ {'Sent' if to_chat else 'Saved'} {len(landed)} of {total} {where}"]
+        if skipped:
+            lines.append(f"⏭ {skipped} already in the library, skipped")
+        if failures:
+            lines.append(f"❌ Failed ({len(failures)}):")
+            shown = sorted(failures.items())[:20]
+            lines += [f"• <code>{_esc(job.files[i].basename[:70])}</code>: {reason}" for i, reason in shown]
+            if len(failures) > len(shown):
+                lines.append(f"… and {len(failures) - len(shown)} more")
+        if job.status == ALBUM_CANCELLED:
+            lines.append(
+                f"⏹ Cancelled with {len(job.unfinished)} not fetched: slskd keeps their transfers "
+                "(remove them in slskd if you do not want them)."
+            )
+        return "\n".join(lines)
+
+    def _cancel_album(self, chat_id: int) -> bool:
+        """Stop the chat's album download (the run sums up what landed). True when one was running."""
+        run = self._album_runs.get(chat_id)
+        if run is None:
+            return False
+        run.cancel.set()
+        return True
+
+    async def _recover_albums(self, bot) -> None:
+        """At startup: albums the last process left running are marked interrupted; tell each chat what landed."""
+        try:
+            jobs = await self.pipeline.album_recover()
+        except Exception:
+            logger.exception("Recovering interrupted album downloads failed")
+            return
+        for job in jobs:
+            if job.chat_id is None:  # an MCP album: no chat to tell
+                continue
+            to_chat = job.deliver == ALBUM_DELIVER_CHAT
+            arrived = len([o for o in job.landed if not o.skipped])
+            text = (
+                f"⚠️ The bot restarted during the album <b>{_esc(self._album_name(job.remote_dir))}</b> from "
+                f"<code>{_esc(job.username)}</code>: {arrived} of {len(job.files)} "
+                f"{'sent' if to_chat else 'saved'}, {len(job.failed)} failed, {len(job.unfinished)} not fetched. "
+                "slskd keeps the transfers it still had."
+            )
+            with contextlib.suppress(Exception):
+                await bot.send_message(chat_id=job.chat_id, text=text, parse_mode=ParseMode.HTML)
 
     # =========================================================================
     # DIRECT SEARCH (skip Spotify)
@@ -1982,11 +2341,18 @@ class MusicBot:
         )
 
     async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /cancel — cancel active import or search."""
+        """Handle /cancel — cancel the active import, album download or search."""
         if not await self._check_auth(update):
             return
 
         chat_id = update.effective_chat.id
+        # The album download stops waiting and sums up what landed in its own message.
+        album = self._cancel_album(chat_id)
+        album_note = (
+            "\n⏹ Album download stopped: what already arrived stays, and slskd keeps the transfers still queued."
+            if album
+            else ""
+        )
 
         # Cancel import if active. Fall back to the DB when the in-memory map
         # is empty (abandoned confirm screen, or state lost to a restart) —
@@ -2000,13 +2366,14 @@ class MusicBot:
         if job_id:
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.cancelled)
             self._cancel_chat_operations(chat_id)
-            await update.message.reply_text("❌ Import cancelled.", parse_mode=ParseMode.HTML)
+            await update.message.reply_text(f"❌ Import cancelled.{album_note}", parse_mode=ParseMode.HTML)
             return
 
         # Otherwise cancel regular operations
         had_work = self._cancel_chat_operations(chat_id)
-        if had_work:
-            await update.message.reply_text("❌ Cancelled.", parse_mode=ParseMode.HTML)
+        if had_work or album:
+            text = f"❌ Cancelled.{album_note}" if had_work else album_note.lstrip("\n")
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
         else:
             await update.message.reply_text("Nothing to cancel.", parse_mode=ParseMode.HTML)
 
@@ -3043,7 +3410,7 @@ async def _register_commands(app: Application) -> None:
     await app.bot.set_my_commands(
         [
             BotCommand("import", "Import a Spotify playlist or album"),
-            BotCommand("cancel", "Cancel the active import or search"),
+            BotCommand("cancel", "Cancel the active import, album or search"),
             BotCommand("auto", "Toggle auto-download mode"),
             BotCommand("deliver", "Toggle chat delivery (send tracks here instead of saving)"),
             BotCommand("format", "Format of tracks sent in the chat"),
@@ -3098,6 +3465,8 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
         # The duplicate check's index: built now in a thread, rebuilt hourly,
         # whether or not the orphan sweep is on.
         bot._index_task = asyncio.get_running_loop().create_task(bot.pipeline.library_index_loop())
+        # Albums the last process left running: marked interrupted, what landed is saved, each chat told.
+        bot._album_recover_task = asyncio.get_running_loop().create_task(bot._recover_albums(app.bot))
         if health is not None:
             bot._probe_task = asyncio.get_running_loop().create_task(
                 slskd_probe_loop(lambda: bot.slskd.is_up(), health)
@@ -3116,7 +3485,7 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
             bot._mcp_task = asyncio.get_running_loop().create_task(serve_http(bot.pipeline, config))
 
     async def _post_shutdown(app: Application) -> None:
-        for name in ("_sweep_task", "_index_task", "_probe_task", "_wishlist_task", "_mcp_task"):
+        for name in ("_sweep_task", "_index_task", "_album_recover_task", "_probe_task", "_wishlist_task", "_mcp_task"):
             task = getattr(bot, name, None)
             if task is not None:
                 task.cancel()

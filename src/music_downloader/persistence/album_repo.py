@@ -2,7 +2,8 @@
 
 The transfers themselves are slskd's: after a restart nothing is re-enqueued.
 The job is marked interrupted and the files already on disk are still
-processed (Pipeline.album_recover).
+processed (Pipeline.album_recover). A job stopped on purpose (/cancel) is
+cancelled and left alone.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 ALBUM_RUNNING = "running"
 ALBUM_DONE = "done"
 ALBUM_INTERRUPTED = "interrupted"
+ALBUM_CANCELLED = "cancelled"
 
 
 @dataclass
@@ -64,6 +66,9 @@ class FileOutcome:
     error: str | None = None
     state: str = ""  # slskd transfer state behind a failure ("Timeout" when it never finished)
     transfer_id: str = ""
+    # Library delivery with the duplicate check: the library already had this file
+    # (path is that file), so the download was deleted instead of saved.
+    skipped: bool = False
 
     @property
     def ok(self) -> bool:

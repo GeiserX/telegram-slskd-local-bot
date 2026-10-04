@@ -129,6 +129,14 @@ class LibraryIndex:
             )
         return True
 
+    def find_stem(self, stem: str) -> str | None:
+        """A library file (path relative to root) named *stem*, accents and case aside; None when there is none."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT rel_path FROM library_index WHERE norm_stem = ? ORDER BY rel_path LIMIT 1", (normalise(stem),)
+            ).fetchone()
+        return row[0] if row else None
+
     def find_similar(self, query: str, threshold: float = DEFAULT_THRESHOLD) -> list[str]:
         """Library files (paths relative to root) whose stem looks like *query*, best first.
 
