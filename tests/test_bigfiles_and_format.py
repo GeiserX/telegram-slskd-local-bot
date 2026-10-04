@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from music_downloader.config import Config
-from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.database import Database
 from music_downloader.persistence.settings_repo import SettingsRepository
 from music_downloader.pipeline import fetch as pipeline_fetch
@@ -123,12 +122,6 @@ class TestBuilder:
 def _flac(name, size):
     return SearchResult(
         username=name, filename=f"\\x\\Bang Bang {name}.flac", size=size, bit_depth=16, sample_rate=44100, length=162
-    )
-
-
-def _make_track(duration_ms=162_000):
-    return TrackInfo(
-        artist="Pink Floyd", title="Echoes", album="Meddle", duration_ms=duration_ms, spotify_url="u", year="1971"
     )
 
 
