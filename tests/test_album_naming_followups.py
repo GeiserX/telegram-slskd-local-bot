@@ -64,6 +64,15 @@ async def test_library_mp3_does_not_make_the_album_flac_a_duplicate(tmp_path):
     assert (await pipeline.library_copy("/downloads/x/06 - Echoes.flac", TRACK)) == str(
         music / "Pink Floyd - Echoes.flac"
     )
+    # Both formats in the library: the FLAC is the copy that counts, whatever row sorts first.
+    (music / "Pink Floyd - Echoes.mp3").write_bytes(b"lossy")
+    pipeline.library_index.rebuild()
+    assert (await pipeline.library_copy("/downloads/x/06 - Echoes.flac", TRACK)) == str(
+        music / "Pink Floyd - Echoes.flac"
+    )
+    assert (await pipeline.library_copy("/downloads/x/06 - Echoes.mp3", TRACK)) == str(
+        music / "Pink Floyd - Echoes.mp3"
+    )
 
 
 @pytest.mark.parametrize(
