@@ -252,6 +252,55 @@ def convert_to_ogg(filepath: str, bitrate_kbps: int = 128) -> str | None:
         return None
 
 
+def transcode_file(filepath: str, codec_args: tuple[str, ...], extension: str, title: str, artist: str) -> str | None:
+    """Transcode a full audio file with ffmpeg into a temporary ``.<extension>`` file.
+
+    *codec_args* picks the codec and bitrate (e.g. ``-c:a libmp3lame -b:a 320k``).
+    The source's own tags are dropped and only *title* and *artist* written;
+    the cover is embedded afterwards by the caller. Returns the path (the
+    caller deletes it), or None on error.
+    """
+    import subprocess
+
+    out_path = None
+    try:
+        fd, out_path = tempfile.mkstemp(suffix=f".{extension}")
+        os.close(fd)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                filepath,
+                "-map",
+                "0:a:0",
+                "-vn",
+                *codec_args,
+                "-map_metadata",
+                "-1",
+                "-metadata",
+                f"title={title}",
+                "-metadata",
+                f"artist={artist}",
+                out_path,
+            ],
+            capture_output=True,
+            timeout=600,
+            check=True,
+        )
+        if os.path.getsize(out_path) == 0:
+            os.unlink(out_path)
+            return None
+        logger.info("Transcoded %s to %s (%.1f MB)", filepath, out_path, os.path.getsize(out_path) / 1_000_000)
+        return out_path
+    except Exception:
+        logger.exception("Failed to transcode %s", filepath)
+        if out_path:
+            with contextlib.suppress(OSError):
+                os.unlink(out_path)
+        return None
+
+
 def create_preview_clip(filepath: str, duration_secs: float = 60.0) -> str | None:
     """
     Extract a trimmed OGG Opus clip from any audio file using ffmpeg.

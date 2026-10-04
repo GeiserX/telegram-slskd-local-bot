@@ -21,18 +21,21 @@ from music_downloader.persistence.import_repo import ImportRepository
 from music_downloader.persistence.library_index import LibraryIndex
 from music_downloader.persistence.pending_repo import PendingRepository
 from music_downloader.persistence.settings_repo import SettingsRepository
+from music_downloader.persistence.wishlist_repo import WANTED_ANY, WANTED_BETTER, Wish, WishlistRepository
 from music_downloader.pipeline import fetch as _fetch
 from music_downloader.pipeline import library as _library
 from music_downloader.pipeline import resolve as _resolve
 from music_downloader.pipeline import search as _search
+from music_downloader.pipeline import wishlist as _wishlist
 from music_downloader.pipeline.fetch import FetchOutcome, ProgressCallback
 from music_downloader.pipeline.search import RankedResults
+from music_downloader.pipeline.wishlist import WishDelivery
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.scorer import ResultScorer
 from music_downloader.search.slskd_client import SearchResult, SlskdClient
 
-__all__ = ["FetchOutcome", "Pipeline", "RankedResults", "SlskdClient", "SpotifyResolver"]
+__all__ = ["FetchOutcome", "Pipeline", "RankedResults", "SlskdClient", "SpotifyResolver", "Wish", "WishDelivery"]
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,7 @@ class Pipeline:
         self.import_repo = ImportRepository(self.db)
         self.settings_repo = SettingsRepository(self.db)
         self.pending_repo = PendingRepository(self.db)
+        self.wishlist_repo = WishlistRepository(self.db)
         self.library_index = LibraryIndex(self.db, config.output_dir)
         self.playlist_resolver = PlaylistResolver(self.spotify)
 
@@ -117,6 +121,16 @@ class Pipeline:
 
     async def convert_to_opus(self, path: str, bitrate_kbps: int = 128) -> str | None:
         return await _fetch.convert_to_opus(path, bitrate_kbps)
+
+    async def transcode(self, path: str, fmt: str, track: TrackInfo) -> str | None:
+        """*path* transcoded to send format *fmt* (fetch.SEND_FORMATS) with title, artist and cover.
+
+        Returns a temporary file the caller deletes, or None when ffmpeg failed.
+        """
+        out_path = await _fetch.transcode(path, fmt, track.title, track.artist)
+        if out_path:
+            await self.embed_artwork(out_path, track)
+        return out_path
 
     async def preview_clip(self, path: str, duration_secs: float = 60.0) -> str | None:
         return await _fetch.preview_clip(path, duration_secs)
@@ -203,6 +217,74 @@ class Pipeline:
         self, track: TrackInfo, result: SearchResult, status: str, filename: str | None = None
     ) -> None:
         await _library.record_history(self.history_repo, track, result, status, filename)
+
+    # ----------------------------------------------------------------- wishlist
+
+    def wishlist_add(
+        self,
+        chat_id: int,
+        user_id: int | None,
+        track: TrackInfo,
+        profile: str,
+        wanted: str,
+        baseline_tier: int | None = None,
+    ) -> Wish:
+        """Remember *track* to search again: *wanted* "any" copy, or "better" than *baseline_tier*."""
+        if wanted not in (WANTED_ANY, WANTED_BETTER):
+            raise ValueError(f"wanted must be {WANTED_ANY!r} or {WANTED_BETTER!r}, not {wanted!r}")
+        if wanted == WANTED_BETTER and baseline_tier is None:
+            raise ValueError("a 'better' wish needs the baseline tier")
+        wish = Wish(
+            chat_id=chat_id,
+            user_id=user_id,
+            track=track,
+            profile=profile,
+            wanted=wanted,
+            baseline_tier=baseline_tier if wanted == WANTED_BETTER else None,
+        )
+        return self.wishlist_repo.add(wish)
+
+    def wishlist_find(self, chat_id: int, track: TrackInfo) -> Wish | None:
+        """The chat's wish for the same artist and title as *track*, if it has one."""
+        key = (track.artist.casefold(), track.title.casefold())
+        return next(
+            (w for w in self.wishlist_list(chat_id) if (w.track.artist.casefold(), w.track.title.casefold()) == key),
+            None,
+        )
+
+    def wishlist_list(self, chat_id: int) -> list[Wish]:
+        """The chat's wishes, oldest first."""
+        return self.wishlist_repo.list_for_chat(chat_id)
+
+    def wishlist_remove(self, chat_id: int, wish_id: int) -> bool:
+        """Drop a wish of *chat_id*; False when it was not there."""
+        return self.wishlist_repo.remove(chat_id, wish_id)
+
+    async def wishlist_check_due(
+        self, deliver: WishDelivery, sleep=asyncio.sleep, skip: _wishlist.WishSkip | None = None
+    ) -> int:
+        """Search every due wish once (WISHLIST_CHECK_HOURS, WISHLIST_PAUSE_SECS between searches).
+
+        Returns how many searches ran; see pipeline.wishlist.check_due (and *skip* there).
+        """
+        return await _wishlist.check_due(
+            self.wishlist_repo,
+            self.search,
+            deliver,
+            period_secs=self.config.wishlist_check_hours * 3600,
+            pause_secs=self.config.wishlist_pause_secs,
+            sleep=sleep,
+            skip=skip,
+        )
+
+    async def wishlist_loop(self, deliver: WishDelivery, skip: _wishlist.WishSkip | None = None) -> None:
+        """Check due wishes now, then every WISHLIST_TICK_SECS."""
+        while True:
+            try:
+                await self.wishlist_check_due(deliver, skip=skip)
+            except Exception:
+                logger.exception("Wishlist check failed")
+            await asyncio.sleep(_wishlist.WISHLIST_TICK_SECS)
 
     async def orphan_sweep_loop(
         self, protected_paths: Callable[[], set[str]], prune: Callable[[], None] | None = None

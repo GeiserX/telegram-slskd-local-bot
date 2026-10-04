@@ -1,19 +1,27 @@
-"""The pipeline package must not know Telegram exists: any front end can drive it."""
+"""The pipeline and the MCP front end must not know Telegram exists: any front end can drive the pipeline."""
 
 import pkgutil
 import subprocess
 import sys
 
+import music_downloader.mcp as mcp_pkg
 import music_downloader.pipeline as pipeline_pkg
 
-PIPELINE_MODULES = ["music_downloader.pipeline"] + [
-    f"music_downloader.pipeline.{m.name}" for m in pkgutil.iter_modules(pipeline_pkg.__path__)
+PIPELINE_MODULES = [
+    f"{pkg.__name__}{suffix}"
+    for pkg in (pipeline_pkg, mcp_pkg)
+    for suffix in ["", *(f".{m.name}" for m in pkgutil.iter_modules(pkg.__path__))]
 ]
 
 
 def test_every_pipeline_module_is_listed():
     # Positive control for the subprocess check: a new module is picked up automatically.
-    assert {"music_downloader.pipeline.fetch", "music_downloader.pipeline.search"} <= set(PIPELINE_MODULES)
+    assert {
+        "music_downloader.pipeline.fetch",
+        "music_downloader.pipeline.search",
+        "music_downloader.mcp.tools",
+        "music_downloader.mcp.server",
+    } <= set(PIPELINE_MODULES)
 
 
 def test_importing_the_pipeline_never_imports_telegram():

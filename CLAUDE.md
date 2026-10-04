@@ -37,15 +37,17 @@ Configuration via `.env` (see `.env.example`).
 
 ## Architecture
 - `src/music_downloader/` — main application package
-  - `config.py` — all environment variables and their handling (incl. the upload cap: `BYTES_PER_MB`, `DEFAULT_UPLOAD_LIMIT_BYTES`, `TELEGRAM_MAX_UPLOAD_MB`)
+  - `config.py` — all environment variables and their handling (incl. the upload cap: `BYTES_PER_MB`, `DEFAULT_UPLOAD_LIMIT_BYTES`, `TELEGRAM_MAX_UPLOAD_MB`; the local Bot API server: `TELEGRAM_API_BASE_URL`, `TELEGRAM_UPLOAD_TIMEOUT_SECS`, `LOCAL_SERVER_MAX_UPLOAD_MB`; MCP: `MCP_PORT`, `MCP_HOST`, `MCP_TOKEN`, `telegram_owner_id`)
   - `pipeline/` — everything between a query and a file ready to hand over; never imports `telegram` (`tests/test_pipeline_no_telegram.py` enforces it)
     - `__init__.py` — `Pipeline`: owns the Spotify resolver, slskd client, scorer, file processor, repos and library index; `resolve`, `search`, `rank`, `fetch`, `save`, `discard`, `find_similar`, `library_index_loop`
     - `resolve.py` — Spotify lookup, "Artist - Title" parsing, synthetic tracks for direct search
     - `search.py` — query cleanup and fallbacks, the title guard, `rank()` (lossless-first or chat order, unknown-length copies never lead) returning `RankedResults` (`.hidden` = copies the guard dropped)
-    - `fetch.py` — enqueue/wait/locate/lossless check as `FetchOutcome`; Opus conversion and the bitrate ladder that fits the cap
+    - `fetch.py` — enqueue/wait/locate/lossless check as `FetchOutcome`; Opus conversion and the bitrate ladder that fits the cap; the `/format` send formats (`SEND_FORMATS`, `already_in_format`, `transcode`)
     - `library.py` — artwork, history rows, deleting sources, the orphan sweep loop
+    - `wishlist.py` — the wishlist checker (`check_due`: due wishes searched one at a time, hits handed to the front end's callback, `skip` leaves a busy chat for the next tick); `Pipeline.wishlist_add/find/list/remove/check_due/loop`; tiers come from `search/scorer.py` `quality_tier`
+  - `mcp/` — the MCP front end, never imports `telegram`: `tools.py` (`McpTools`: each tool over a `Pipeline`, dicts out, track/copy ids in a TTL map), `server.py` (`build_server` on the `mcp` SDK's `MCPServer`, `BearerAuth`, `serve_http` started by `create_bot` when `MCP_PORT` is set, `run_stdio` for `python -m music_downloader mcp`)
   - `bot/` — the Telegram front end: `handlers.py` (updates, per-chat state, HTML messages, sending files, `create_bot`), `keyboards.py`, `poll_request.py` (reports each successful `getUpdates` to the health state)
-  - `persistence/` — SQLite in `DATA_DIR/importer.db`: `database.py` (schema), `history_repo.py`, `import_repo.py`, `settings_repo.py`, `pending_repo.py` (searches and downloads waiting on a button, written through from the bot's dicts so buttons survive restarts), `library_index.py` (audio files under `OUTPUT_DIR` for the duplicate check; rebuilt at startup and hourly, updated on save, queried in a thread)
+  - `persistence/` — SQLite in `DATA_DIR/importer.db`: `database.py` (schema), `history_repo.py`, `import_repo.py`, `settings_repo.py`, `pending_repo.py` (searches, wishlist-checker lists (`wish_searches`) and downloads waiting on a button, written through from the bot's dicts so buttons survive restarts), `library_index.py` (audio files under `OUTPUT_DIR` for the duplicate check; rebuilt at startup and hourly, updated on save, queried in a thread), `wishlist_repo.py` (tracks to search again: `any` copy or `better` than a baseline tier)
   - `health.py` — `/health` state: Telegram polling in the last 120 s and slskd answering in the last 60 s
   - `search/scorer.py` — search result scoring algorithm; `search/slskd_client.py` — slskd API wrapper
   - `processor/` — file renaming/moving and the lossless spectrum check
@@ -61,7 +63,7 @@ Search results are ranked by 4 factors (total 100 points):
 1. **Duration match** (40 pts): Compared to Spotify reference duration. A lossy file without a length gets one estimated from size and bitrate (`ResultScorer.effective_length`); a copy whose length stays unknown earns 0 here
 2. **Audio quality** (25 pts): depends on the profile passed to `score_results(profile=...)`
    - `library`: lossless scores by bit depth and sample rate (hi-res preferred); lossy scores by bitrate tier. `pipeline/search.rank` then puts every lossless result before every lossy one, except a lossless result of a different version (length off by more than `SAME_VERSION_MAX_DIFF_SECS`) or of unknown length, which stays among the lossy ones in score order.
-   - `chat` (chat delivery): perceived quality versus size, no lossless/lossy split. Lossless and lossy >= 256 kbps share the top tier (lossy bitrates are scaled by codec first: Opus x2, AAC/Vorbis x1.5), minus a size cost up to the upload cap (50,000,000 bytes by default); files over the cap score as the Opus they become and sort after every file that fits; unknown-length files sort last. Constants and their reasons are at the top of `search/scorer.py`.
+   - `chat` (chat delivery): perceived quality versus size, no lossless/lossy split. Lossless and lossy >= 256 kbps share the top tier (lossy bitrates are scaled by codec first: Opus x2, AAC/Vorbis x1.5), minus a size cost that grows from 5 MB to 50 MB, or to the upload cap when that is smaller (`CHAT_SIZE_PENALTY_FULL_BYTES`); files over the cap (50,000,000 bytes by default, 2000 MB with a local Bot API server) score as the Opus they become and sort after every file that fits; unknown-length files sort last. Constants and their reasons are at the top of `search/scorer.py`.
 3. **Source reliability** (20 pts): Free slots, upload speed, queue
 4. **Filename relevance** (15 pts): Artist/title word matching
 
@@ -106,7 +108,7 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 
 - **Spotify API**: Client Credentials flow (no user login). Used only for metadata resolution.
 - **slskd API**: REST API with API key auth. Used for search, download, and file management.
-- **Telegram Bot API**: Long-polling mode. Restricted to allowed user IDs via `TELEGRAM_ALLOWED_USERS`.
+- **Telegram Bot API**: Long-polling mode. Restricted to allowed user IDs via `TELEGRAM_ALLOWED_USERS`. Cloud API by default (50 MB uploads); with `TELEGRAM_API_BASE_URL` a local Bot API server (compose profile `bigfiles`, 2000 MB uploads), wired in `bot/handlers.py` `_configure_api_server`.
 
 ## Testing Strategy
 

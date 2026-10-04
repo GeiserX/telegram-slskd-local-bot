@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-10-04
+
+### Added
+
+- **Files up to 2 GB in the chat.** The bot can talk to a local Telegram Bot
+  API server (`TELEGRAM_API_BASE_URL`) instead of Telegram's cloud server.
+  The upload cap then defaults to 2000 MB instead of 50 MB, the bot sends
+  originals as they are instead of converting them to Opus, and requests get 600 s timeouts
+  (`TELEGRAM_UPLOAD_TIMEOUT_SECS`). The chat ranking keeps its size cost
+  between 5 MB and 50 MB, so a 300 MB FLAC is not buried under small MP3s.
+  Getting started has the steps, including the one-time `logOut` from the
+  cloud server.
+- **Compose profile `bigfiles`.** `docker compose --profile bigfiles up -d`
+  also starts `aiogram/telegram-bot-api:10.3` with its own data volume, reading
+  `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from `.env`. Without the profile
+  nothing changes.
+- **`/format` picks the send format per account.** Original (default),
+  MP3 320 kbps or Opus 192 kbps for every track sent into the chat. A file
+  already in that format goes as it is; any other is converted with the
+  Spotify cover embedded, and the caption says so. Library saves always keep
+  the original. If the conversion fails, the bot sends what it would have sent
+  before.
+- **A wishlist.** "Tell me when it appears" when nothing is found, and "Wait
+  for a better copy" under every result list, which waits for a copy of a
+  higher quality tier than the best one listed (lossy under 128 kbps, 128,
+  192, 256 kbps or more, lossless 16-bit, lossless 24-bit). The bot searches
+  each wish again every `WISHLIST_CHECK_HOURS` (default 24), one search at a
+  time with `WISHLIST_PAUSE_SECS` between them, and skips a chat while its own
+  search or download runs. A chat with `/auto` on gets the copy fetched; any
+  other chat gets the list to pick from, in a message that neither replaces nor
+  is replaced by the chat's own searches. A wish ends when a copy from it is
+  saved or sent, not when the download starts. A track is never on the list
+  twice. `/wishlist` lists the wishes with a Remove button each.
+- **An MCP front end.** An agent such as Claude Code can resolve a track,
+  search copies, download one into the library or to a path, read the
+  history, check the library and manage the wishlist, through the same
+  pipeline as the bot. Over stdio with `python -m music_downloader mcp`, or over
+  streamable HTTP from the bot process with `MCP_PORT` and a bearer token in
+  `MCP_TOKEN`. The bot announces wishes added over MCP in the owner's chat, the
+  first id in `TELEGRAM_ALLOWED_USERS`. The stdio server needs no
+  `TELEGRAM_BOT_TOKEN`. `MCP_HOST` defaults to `127.0.0.1`; the compose file
+  sets `0.0.0.0` for the container.
+
 ## [0.15.0] - 2026-10-04
 
 ### Changed

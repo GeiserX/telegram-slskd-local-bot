@@ -13,6 +13,7 @@ from music_downloader.processor.lossless_analyzer import (
     analyze_lossless,
     convert_to_ogg,
     create_preview_clip,
+    transcode_file,
 )
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult, SlskdClient
 
@@ -26,6 +27,29 @@ FILE_NOT_FOUND = "file_not_found"
 
 # Opus bitrates tried (highest first) when a chat-delivery track is over the limit.
 _OPUS_BITRATES_KBPS = (192, 160, 128, 96)
+
+# Per-chat send formats (/format), used by chat delivery only. "original" sends
+# the file as downloaded; the others transcode it unless it is already in that format.
+FORMAT_ORIGINAL = "original"
+FORMAT_MP3 = "mp3"
+FORMAT_OPUS = "opus"
+
+
+@dataclass(frozen=True)
+class SendFormat:
+    label: str
+    extension: str  # of the transcoded file
+    codec_args: tuple[str, ...]
+    same_extensions: frozenset[str]  # source extensions already in this format
+
+
+SEND_FORMATS = {
+    FORMAT_MP3: SendFormat(
+        "MP3 320 kbps", "mp3", ("-c:a", "libmp3lame", "-b:a", "320k", "-id3v2_version", "3"), frozenset({"mp3"})
+    ),
+    FORMAT_OPUS: SendFormat("Opus 192 kbps", "ogg", ("-c:a", "libopus", "-b:a", "192k"), frozenset({"opus"})),
+}
+FORMAT_LABELS = {FORMAT_ORIGINAL: "Original", **{key: fmt.label for key, fmt in SEND_FORMATS.items()}}
 
 ProgressCallback = Callable[[DownloadStatus], Awaitable[None]]
 Analyzer = Callable[[str], Awaitable[LosslessVerdict | None]]
@@ -116,6 +140,40 @@ async def convert_to_opus(filepath: str, bitrate_kbps: int = 128) -> str | None:
         return await asyncio.to_thread(convert_to_ogg, filepath, bitrate_kbps)
     except Exception:
         logger.exception("OGG conversion failed for %s", filepath)
+        return None
+
+
+def already_in_format(path: str, extension: str, fmt: str) -> bool:
+    """Whether a file with *extension* is already in send format *fmt* (no transcode needed).
+
+    An .ogg may hold Opus or Vorbis, so it is opened to tell.
+    """
+    send_format = SEND_FORMATS.get(fmt)
+    if send_format is None:
+        return True
+    extension = extension.lower()
+    if extension in send_format.same_extensions:
+        return True
+    if fmt == FORMAT_OPUS and extension == "ogg":
+        try:
+            import mutagen.oggopus
+
+            mutagen.oggopus.OggOpus(path)
+            return True
+        except Exception:
+            return False
+    return False
+
+
+async def transcode(path: str, fmt: str, title: str, artist: str) -> str | None:
+    """Transcode *path* into send format *fmt* in a thread; the temp file path or None."""
+    send_format = SEND_FORMATS[fmt]
+    try:
+        return await asyncio.to_thread(
+            transcode_file, path, send_format.codec_args, send_format.extension, title, artist
+        )
+    except Exception:
+        logger.exception("Transcoding %s to %s failed", path, fmt)
         return None
 
 
