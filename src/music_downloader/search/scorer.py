@@ -126,6 +126,9 @@ CHAT_SIZE_PENALTY_FULL_BYTES = 50 * BYTES_PER_MB
 # must lose to a 57 MB MP3 320 even when its peer has the best slot and speed (up to 15
 # source points), and the first doubling above 50 MB must already cost something.
 CHAT_SIZE_OVER_FULL_POINTS = 20.0
+# In the chat profile the peer matters half as much: the file goes to a phone, so quality for
+# its size (above) must be able to outweigh a free slot and a fast upload (20 points at most).
+CHAT_SOURCE_WEIGHT = 0.5
 # A file over the limit is sent as Opus converted from it: scored as its own
 # tier minus this, with no size cost (the Opus that goes out fits).
 CHAT_OPUS_CONVERSION_POINTS = 8.0
@@ -273,19 +276,20 @@ class ResultScorer:
             else:
                 score += 3.0
 
-        # ===== SOURCE RELIABILITY (0-20 points) =====
+        # ===== SOURCE RELIABILITY (0-20 points; half weight in the chat profile) =====
+        source = 0.0
         if result.has_free_slot:
-            score += SLOT_AVAILABLE_POINTS
+            source += SLOT_AVAILABLE_POINTS
 
         if result.upload_speed > 0:
             # Normalize speed (cap at 10MB/s for scoring)
-            speed_score = min(result.upload_speed / 1_000_000, 10) * (SPEED_MAX_POINTS / 10)
-            score += speed_score
+            source += min(result.upload_speed / 1_000_000, 10) * (SPEED_MAX_POINTS / 10)
 
         if result.queue_length == 0:
-            score += QUEUE_MAX_POINTS
+            source += QUEUE_MAX_POINTS
         elif result.queue_length < 5:
-            score += 2.0
+            source += 2.0
+        score += source * (CHAT_SOURCE_WEIGHT if profile == PROFILE_CHAT else 1.0)
 
         # ===== FILENAME RELEVANCE (0-15 points) =====
         # Boost results that contain the artist and title in the filename

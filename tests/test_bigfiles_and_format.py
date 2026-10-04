@@ -168,6 +168,37 @@ class TestRankingAboveFiftyMb:
         )
         ranked = scorer.score_results([flac, mp3], _make_track(1_413_000), profile=PROFILE_CHAT)
         assert [r.extension for r in ranked] == ["mp3", "flac"]
+        # The library profile keeps the peer at full weight: there the fast hi-res copy leads.
+        lib = ResultScorer(chat_size_limit_bytes=2_000_000_000).score_results([mp3, flac], _make_track(1_413_000))
+        assert lib[0].extension == "flac"
+
+    def test_chat_profile_halves_the_source_points(self):
+        from music_downloader.search.scorer import CHAT_SOURCE_WEIGHT
+
+        fast = SearchResult(
+            username="a",
+            filename="\\x\\Bang Bang.mp3",
+            size=8_000_000,
+            bit_rate=320,
+            length=162,
+            has_free_slot=True,
+            upload_speed=50_000_000,
+            queue_length=0,
+        )
+        slow = SearchResult(
+            username="b",
+            filename="\\x\\Bang Bang (slow).mp3",
+            size=8_000_000,
+            bit_rate=320,
+            length=162,
+            queue_length=50,
+        )
+        scorer = ResultScorer()
+        chat = scorer.score_results([fast, slow], _make_track(), profile=PROFILE_CHAT)
+        chat_gap = chat[0].score - chat[1].score  # read before the next call: scores are set on the objects
+        lib = scorer.score_results([fast, slow], _make_track())
+        lib_gap = lib[0].score - lib[1].score
+        assert lib_gap == pytest.approx(20.0) and chat_gap == pytest.approx(20.0 * CHAT_SOURCE_WEIGHT)
 
     def test_big_cap_57mb_mp3_beats_908mb_hires_flac(self):
         # The live list that showed the flaw: with a 2000 MB cap, eight 908 MB 24/192 FLACs

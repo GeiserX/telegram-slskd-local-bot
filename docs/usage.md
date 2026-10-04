@@ -118,7 +118,8 @@ Search results are ranked by:
       50 MB one. A 10 MB MP3 at 320 kbps beats a 35 MB CD-quality
       FLAC of the same song, and a 20 MB FLAC beats a 20 MB MP3 at 128 kbps. A copy over the cap scores as the
       Opus it will be sent as: its tier minus 8.
-3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue
+3. **Source reliability** (20 pts): Free upload slots, fast upload speed, short queue. In chat delivery these
+   count half, so quality for its size can outweigh a fast peer
 4. **Filename relevance** (15 pts): Artist and title words found in the filename
 
 Results containing excluded keywords (live, remix, etc.) are automatically filtered out, unless the original track title also contains that keyword.
