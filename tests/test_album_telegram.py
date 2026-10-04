@@ -385,11 +385,12 @@ class TestRestart:
     async def test_interrupted_albums_are_reported_to_their_chats(self, tmp_path):
         bot = _bot(tmp_path)
         files = _album.parse_directory(_raw_folder(), FOLDER)
+        # The chat album comes first: it must leave the landed file for the library album after it.
+        sent = AlbumJob(PEER, FOLDER, files, TRACK, deliver="chat", chat_id=CHAT)
+        bot.pipeline.album_repo.add(sent)
         library = AlbumJob(PEER, FOLDER, files, TRACK, chat_id=CHAT)
         library.outcomes[0] = FileOutcome(filename=files[0].filename, path="/music/a.flac")
         bot.pipeline.album_repo.add(library)
-        sent = AlbumJob(PEER, FOLDER, files, TRACK, deliver="chat", chat_id=CHAT)
-        bot.pipeline.album_repo.add(sent)
         bot.pipeline.album_repo.add(AlbumJob(PEER, FOLDER, files, TRACK, deliver="path"))  # MCP: no chat
         landed = _land(tmp_path, files[1].filename)  # finished while the bot was down
 
@@ -399,11 +400,11 @@ class TestRestart:
         texts = [c.kwargs["text"] for c in telegram.send_message.call_args_list]
         assert [c.kwargs["chat_id"] for c in telegram.send_message.call_args_list] == [CHAT, CHAT]
         assert "restarted during the album <b>1971 - Meddle</b>" in texts[0]
-        assert "2 of 3 saved, 0 failed, 1 not fetched" in texts[0]
-        assert "0 of 3 sent, 0 failed, 3 not fetched" in texts[1]
+        assert "0 of 3 sent, 0 failed, 3 not fetched" in texts[0]
+        assert "2 of 3 saved, 0 failed, 1 not fetched" in texts[1]
         assert bot.pipeline.album_repo.list_by_status(ALBUM_RUNNING) == []
         assert len(bot.pipeline.album_repo.list_by_status(ALBUM_INTERRUPTED)) == 3
-        # A chat album's file stays where it landed: nobody is there to send it.
+        # The chat album left the file where it landed (nobody is there to send it); the library album saved it.
         assert bot.pipeline.album_repo.get(sent.id).outcomes[1] is None
-        # The library album saved it, so it left the downloads dir.
+        assert bot.pipeline.album_repo.get(library.id).outcomes[1].ok
         assert not os.path.exists(landed)
