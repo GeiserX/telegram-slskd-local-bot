@@ -411,7 +411,8 @@ class TestConfig:
 
     def test_defaults(self, monkeypatch):
         config = self._config(monkeypatch)
-        assert config.mcp_port is None and config.mcp_host == "0.0.0.0" and config.mcp_token is None
+        # Loopback unless MCP_HOST says otherwise (compose sets 0.0.0.0 for the container).
+        assert config.mcp_port is None and config.mcp_host == "127.0.0.1" and config.mcp_token is None
         assert config.telegram_owner_id is None
 
     def test_port_host_token(self, monkeypatch):
@@ -427,6 +428,25 @@ class TestConfig:
 
 
 class TestEntryPoints:
+    def test_mcp_subcommand_starts_without_a_telegram_token(self, monkeypatch):
+        import music_downloader.__main__ as main_mod
+
+        for k, v in TestConfig._REQUIRED.items():
+            monkeypatch.setenv(k, v)
+        for key in ("TELEGRAM_BOT_TOKEN", "MCP_PORT", "MCP_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr("sys.argv", ["slskd-importer", "mcp"])
+        with (
+            patch.object(main_mod, "setup_logging"),
+            patch("music_downloader.mcp.server.run_stdio") as run_stdio,
+        ):
+            main_mod.main()
+        assert run_stdio.call_args[0][0].telegram_bot_token is None
+        # The bot itself still refuses to start without one.
+        monkeypatch.setattr("sys.argv", ["slskd-importer", "run"])
+        with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN"):
+            main_mod.main()
+
     def test_mcp_subcommand_runs_stdio(self, monkeypatch):
         import music_downloader.__main__ as main_mod
 
@@ -475,3 +495,19 @@ class TestEntryPoints:
             await post_shutdown(app)
         assert mcp_task.cancelled()
         assert isinstance(fake_serve.pipeline, Pipeline)
+
+
+class TestServeHttp:
+    @pytest.mark.asyncio
+    async def test_a_crash_is_logged_and_the_bot_keeps_running(self, tmp_path, caplog):
+        from music_downloader.mcp import server as server_mod
+
+        config = SimpleNamespace(mcp_token="secret", mcp_host="127.0.0.1", mcp_port=8765)
+        with (
+            patch.object(server_mod, "McpTools"),
+            patch.object(server_mod, "http_app"),
+            patch("uvicorn.Server.serve", AsyncMock(side_effect=RuntimeError("lifespan blew up"))),
+            caplog.at_level("ERROR", logger=server_mod.logger.name),
+        ):
+            await server_mod.serve_http(MagicMock(), config)
+        assert "MCP server stopped" in caplog.text and "lifespan blew up" in caplog.text

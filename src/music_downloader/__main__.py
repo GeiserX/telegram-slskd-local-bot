@@ -73,7 +73,7 @@ def cmd_mcp(args):
     """Serve the MCP tools over stdin/stdout (logs go to stderr)."""
     from music_downloader.mcp.server import run_stdio
 
-    config = Config()
+    config = Config(require_telegram=False)
     setup_logging(config)
     logger.info(f"Music Downloader v{__version__} MCP server on stdio")
     run_stdio(config)

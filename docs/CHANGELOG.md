@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipeline as the bot. Over stdio with `python -m music_downloader mcp`, or over
   streamable HTTP from the bot process with `MCP_PORT` and a bearer token in
   `MCP_TOKEN`. The bot announces wishes added over MCP in the owner's chat, the
-  first id in `TELEGRAM_ALLOWED_USERS`.
+  first id in `TELEGRAM_ALLOWED_USERS`. The stdio server needs no
+  `TELEGRAM_BOT_TOKEN`. `MCP_HOST` defaults to `127.0.0.1`; the compose file
+  sets `0.0.0.0` for the container.
 
 ## [0.15.0] - 2026-10-04
 

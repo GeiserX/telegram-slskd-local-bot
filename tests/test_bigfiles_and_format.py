@@ -418,3 +418,21 @@ class TestFormatDelivery:
         await bot._do_download(context, OTHER, _make_track(), _make_result(size=10_000_000), _status_msg())
         bot.pipeline.transcode.assert_not_awaited()
         assert context.bot.send_audio.call_args.kwargs["filename"].endswith(".flac")
+
+
+def test_compose_passes_every_variable_the_bot_reads():
+    """docker-compose.yml has an explicit environment map and no env_file:
+    a variable missing there never reaches the bot, whatever .env says."""
+    import re
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    compose = yaml.safe_load((root / "docker-compose.yml").read_text())
+    passed = set(compose["services"]["slskd-importer"]["environment"])
+    source = (root / "src" / "music_downloader" / "config.py").read_text()
+    read = set(re.findall(r'(?:os\.getenv|_get_required_env)\(\s*"([A-Z_]+)"', source))
+    assert "TELEGRAM_UPLOAD_TIMEOUT_SECS" in read and len(read) > 20
+    # HEALTH_PORT stays at the image's 8080: the Dockerfile HEALTHCHECK probes that port.
+    assert read - passed - {"HEALTH_PORT"} == set()

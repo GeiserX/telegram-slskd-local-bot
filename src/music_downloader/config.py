@@ -28,12 +28,19 @@ LOCAL_SERVER_UPLOAD_TIMEOUT_SECS = 600
 class Config:
     """Configuration settings loaded from environment variables."""
 
-    def __init__(self):
-        """Initialize configuration from environment variables."""
+    def __init__(self, require_telegram: bool = True):
+        """Initialize configuration from environment variables.
+
+        *require_telegram* False is for the stdio MCP server, which never talks
+        to Telegram: TELEGRAM_BOT_TOKEN may then be unset (None).
+        """
         # =====================================================================
         # TELEGRAM BOT
         # =====================================================================
-        self.telegram_bot_token = self._get_required_env("TELEGRAM_BOT_TOKEN")
+        if require_telegram:
+            self.telegram_bot_token = self._get_required_env("TELEGRAM_BOT_TOKEN")
+        else:
+            self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or None
 
         # Comma-separated Telegram user IDs allowed to use the bot
         # If empty, anyone can use it (not recommended)
@@ -153,7 +160,9 @@ class Config:
         # "Authorization: Bearer <MCP_TOKEN>".
         mcp_port = os.getenv("MCP_PORT", "").strip()
         self.mcp_port = int(mcp_port) if mcp_port else None
-        self.mcp_host = os.getenv("MCP_HOST", "").strip() or "0.0.0.0"
+        # Loopback by default, which also turns on the MCP SDK's Host/Origin
+        # check; the container sets 0.0.0.0 in docker-compose.yml.
+        self.mcp_host = os.getenv("MCP_HOST", "").strip() or "127.0.0.1"
         self.mcp_token = os.getenv("MCP_TOKEN", "").strip() or None
         if self.mcp_port is not None and not self.mcp_token:
             raise ValueError("MCP_PORT is set but MCP_TOKEN is empty: the MCP server refuses to run without a token.")

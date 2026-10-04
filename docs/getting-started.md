@@ -53,6 +53,10 @@ services:
 Telegram's cloud Bot API refuses any file a bot sends over 50 MB, so chat delivery converts bigger files to
 Opus. A [local Bot API server](https://github.com/tdlib/telegram-bot-api) running next to the bot accepts up
 to 2000 MB. The repo's `docker-compose.yml` already has one, `telegram-bot-api`, behind the `bigfiles` profile.
+The compose file above does not. If you started from it, copy the `telegram-bot-api` service and the
+`telegram-bot-api-data` volume from the repo's
+[docker-compose.yml](https://github.com/GeiserX/telegram-slskd-local-bot/blob/main/docker-compose.yml) into
+yours. Without them `--profile bigfiles` starts only the bot, which then cannot reach `telegram-bot-api`.
 
 1. Log in at [my.telegram.org](https://my.telegram.org), open **API development tools** and create an application. Copy its
    `api_id` and `api_hash`.
@@ -100,13 +104,16 @@ What changes:
 - Telegram clients play audio of any size, so the big file plays in the chat like a small one.
 - Requests to Telegram get 600 s read and write timeouts, enough for a 2 GB upload on a LAN
   (`TELEGRAM_UPLOAD_TIMEOUT_SECS` changes it).
+- The bot reads the whole file into memory to upload it, so a 1.5 GB FLAC needs 1.5 GB of free RAM while it
+  is sent. On a small box set `TELEGRAM_MAX_UPLOAD_MB` below the RAM you can spare, for example `500` on a
+  machine with 2 GB.
 
-To go back to the cloud server, call `close` on the local server, remove `TELEGRAM_API_BASE_URL` from `.env`
-and start the bot again with `docker compose up -d`. Telegram can take up to 10 minutes to accept the token
-on the cloud server again.
+To go back to the cloud server, log the bot out of the local server with `logOut`, remove
+`TELEGRAM_API_BASE_URL` from `.env` and start the bot again with `docker compose up -d`. Telegram can take up
+to 10 minutes to accept the token on the cloud server again.
 
 ```bash
-docker compose exec telegram-bot-api wget -qO- http://127.0.0.1:8081/bot<your-bot-token>/close
+docker compose exec telegram-bot-api wget -qO- http://127.0.0.1:8081/bot<your-bot-token>/logOut
 ```
 
 ## From PyPI

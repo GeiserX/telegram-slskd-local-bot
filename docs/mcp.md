@@ -58,7 +58,6 @@ package installed, from `pip install telegram-slskd-local-bot` or the `.venv` of
       "command": "python",
       "args": ["-m", "music_downloader", "mcp"],
       "env": {
-        "TELEGRAM_BOT_TOKEN": "123456:ABC...",
         "TELEGRAM_ALLOWED_USERS": "123456789",
         "SPOTIFY_CLIENT_ID": "...",
         "SPOTIFY_CLIENT_SECRET": "...",
@@ -73,8 +72,7 @@ package installed, from `pip install telegram-slskd-local-bot` or the `.venv` of
 }
 ```
 
-`TELEGRAM_BOT_TOKEN` is required because the configuration is shared with the bot; the stdio server never
-talks to Telegram. Logs go to stderr.
+The stdio server never talks to Telegram, so it needs no `TELEGRAM_BOT_TOKEN`. Logs go to stderr.
 
 ## Connect over HTTP
 

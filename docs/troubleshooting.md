@@ -57,7 +57,7 @@ curl https://api.telegram.org/bot<your-bot-token>/logOut
 docker compose --profile bigfiles up -d
 ```
 
-Going the other way, from the local server back to the cloud, needs `close` on the local server first, and
+Going the other way, from the local server back to the cloud, needs `logOut` on the local server first, and
 Telegram can take up to 10 minutes before the cloud server accepts the token again. The steps are in
 [Getting started](getting-started.md#send-files-over-50-mb-a-local-bot-api-server).
 

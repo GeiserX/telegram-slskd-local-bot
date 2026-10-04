@@ -148,6 +148,9 @@ async def serve_http(pipeline, config: Config) -> None:
     except SystemExit:
         # uvicorn exits when it cannot bind; the bot keeps running without MCP.
         logger.error("MCP server could not start on %s:%d", config.mcp_host, config.mcp_port)
+    except Exception:
+        # The bot keeps running; without this the task would end without a word.
+        logger.exception("MCP server stopped")
 
 
 def run_stdio(config: Config) -> None:

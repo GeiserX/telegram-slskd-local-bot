@@ -15,6 +15,8 @@ services:
       # Optional local Bot API server for files up to 2000 MB, e.g. the
       # telegram-bot-api service below: http://telegram-bot-api:8081
       TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-}
+      # Empty: 600 s with a local Bot API server, python-telegram-bot's defaults otherwise
+      TELEGRAM_UPLOAD_TIMEOUT_SECS: ${TELEGRAM_UPLOAD_TIMEOUT_SECS:-}
 
       # Spotify API (required)
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
