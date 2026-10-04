@@ -25,6 +25,7 @@
 - `/auto` per chat saves the best match without a tap; a failed transfer gets Retry and Try next result; downloads show live progress.
 - Answers only allow-listed Telegram users, and denies everyone while the list is empty.
 - Sweeps abandoned downloads after `DOWNLOAD_CLEANUP_HOURS` and never touches a transfer in flight.
+- An [MCP server](https://geiserx.github.io/telegram-slskd-local-bot/mcp/) over the same pipeline, so an agent like Claude Code can resolve, search, download and wishlist tracks: stdio with `python -m music_downloader mcp`, or HTTP from the bot process with a bearer token (`MCP_PORT`, `MCP_TOKEN`).
 
 ## Quick start
 
@@ -50,6 +51,7 @@ The docs are at [geiserx.github.io/telegram-slskd-local-bot](https://geiserx.git
 - [Getting started](https://geiserx.github.io/telegram-slskd-local-bot/getting-started/): prerequisites, Docker Compose, running from PyPI
 - [Configuration](https://geiserx.github.io/telegram-slskd-local-bot/configuration/): every environment variable and its default
 - [Usage](https://geiserx.github.io/telegram-slskd-local-bot/usage/): what the chat shows, the commands, how results are scored
+- [MCP server](https://geiserx.github.io/telegram-slskd-local-bot/mcp/): the tools, the stdio and HTTP setup for Claude Code and Claude Desktop, the token
 - [How it works](https://geiserx.github.io/telegram-slskd-local-bot/how-it-works/): the path from a message to a file in the library
 - [Troubleshooting](https://geiserx.github.io/telegram-slskd-local-bot/troubleshooting/): the four failures people hit and what to report in an issue
 - [Development](https://geiserx.github.io/telegram-slskd-local-bot/development/): running from a checkout, tests, releases

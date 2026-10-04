@@ -7,7 +7,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
-| `TELEGRAM_ALLOWED_USERS` | Yes | *(deny all)* | Comma-separated Telegram user IDs allowed to use the bot. Empty means the bot denies everyone (fail-closed) — the denial reply shows you your ID |
+| `TELEGRAM_ALLOWED_USERS` | Yes | *(deny all)* | Comma-separated Telegram user IDs allowed to use the bot. Empty means the bot denies everyone (fail-closed) — the denial reply shows you your ID. The first ID listed is the owner: wishes added over [MCP](mcp.md) are announced in that chat |
 | `TELEGRAM_CHAT_DELIVERY_USERS` | No | *(empty)* | Comma-separated Telegram user IDs fixed to chat delivery: the track is sent into the chat (under the upload cap, converted to Opus when bigger) and nothing is saved anywhere. These accounts cannot switch to the library with `/deliver`, so only accounts outside the list ever write to it. In a group chat it matches the user who started the search or import |
 | `TELEGRAM_MAX_UPLOAD_MB` | No | `50` | The largest file the bot sends into a chat, in MB of 1,000,000 bytes (Telegram's unit). 50 is the cloud Bot API's limit, 50,000,000 bytes. Chat delivery, the chat ranking, the Opus conversion and the previews all use this one value. Leave it at 50 for now: the bot talks to the cloud Bot API, which refuses anything bigger. A local Bot API server accepts up to 2000 MB; once the bot can be pointed at one, this is the value to raise |
 | `SPOTIFY_CLIENT_ID` | Yes | — | Spotify Developer app Client ID |
@@ -32,4 +32,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | `FILENAME_TEMPLATE` | No | `{artist} - {title}` | Output filename template |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
 | `HEALTH_PORT` | No | `8080` | Health check HTTP port. `GET /health` answers 200 only while the bot is polling Telegram (a successful poll in the last 120 s) and slskd answered in the last 60 s; otherwise 503 with a JSON body naming the failed check. `GET /ready` is a constant 200 |
+| `MCP_PORT` | No | *(off)* | Serve the [MCP](mcp.md) tools over streamable HTTP from the bot process, at `http://<host>:<port>/mcp`. Unset means no MCP over HTTP; `python -m music_downloader mcp` serves stdio either way |
+| `MCP_HOST` | No | `0.0.0.0` | Address the MCP HTTP server binds to |
+| `MCP_TOKEN` | With `MCP_PORT` | — | Bearer token every MCP HTTP request must carry (`Authorization: Bearer <token>`). The bot refuses to start with `MCP_PORT` set and no token |
 

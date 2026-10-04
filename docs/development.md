@@ -36,8 +36,8 @@ and "we have a file ready to hand over". Its methods take and return plain datac
 
 The pieces it drives sit next to it: `metadata/` (Spotify, playlists), `search/slskd_client.py` and
 `search/scorer.py`, `processor/` (renaming and moving files, the lossless analyzer), `tools/embed_artwork.py`.
-`tests/test_pipeline_no_telegram.py` imports every pipeline module in a fresh interpreter and fails if any of
-them pulls in `telegram`.
+`tests/test_pipeline_no_telegram.py` imports every pipeline and MCP module in a fresh interpreter and fails if
+any of them pulls in `telegram`.
 
 ### Front ends
 
@@ -45,10 +45,12 @@ them pulls in `telegram`.
   per-chat state, edits messages (always HTML, every outside value through `_esc`) and sends files.
   `bot/keyboards.py` builds the buttons. `bot/poll_request.py` reports every successful `getUpdates` poll to
   the health state. `create_bot()` wires it up and starts the background tasks: the orphan sweep, the
-  library index rescan, the slskd health probe and the wishlist checker.
-- **Other front ends**: because the pipeline is Telegram-free, another front end (an MCP server, for
-  example, kept as its own project) can import `music_downloader.pipeline` and drive the same `Pipeline`
-  without going through the bot.
+  library index rescan, the slskd health probe, the wishlist checker and, with `MCP_PORT`, the MCP HTTP server.
+- **MCP** (`music_downloader.mcp`): `mcp/tools.py` is the tool logic over a `Pipeline` (plain dicts out,
+  short track and copy ids kept in memory for an hour); `mcp/server.py` registers the tools on the official
+  `mcp` SDK's `MCPServer` and serves them over stdio (`python -m music_downloader mcp`, its own `Pipeline`) or
+  over streamable HTTP inside the bot process when `MCP_PORT` is set (`create_bot` starts `serve_http` on the
+  bot's `Pipeline`, behind a bearer-token check). See [MCP server](mcp.md).
 
 ### State in SQLite
 
