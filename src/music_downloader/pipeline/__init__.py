@@ -42,7 +42,7 @@ from music_downloader.pipeline import resolve as _resolve
 from music_downloader.pipeline import search as _search
 from music_downloader.pipeline import wishlist as _wishlist
 from music_downloader.pipeline.album import FolderListing
-from music_downloader.pipeline.fetch import FetchOutcome, ProgressCallback
+from music_downloader.pipeline.fetch import FetchOutcome, GatedFetch, ProgressCallback, RejectCallback
 from music_downloader.pipeline.search import RankedResults
 from music_downloader.pipeline.wishlist import WishDelivery
 from music_downloader.processor.file_handler import FileProcessor
@@ -55,6 +55,7 @@ __all__ = [
     "FetchOutcome",
     "FileOutcome",
     "FolderListing",
+    "GatedFetch",
     "Pipeline",
     "RankedResults",
     "SlskdClient",
@@ -185,6 +186,37 @@ class Pipeline:
             self.analyze if analyze else None,
         )
 
+    async def fetch_for_library(
+        self,
+        results: list[SearchResult],
+        index: int,
+        track: TrackInfo,
+        progress_for: Callable[[SearchResult, int], ProgressCallback],
+        on_reject: RejectCallback | None = None,
+    ) -> GatedFetch:
+        """fetch() of results[index] for a library delivery, through the lossless gate (LOSSLESS_GATE).
+
+        A lossless copy made from a lossy file is deleted, recorded in the
+        history as "lossy_source", and the next copy on *results* fetched,
+        up to LOSSLESS_GATE_MAX_REJECTIONS times; see fetch.fetch_gated.
+        *progress_for* gives the progress callback of each copy tried.
+        With the gate off this is one fetch() and nothing is rejected.
+        """
+        if not self.config.lossless_gate:
+            result = results[index]
+            return GatedFetch(await self.fetch(result, progress_for(result, index)), result, index)
+
+        async def fetch_one(result: SearchResult, i: int) -> FetchOutcome:
+            return await self.fetch(result, progress_for(result, i))
+
+        async def discard(result: SearchResult, outcome: FetchOutcome, reason: str) -> None:
+            await self.discard(outcome.path, result.username, outcome.transfer_id)
+            await self.record_history(track, result, "lossy_source")
+
+        return await _fetch.fetch_gated(
+            fetch_one, discard, results, index, self.config.lossless_gate_max_rejections, on_reject
+        )
+
     async def analyze(self, path: str) -> LosslessVerdict | None:
         return await _fetch.analyze(path)
 
@@ -216,7 +248,7 @@ class Pipeline:
     async def library_index_loop(self) -> None:
         """Build the library index now, then rebuild it every LIBRARY_RESCAN_SECS.
 
-        Runs whatever DOWNLOAD_CLEANUP_HOURS says: the duplicate check needs
+        Runs whatever ORPHAN_SWEEP_HOURS says: the duplicate check needs
         the index even when the orphan sweep is off. Saves add their own row
         in between, so the rescan only catches files changed by hand.
         """
@@ -565,4 +597,4 @@ class Pipeline:
     async def orphan_sweep_loop(
         self, protected_paths: Callable[[], set[str]], prune: Callable[[], None] | None = None
     ) -> None:
-        await _library.orphan_sweep_loop(self.processor, self.config.download_cleanup_hours, protected_paths, prune)
+        await _library.orphan_sweep_loop(self.processor, self.config.orphan_sweep_hours, protected_paths, prune)

@@ -62,12 +62,15 @@ from music_downloader.pipeline import ALBUM_DELIVER_CHAT, ALBUM_DELIVER_LIBRARY,
 from music_downloader.pipeline.album import BROWSE_TIMEOUT_SECS, REASON_NO_ANSWER, AlbumArt, FolderListing
 from music_downloader.pipeline.album import remote_dir as album_remote_dir
 from music_downloader.pipeline.fetch import (
+    ALL_REJECTED,
     DOWNLOAD_FAILED,
     ENQUEUE_FAILED,
     FILE_NOT_FOUND,
     FORMAT_LABELS,
     FORMAT_ORIGINAL,
     SEND_FORMATS,
+    GatedFetch,
+    Rejection,
     already_in_format,
 )
 from music_downloader.pipeline.resolve import parse_query_artist_title, synthetic_track
@@ -1265,6 +1268,37 @@ class MusicBot:
     # DOWNLOAD + PREVIEW + APPROVAL
     # =========================================================================
 
+    @staticmethod
+    def _ranked_for(
+        search: PendingSearch | None, search_id: str, result: SearchResult, index: int
+    ) -> tuple[list[SearchResult], int]:
+        """The ranked list *result* came from and its place there, so the lossless gate can try the next copies.
+
+        Only [result] when that list is gone or no longer holds it at *index*.
+        """
+        if (
+            search is not None
+            and search.search_id == search_id
+            and index < len(search.results)
+            and search.results[index] == result
+        ):
+            return list(search.results), index
+        return [result], 0
+
+    @staticmethod
+    def _rejection_line(rejection: Rejection, offset: int = 0) -> str:
+        """One HTML line for a copy the lossless gate threw away, numbered as on the result list."""
+        return f"\U0001f6ab #{rejection.index + offset + 1} rejected: {_esc(rejection.reason)}"
+
+    @classmethod
+    def _gate_note(cls, gated: GatedFetch, offset: int = 0) -> str:
+        """HTML lines for what the lossless gate did: each rejected copy, and a lossy copy kept anyway."""
+        lines = [cls._rejection_line(r, offset) for r in gated.rejected]
+        if gated.kept_lossy:
+            after = f" after {len(gated.rejected)} rejected copies" if gated.rejected else ""
+            lines.append(f"⚠️ Kept anyway{after}: {_esc(gated.kept_lossy)}")
+        return "\n".join(lines)
+
     def _next_dl_id(self) -> str:
         """Generate a short unique download ID.
 
@@ -1289,19 +1323,63 @@ class MusicBot:
         search_id: str = "",
         user_id: int | None = None,
     ):
-        """Download a file, send it to Telegram for preview, and ask for approval."""
+        """Download a file, send it to Telegram for preview, and ask for approval.
+
+        A library delivery goes through the lossless gate: a lossless copy made
+        from a lossy file is deleted and the next copy on the result list
+        downloaded instead, each rejection shown in the status message.
+        """
         dl_id = self._next_dl_id()
-        label = f"#{result_index + 1}"
+        rejected_lines: list[str] = []
+
+        def header(copy: SearchResult, index: int) -> str:
+            return "".join(f"{line}\n" for line in rejected_lines) + (
+                f"⬇️ <b>Downloading #{index + 1}...</b>\n{_esc(track.artist)} - {_esc(track.title)}\n"
+                f"From: <code>{_esc(copy.username)}</code>"
+            )
 
         try:
-            outcome = await self.pipeline.fetch(
-                result,
-                self._make_progress_reporter(
-                    status_msg,
-                    f"⬇️ <b>Downloading {label}...</b>\n{_esc(track.artist)} - {_esc(track.title)}\n"
-                    f"From: <code>{_esc(result.username)}</code>",
-                ),
+            if self._is_chat_delivery(chat_id, user_id):
+                outcome = await self.pipeline.fetch(
+                    result, self._make_progress_reporter(status_msg, header(result, result_index))
+                )
+                gated = GatedFetch(outcome, result, result_index)
+                offset = 0
+            else:
+                results, start = self._ranked_for(self._search_for(chat_id, search_id), search_id, result, result_index)
+                offset = result_index - start
+
+                async def on_reject(rejection: Rejection, following: SearchResult | None, index: int) -> None:
+                    rejected_lines.append(self._rejection_line(rejection, offset))
+                    if following is not None:
+                        await _safe_edit(status_msg, header(following, index + offset), parse_mode=ParseMode.HTML)
+
+                gated = await self.pipeline.fetch_for_library(
+                    results,
+                    start,
+                    track,
+                    lambda copy, index: self._make_progress_reporter(status_msg, header(copy, index + offset)),
+                    on_reject,
+                )
+            outcome, result, result_index = gated.outcome, gated.result, gated.index + offset
+            label = f"#{result_index + 1}"
+            gate_note = self._gate_note(gated, offset)
+            gate_head = f"{gate_note}\n" if gate_note else ""
+            # Offered as on the result list when the gate kept nothing, or kept a lossy copy.
+            wish_markup = (
+                InlineKeyboardMarkup([[build_wait_better_button(search_id)]])
+                if search_id and (outcome.error == ALL_REJECTED or gated.kept_lossy)
+                else None
             )
+            if outcome.error == ALL_REJECTED:
+                await _safe_edit(
+                    status_msg,
+                    f"{gate_head}❌ No copy kept: every copy left on the list was made from a lossy file.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=wish_markup,
+                )
+                return
+
             if outcome.error == ENQUEUE_FAILED:
                 pending_dl = PendingDownload(
                     track=track,
@@ -1315,7 +1393,7 @@ class MusicBot:
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index, search_id)
                 await status_msg.edit_text(
-                    f"❌ Failed to enqueue download from <code>{_esc(result.username)}</code>.\nThe user might be offline.",
+                    f"{gate_head}❌ Failed to enqueue download from <code>{_esc(result.username)}</code>.\nThe user might be offline.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
                 )
@@ -1335,7 +1413,7 @@ class MusicBot:
                 self.downloads[dl_id] = pending_dl
                 has_next = self._has_next_result(chat_id, result_index, search_id)
                 await status_msg.edit_text(
-                    f"❌ Download failed: {_esc(state)}\nFile: <code>{_esc(result.basename)}</code>",
+                    f"{gate_head}❌ Download failed: {_esc(state)}\nFile: <code>{_esc(result.basename)}</code>",
                     parse_mode=ParseMode.HTML,
                     reply_markup=build_retry_next_keyboard(dl_id) if has_next else build_retry_keyboard(dl_id),
                 )
@@ -1371,6 +1449,8 @@ class MusicBot:
                 quality_line += f"\n{_esc(verdict.display)}"
             elif result.is_lossless:
                 quality_line += f"\n{_esc(not_checked_display(result.extension))}"
+            if gate_note:
+                quality_line += f"\n{gate_note}"
 
             if self._is_chat_delivery(chat_id, user_id):
                 # Chat delivery decides WHERE the track goes (auto-mode only
@@ -1384,12 +1464,13 @@ class MusicBot:
                 return
 
             if self._is_auto(chat_id):
-                await self._auto_save(chat_id, dl_id, pending_dl, status_msg, quality_line, label)
+                await self._auto_save(chat_id, dl_id, pending_dl, status_msg, quality_line, label, wish_markup)
                 return
 
             await status_msg.edit_text(
                 f"✅ <b>{label} Downloaded!</b> Sending preview...\n<code>{_esc(result.basename)}</code>\n{quality_line}",
                 parse_mode=ParseMode.HTML,
+                reply_markup=wish_markup,
             )
 
             file_size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
@@ -1449,9 +1530,19 @@ class MusicBot:
             )
 
     async def _auto_save(
-        self, chat_id: int, dl_id: str, pending_dl: PendingDownload, status_msg, quality_line: str, label: str
+        self,
+        chat_id: int,
+        dl_id: str,
+        pending_dl: PendingDownload,
+        status_msg,
+        quality_line: str,
+        label: str,
+        wish_markup: InlineKeyboardMarkup | None = None,
     ):
-        """Save a downloaded file straight to the library (auto-mode: no preview, no approval)."""
+        """Save a downloaded file straight to the library (auto-mode: no preview, no approval).
+
+        *wish_markup* (the wishlist button) goes under the album button.
+        """
         track = pending_dl.track
         result = pending_dl.result
 
@@ -1460,6 +1551,9 @@ class MusicBot:
         # from the orphan sweep until it is gone.
         if target_path:
             markup = self._offer_album(dl_id, pending_dl)
+            if wish_markup is not None:
+                rows = [*(markup.inline_keyboard if markup else ()), *wish_markup.inline_keyboard]
+                markup = InlineKeyboardMarkup(rows)
             self._wish_done(chat_id, pending_dl.search_id)
             target_name = os.path.basename(target_path)
             await _safe_edit(
@@ -2145,13 +2239,11 @@ class MusicBot:
         timed_out = sum(1 for o in job.failed if o.state == "Timeout")
         if timed_out:
             lines.append(
-                f"⏳ {timed_out} stopped moving or ran past the album's time limit: slskd keeps their transfers, "
-                "but a file that lands later is not saved (remove them in slskd if you do not want them)."
+                f"⏳ {timed_out} stopped moving or ran past the album's time limit: their transfers were cancelled in slskd."
             )
         if job.status == ALBUM_CANCELLED:
             lines.append(
-                f"⏹ Cancelled with {len(job.unfinished)} not fetched: slskd keeps their transfers "
-                "(remove them in slskd if you do not want them)."
+                f"⏹ Cancelled with {len(job.unfinished)} not fetched: their transfers were cancelled in slskd."
             )
         return "\n".join(lines)
 
@@ -2359,7 +2451,7 @@ class MusicBot:
         # The album download stops waiting and sums up what landed in its own message.
         album = self._cancel_album(chat_id)
         album_note = (
-            "\n⏹ Album download stopped: what already arrived stays, and slskd keeps the transfers still queued."
+            "\n⏹ Album download stopped: what already arrived stays, and the transfers still queued are cancelled."
             if album
             else ""
         )
@@ -2669,22 +2761,80 @@ class MusicBot:
         track_id: int,
         dl_id: str,
     ):
-        """Download a file within an import flow."""
+        """Download a file within an import flow.
+
+        A library import goes through the lossless gate, like a single track:
+        rejected copies are deleted and the next copy on the track's list tried.
+        """
+        rejected_lines: list[str] = []
+
+        def header(copy: SearchResult) -> str:
+            return (
+                f"\U0001f4cb <b>Import track:</b> {_esc(track.artist)} - {_esc(track.title)}\n"
+                + "".join(f"{line}\n" for line in rejected_lines)
+                + f"⬇️ Downloading: <code>{_esc(copy.basename)}</code>\nFrom: <code>{_esc(copy.username)}</code>"
+            )
+
         try:
             self._fetching.add(dl_id)
             try:
-                outcome = await self.pipeline.fetch(
-                    result,
-                    self._make_progress_reporter(
-                        status_msg,
-                        f"\U0001f4cb <b>Import track:</b> {_esc(track.artist)} - {_esc(track.title)}\n"
-                        f"⬇️ Downloading: <code>{_esc(result.basename)}</code>\n"
-                        f"From: <code>{_esc(result.username)}</code>",
-                    ),
-                    analyze=False,
-                )
+                entry = self.downloads.get(dl_id)
+                if self._is_chat_delivery(chat_id, self._import_user.get(chat_id)) or not self.config.lossless_gate:
+                    outcome = await self.pipeline.fetch(
+                        result, self._make_progress_reporter(status_msg, header(result)), analyze=False
+                    )
+                    gated = GatedFetch(outcome, result, 0)
+                    offset = 0
+                else:
+                    index = entry.result_index if entry is not None else 0
+                    search_id = entry.search_id if entry is not None else ""
+                    results, start = self._ranked_for(self._import_pending.get(chat_id), search_id, result, index)
+                    offset = index - start
+
+                    async def on_reject(rejection: Rejection, following: SearchResult | None, _index: int) -> None:
+                        rejected_lines.append(self._rejection_line(rejection, offset))
+                        if following is not None:
+                            await _safe_edit(status_msg, header(following), parse_mode=ParseMode.HTML)
+
+                    gated = await self.pipeline.fetch_for_library(
+                        results,
+                        start,
+                        track,
+                        lambda copy, _index: self._make_progress_reporter(status_msg, header(copy)),
+                        on_reject,
+                    )
+                    if entry is not None and gated.index != start:
+                        # Retry and Try next go on from the copy actually fetched.
+                        entry.result, entry.result_index = gated.result, gated.index + offset
+                        self.downloads.save(dl_id)
             finally:
                 self._fetching.discard(dl_id)
+            outcome, result = gated.outcome, gated.result
+            gate_note = self._gate_note(gated, offset)
+            gate_head = f"{gate_note}\n" if gate_note else ""
+            if outcome.error == ALL_REJECTED:
+                failed = "❌ No copy kept: every copy left on the list was made from a lossy file"
+                if self._import_auto.get(chat_id):
+                    await self._import_auto_fail(
+                        context,
+                        chat_id,
+                        job_id,
+                        track_id,
+                        dl_id,
+                        status_msg,
+                        generation,
+                        f"{gate_head}{failed} — continuing.",
+                        "Every copy was made from a lossy file",
+                    )
+                    return
+                await _safe_edit(
+                    status_msg,
+                    f"{gate_head}{failed}.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=build_import_skip_keyboard(job_id, track_id),
+                )
+                await asyncio.to_thread(self.import_repo.update_track_status, track_id, TrackStatus.awaiting_approval)
+                return
             if outcome.error == ENQUEUE_FAILED:
                 if self._import_auto.get(chat_id):
                     await self._import_auto_fail(
@@ -2774,7 +2924,17 @@ class MusicBot:
 
             if self._import_auto.get(chat_id):
                 await self._import_auto_save(
-                    context, chat_id, job_id, track_id, dl_id, track, result, source_path, status_msg, generation
+                    context,
+                    chat_id,
+                    job_id,
+                    track_id,
+                    dl_id,
+                    track,
+                    result,
+                    source_path,
+                    status_msg,
+                    generation,
+                    gate_note=gate_note,
                 )
                 return
 
@@ -2783,6 +2943,8 @@ class MusicBot:
 
             file_size = os.path.getsize(source_path) if os.path.isfile(source_path) else 0
             quality_line = _esc(f"{result.quality_display} | {result.duration_display}")
+            if gate_note:
+                quality_line += f"\n{gate_note}"
             caption = f"\U0001f4cb Import: {_esc(track.artist)} - {_esc(track.title)}\n{quality_line}"
 
             if file_size > self.pipeline.upload_limit_bytes:
@@ -2978,8 +3140,13 @@ class MusicBot:
         source_path: str,
         status_msg,
         generation: int,
+        gate_note: str = "",
     ):
-        """Unattended import: save the track straight to the library, no preview upload."""
+        """Unattended import: save the track straight to the library, no preview upload.
+
+        *gate_note* (HTML, what the lossless gate rejected) goes under the result.
+        """
+        note = f"\n{gate_note}" if gate_note else ""
         entry = self.downloads.get(dl_id)
         target_path = await self.pipeline.save(source_path, track, result, entry.transfer_id if entry else "")
         # Popped only after saving (orphan-sweep protection, see _auto_save).
@@ -2989,7 +3156,7 @@ class MusicBot:
             await _safe_edit(
                 status_msg,
                 f"\U0001f4cb <b>Import:</b> {_esc(track.artist)} - {_esc(track.title)}\n"
-                f"✅ Auto-saved: <code>{_esc(target_name)}</code>",
+                f"✅ Auto-saved: <code>{_esc(target_name)}</code>{note}",
                 parse_mode=ParseMode.HTML,
             )
             await asyncio.to_thread(self.import_repo.complete_track, job_id, track_id, TrackStatus.completed)
@@ -3464,14 +3631,16 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
 
     async def _post_init(app: Application) -> None:
         await _register_commands(app)
-        if config.download_cleanup_hours > 0:
+        if config.orphan_sweep_hours > 0 or config.download_cleanup_hours > 0:
             # Plain asyncio task, deliberately NOT app.create_task: PTB must
             # never await this infinite loop as part of its own lifecycle.
+            # Each pass expires waiting downloads (DOWNLOAD_CLEANUP_HOURS), then sweeps files (ORPHAN_SWEEP_HOURS).
             bot._sweep_task = asyncio.get_running_loop().create_task(bot._orphan_sweep_loop())
-            logger.info(
-                f"Orphan sweep enabled: files older than {config.download_cleanup_hours}h "
-                f"are removed from the downloads dir hourly"
-            )
+            if config.orphan_sweep_hours > 0:
+                logger.info(
+                    f"Orphan sweep enabled: files nothing waits on are removed from the downloads dir "
+                    f"after {config.orphan_sweep_hours}h, checked hourly"
+                )
         # The duplicate check's index: built now in a thread, rebuilt hourly,
         # whether or not the orphan sweep is on.
         bot._index_task = asyncio.get_running_loop().create_task(bot.pipeline.library_index_loop())

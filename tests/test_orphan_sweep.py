@@ -37,6 +37,9 @@ def _handlers_config():
     config.search_timeout_secs = 30
     config.download_timeout_secs = 600
     config.download_cleanup_hours = 24
+    config.orphan_sweep_hours = 6
+    config.lossless_gate = True
+    config.lossless_gate_max_rejections = 3
     config.mcp_port = None
     return config
 
@@ -202,6 +205,7 @@ class TestSweepLoopLifecycle:
 
         config = _handlers_config()
         config.download_cleanup_hours = 0
+        config.orphan_sweep_hours = 0
         with (
             patch("music_downloader.pipeline.SpotifyResolver"),
             patch("music_downloader.pipeline.SlskdClient"),
