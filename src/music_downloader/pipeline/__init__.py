@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 
 from music_downloader.config import Config
 from music_downloader.formats import is_lossless
+from music_downloader.metadata.musicbrainz import MusicBrainzClient
 from music_downloader.metadata.playlist import PlaylistResolver
 from music_downloader.metadata.spotify import SpotifyResolver, TrackInfo
 from music_downloader.persistence.album_repo import (
@@ -47,7 +48,7 @@ from music_downloader.pipeline.wishlist import WishDelivery
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.scorer import ResultScorer
-from music_downloader.search.slskd_client import SearchResult, SlskdClient
+from music_downloader.search.slskd_client import SearchResult, SlskdClient, SlskdUnavailableError
 
 __all__ = [
     "AlbumJob",
@@ -89,6 +90,7 @@ class Pipeline:
         # ranking, the Opus ladder and the send paths all read this one value.
         self.upload_limit_bytes = config.telegram_upload_limit_bytes
         self.spotify = SpotifyResolver(config.spotify_client_id, config.spotify_client_secret)
+        self.musicbrainz = MusicBrainzClient()
         self.slskd = SlskdClient(config.slskd_host, config.slskd_api_key)
         self.scorer = ResultScorer(
             duration_tolerance_secs=config.duration_tolerance_secs,
@@ -117,6 +119,34 @@ class Pipeline:
     def resolve(self, query: str) -> list[TrackInfo]:
         """Spotify candidates for a free-text query (empty when nothing matched)."""
         return _resolve.lookup(self.spotify, query)
+
+    async def resolve_match(
+        self, query: str, artist: str = "", title: str = "", duration_secs: float | None = None
+    ) -> list[_resolve.Candidate]:
+        """Candidates for a query, confident first: Spotify, else MusicBrainz, else the best Soulseek copy.
+
+        The fallbacks run only when the artist and title are known (given, or
+        split from the query). Soulseek is searched only when neither metadata
+        source has a confident candidate; its candidate is never confident.
+        """
+        candidates, artist, title = await asyncio.to_thread(
+            _resolve.match, self.spotify, self.musicbrainz, query, artist, title, duration_secs
+        )
+        if any(c.confident for c in candidates) or not (artist and title):
+            return candidates
+
+        async def search(text: str) -> list:
+            try:
+                return await self.slskd.search(text, timeout_secs=self.config.search_timeout_secs)
+            except SlskdUnavailableError:
+                logger.warning("slskd unreachable: no Soulseek candidate for %r", text)
+                return []
+
+        def rank(responses: list, track: TrackInfo) -> RankedResults:
+            return self.rank(responses, track, "library")
+
+        found = await _resolve.soulseek_candidate(search, rank, artist, title, duration_secs)
+        return ([found] if found else []) + candidates
 
     # ------------------------------------------------------------------- search
 

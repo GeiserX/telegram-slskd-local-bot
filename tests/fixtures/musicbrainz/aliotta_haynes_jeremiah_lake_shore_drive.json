@@ -1,0 +1,167 @@
+{
+ "created": "2026-10-07T15:55:54.785Z",
+ "count": 7,
+ "offset": 0,
+ "recordings": [
+  {
+   "id": "b6fb8563-099c-46c1-9005-39c53629d5eb",
+   "score": 100,
+   "title": "Lake Shore Drive",
+   "length": 234906,
+   "first-release-date": "2010",
+   "artist-credit": [
+    {
+     "name": "Aliotta Haynes Jeremiah",
+     "artist": {
+      "id": "04f5f62b-7c4d-4f5f-8dda-ff3bfb43db62",
+      "name": "Aliotta Haynes Jeremiah"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "b37582bc-d99c-4245-9f96-dd0e80398e01",
+     "title": "94.7 WLS-FM True Oldies Collection Volume 1",
+     "date": "2010"
+    }
+   ]
+  },
+  {
+   "id": "9b80dff3-163d-4e0d-8547-2fad3d71dc13",
+   "score": 100,
+   "title": "Lake Shore Drive",
+   "length": 235000,
+   "first-release-date": "2008",
+   "artist-credit": [
+    {
+     "name": "Aliotta Haynes Jeremiah",
+     "artist": {
+      "id": "04f5f62b-7c4d-4f5f-8dda-ff3bfb43db62",
+      "name": "Aliotta Haynes Jeremiah"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "a58e6122-c137-4c07-a0e7-5d14544ac099",
+     "title": "Take Me Out to a Cubs Game",
+     "date": "2008"
+    }
+   ]
+  },
+  {
+   "id": "8ae24666-b863-41ed-9f9c-9d48a27f13e1",
+   "score": 100,
+   "title": "Lake Shore Drive",
+   "length": 234013,
+   "first-release-date": "1999",
+   "artist-credit": [
+    {
+     "name": "Aliotta Haynes Jeremiah",
+     "artist": {
+      "id": "04f5f62b-7c4d-4f5f-8dda-ff3bfb43db62",
+      "name": "Aliotta Haynes Jeremiah"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "983412c4-d063-4c9e-80be-e3bb32220e6d",
+     "title": "Bob Stroud's Classic Rock Roots Vol 02",
+     "date": "1999"
+    }
+   ]
+  },
+  {
+   "id": "04d2b46d-be25-4bb9-91ee-0b7b6fc70a47",
+   "score": 100,
+   "title": "Lake Shore Drive",
+   "length": 229066,
+   "first-release-date": "1973",
+   "artist-credit": [
+    {
+     "name": "Aliotta Haynes Jeremiah",
+     "artist": {
+      "id": "04f5f62b-7c4d-4f5f-8dda-ff3bfb43db62",
+      "name": "Aliotta Haynes Jeremiah"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "7adea212-b015-40e1-bac8-4145e325a0b0",
+     "title": "Guardians of the Galaxy, Vol. 2: Awesome Mix, Vol. 2",
+     "date": "2017-04-28"
+    }
+   ]
+  },
+  {
+   "id": "e8037abe-d9e4-4448-9635-d09e91be2ae5",
+   "score": 100,
+   "title": "Lake Shore Drive",
+   "first-release-date": "1993",
+   "artist-credit": [
+    {
+     "name": "Aliotta Haynes Jeremiah",
+     "artist": {
+      "id": "04f5f62b-7c4d-4f5f-8dda-ff3bfb43db62",
+      "name": "Aliotta Haynes Jeremiah"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "7ff47873-85a6-49d7-9e5c-17945bfb136a",
+     "title": "Chicago! My Kind of Songs",
+     "date": "1993"
+    }
+   ]
+  },
+  {
+   "id": "62af8c15-21c1-48c9-9b66-4ade0bd6ce72",
+   "score": 100,
+   "title": "Lake Shore Drive",
+   "length": 260000,
+   "first-release-date": "2011-07-19",
+   "artist-credit": [
+    {
+     "name": "Aliotta Haynes Jeremiah",
+     "artist": {
+      "id": "04f5f62b-7c4d-4f5f-8dda-ff3bfb43db62",
+      "name": "Aliotta Haynes Jeremiah"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "651acba4-0fab-4ede-bf64-fd7999f0e9de",
+     "title": "The Best of Skip Haynes & Aliotta Haynes Jeremiah, Part 1",
+     "date": "2011-07-19"
+    }
+   ]
+  },
+  {
+   "id": "dcef3b0f-50a4-44a8-bd93-3d5bf71d457a",
+   "score": 100,
+   "title": "Lake Shore Drive",
+   "length": 228000,
+   "first-release-date": "2017-04-28",
+   "artist-credit": [
+    {
+     "name": "Aliotta Haynes Jeremiah",
+     "artist": {
+      "id": "04f5f62b-7c4d-4f5f-8dda-ff3bfb43db62",
+      "name": "Aliotta Haynes Jeremiah"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "caeffa1a-4658-45eb-b174-642777fa0b68",
+     "title": "Guardians of the Galaxy: Awesome Mix, Vol. 2: Original Motion Picture Soundtrack",
+     "date": "2017-04-28"
+    }
+   ]
+  }
+ ]
+}

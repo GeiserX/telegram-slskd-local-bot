@@ -11,10 +11,15 @@ from spotipy.oauth2 import SpotifyClientCredentials
 
 logger = logging.getLogger(__name__)
 
+# Where a track's metadata came from (TrackInfo.source).
+SOURCE_SPOTIFY = "spotify"
+SOURCE_MUSICBRAINZ = "musicbrainz"
+SOURCE_SOULSEEK = "soulseek"
+
 
 @dataclass
 class TrackInfo:
-    """Resolved track metadata from Spotify."""
+    """Resolved track metadata: from Spotify, MusicBrainz, or Soulseek file names (*source*)."""
 
     artist: str
     title: str
@@ -24,6 +29,10 @@ class TrackInfo:
     year: str
     # Position on the release; set for album files (pipeline.album.track_info_for), None from Spotify.
     track_number: int | None = None
+    source: str = SOURCE_SPOTIFY
+    # The track in its source, namespaced so sources never collide:
+    # "spotify:track:<id>", "musicbrainz:recording:<mbid>", "soulseek:<user>:<path>". Empty when unknown.
+    source_id: str = ""
 
     @property
     def duration_secs(self) -> int:
@@ -121,6 +130,7 @@ class SpotifyResolver:
                     duration_ms=t["duration_ms"],
                     spotify_url=t["external_urls"].get("spotify", ""),
                     year=t["album"].get("release_date", "")[:4],
+                    source_id=f"spotify:track:{t['id']}" if t.get("id") else "",
                 )
                 for t in tracks
             ]

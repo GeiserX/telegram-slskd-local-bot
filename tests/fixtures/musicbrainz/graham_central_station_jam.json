@@ -1,0 +1,186 @@
+{
+ "created": "2026-10-07T15:55:52.989Z",
+ "count": 7,
+ "offset": 0,
+ "recordings": [
+  {
+   "id": "d4a53e6a-7793-4b67-9d89-a01098c7c5f4",
+   "score": 100,
+   "title": "The Jam",
+   "length": 218026,
+   "disambiguation": "single edit",
+   "first-release-date": "1976",
+   "artist-credit": [
+    {
+     "name": "Graham Central Station",
+     "artist": {
+      "id": "e11c5e9a-8b3a-44c2-9a71-b7a00b5fb8d5",
+      "name": "Graham Central Station"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "343f46ec-5237-462f-b67b-9399a4776393",
+     "title": "The Jam",
+     "date": "1976"
+    }
+   ]
+  },
+  {
+   "id": "d976171c-f88f-4a86-94ab-79370fae6af6",
+   "score": 100,
+   "title": "The Jam",
+   "length": 270000,
+   "first-release-date": "1976",
+   "artist-credit": [
+    {
+     "name": "Graham Central Station",
+     "artist": {
+      "id": "e11c5e9a-8b3a-44c2-9a71-b7a00b5fb8d5",
+      "name": "Graham Central Station"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "343f46ec-5237-462f-b67b-9399a4776393",
+     "title": "The Jam",
+     "date": "1976"
+    }
+   ]
+  },
+  {
+   "id": "04b3927f-3ced-4e3f-97d1-954506e506c1",
+   "score": 100,
+   "title": "The Jam",
+   "length": 493600,
+   "disambiguation": "album version",
+   "first-release-date": "1975-07-11",
+   "artist-credit": [
+    {
+     "name": "Graham Central Station",
+     "artist": {
+      "id": "e11c5e9a-8b3a-44c2-9a71-b7a00b5fb8d5",
+      "name": "Graham Central Station"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "56584f95-2bd2-44d9-ad14-20734f34eec7",
+     "title": "Ain’t No ’Bout‐a‐Doubt It",
+     "date": "2026"
+    }
+   ]
+  },
+  {
+   "id": "6ef8dd35-cbae-4199-82b5-80b896f1758f",
+   "score": 100,
+   "title": "The Jam",
+   "length": 191000,
+   "first-release-date": "2003",
+   "artist-credit": [
+    {
+     "name": "Graham Central Station",
+     "artist": {
+      "id": "e11c5e9a-8b3a-44c2-9a71-b7a00b5fb8d5",
+      "name": "Graham Central Station"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "8a4c2025-cbd8-4230-b817-1bc024f33940",
+     "title": "The Best of Pulp Fusion (Original 1970's Ghetto Jazz & Funk Classics)",
+     "date": "2003"
+    }
+   ]
+  },
+  {
+   "id": "00088a98-0533-400d-88d0-70da6887efde",
+   "score": 100,
+   "title": "The Jam",
+   "disambiguation": "live, 1975-03-23: Kezar Stadium, San Francisco, CA, USA",
+   "first-release-date": "2024-05-07",
+   "artist-credit": [
+    {
+     "name": "Graham Central Station",
+     "artist": {
+      "id": "e11c5e9a-8b3a-44c2-9a71-b7a00b5fb8d5",
+      "name": "Graham Central Station"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "10d57c92-3c2e-43b0-becc-b02c72f7fce0",
+     "title": "SNACK Benefit, Kezar Stadium, San Francisco, CA, 3-23-1975"
+    }
+   ]
+  },
+  {
+   "id": "2bd4e0d8-9cc8-4361-904e-2b2a6e1ef599",
+   "score": 66,
+   "title": "Dance to the Music / The Jam",
+   "length": 672973,
+   "disambiguation": "live, 1996-04-17: Jazz Café, London, UK",
+   "first-release-date": "1996",
+   "artist-credit": [
+    {
+     "name": "Larry Graham & Graham Central Station",
+     "artist": {
+      "id": "e11c5e9a-8b3a-44c2-9a71-b7a00b5fb8d5",
+      "name": "Graham Central Station"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "c1ef2304-a280-46cf-a1a2-829893d42404",
+     "title": "Gcs Live in London",
+     "date": "1996"
+    }
+   ]
+  },
+  {
+   "id": "274f779a-57d2-4378-84a6-c137971b8c25",
+   "score": 50,
+   "title": "Let the Drums Speak / Let's Have Some Fun / The Jam",
+   "length": 34426,
+   "first-release-date": "2006-06-26",
+   "artist-credit": [
+    {
+     "name": "Fatback Band",
+     "joinphrase": " / ",
+     "artist": {
+      "id": "a7290418-82e2-4016-abf4-3fd3e7db926f",
+      "name": "Fatback"
+     }
+    },
+    {
+     "name": "Bar-Kays",
+     "joinphrase": " / ",
+     "artist": {
+      "id": "919ac2b3-aa04-4732-93f8-742ebb7a03f2",
+      "name": "The Bar‐Kays"
+     }
+    },
+    {
+     "name": "Graham Central Station",
+     "artist": {
+      "id": "e11c5e9a-8b3a-44c2-9a71-b7a00b5fb8d5",
+      "name": "Graham Central Station"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "1a5d2e90-f4bf-46ea-bd06-5303fbc781be",
+     "title": "All the Breaks: The 300 Most Essential Drum Breaks of All Time",
+     "date": "2006-06-26"
+    }
+   ]
+  }
+ ]
+}
