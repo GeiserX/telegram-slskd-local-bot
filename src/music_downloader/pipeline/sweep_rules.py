@@ -175,8 +175,13 @@ def _nice(cmd: list[str]) -> list[str]:
     return [nice, "-n", "19", *cmd] if nice else cmd
 
 
-def strict_decode_ok(path: str) -> bool:
-    """True when ffmpeg decodes the whole file with CRC checks and stops at no error."""
+def strict_decode_ok(path: str) -> bool | None:
+    """True when ffmpeg decodes the whole file with CRC checks and stops at no error, False when it reports one.
+
+    None when the decode could not run or did not finish (no ffmpeg, a
+    timeout): a tool failure is not proof of damage. tier_of() then goes by the
+    cutoff, and better() never accepts a copy that was not decoded.
+    """
     try:
         r = subprocess.run(
             _nice(
@@ -187,7 +192,7 @@ def strict_decode_ok(path: str) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.warning("Strict decode of %s did not finish", path, exc_info=True)
-        return False
+        return None
     stderr = r.stderr.decode(errors="ignore").lower()
     return r.returncode == 0 and not any(
         h in stderr for h in ("decode_frame() failed", "invalid", "error while decoding")
@@ -420,6 +425,21 @@ def judge(original: Audit, candidate: Audit, stem: str, similarity: float | None
 
 def fpcalc_available() -> bool:
     return shutil.which("fpcalc") is not None
+
+
+def missing_tools() -> list[str]:
+    """What the sweep cannot measure without: ffmpeg (strict decode) and the analysis extra (cutoff, fingerprint math).
+
+    fpcalc is optional (judge() falls back to length and tags), so it is not listed.
+    """
+    from music_downloader.processor.lossless_analyzer import HAS_ANALYSIS
+
+    missing = []
+    if shutil.which("ffmpeg") is None:
+        missing.append("ffmpeg")
+    if not HAS_ANALYSIS:
+        missing.append("numpy, scipy and soundfile (pip install 'telegram-slskd-local-bot[analysis]')")
+    return missing
 
 
 def fingerprint(path: str, length_secs: int = FP_LENGTH_SECS) -> list[int] | None:

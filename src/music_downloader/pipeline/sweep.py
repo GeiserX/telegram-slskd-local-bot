@@ -307,6 +307,10 @@ def _cover_of(path: str) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
+async def _no_progress(_status) -> None:
+    return None
+
+
 class LibrarySweep:
     """The sweep of one library (OUTPUT_DIR), over a Pipeline. Front ends set *on_report*."""
 
@@ -323,7 +327,6 @@ class LibrarySweep:
         self._run: SweepRun | None = None
         self._decide_lock = asyncio.Lock()
         self._slot_reported: float | None = None
-        self._beat_at = 0.0
 
     # ------------------------------------------------------------ properties
 
@@ -370,6 +373,9 @@ class LibrarySweep:
         """Start a sweep in the background; (the run, "") or (None, why not). Needs a running event loop."""
         if not self.enabled:
             return None, "the library sweep is off: LIBRARY_SWEEP_USERS is empty"
+        missing = rules.missing_tools()
+        if missing:
+            return None, f"the sweep cannot measure files without {' and '.join(missing)}"
         if self.running:
             return None, "a sweep is already running"
         other = self._live_run_elsewhere(time.time())
@@ -390,6 +396,10 @@ class LibrarySweep:
         """At startup: continue this owner's sweep that a stop interrupted (or any stale one). Returns it."""
         if not self.enabled or self.running:
             return None
+        missing = rules.missing_tools()
+        if missing:
+            logger.error("Library sweep not continued: %s missing", " and ".join(missing))
+            return None
         now = time.time()
         for run in self.repo.running_runs():
             if run.owner == self.pipeline.album_owner or now - run.updated_at >= STALE_RUN_SECS:
@@ -409,6 +419,7 @@ class LibrarySweep:
     # ------------------------------------------------------------------ a run
 
     async def _sweep(self, run: SweepRun) -> None:
+        keepalive = asyncio.get_running_loop().create_task(self._keepalive(run))
         try:
             if not os.path.isdir(self.root):
                 logger.error("Library sweep %d: %s is not a folder (unmounted?); nothing checked", run.id, self.root)
@@ -429,7 +440,6 @@ class LibrarySweep:
                 result = await self._check_logged(name, run, pause)
                 run.done += 1
                 if result is None:
-                    self._heartbeat(run)
                     continue
                 pause = result.searched
                 run.counts[result.outcome] = run.counts.get(result.outcome, 0) + 1
@@ -446,6 +456,8 @@ class LibrarySweep:
             logger.exception("Library sweep %d failed", run.id)
             run.status = RUN_INTERRUPTED
             self.repo.save_run(run)
+        finally:
+            keepalive.cancel()
 
     def _order(self, names: list[str]) -> list[str]:
         """Worst tier first (files never audited first of all), then by name."""
@@ -480,12 +492,15 @@ class LibrarySweep:
         except Exception:
             logger.exception("Sending the library sweep report failed")
 
-    def _heartbeat(self, run: SweepRun) -> None:
-        """Write the run row when it is older than HEARTBEAT_SECS, so no other process takes it for dead."""
-        now = time.time()
-        if now - self._beat_at >= HEARTBEAT_SECS:
-            self._beat_at = now
-            self.repo.save_run(run)
+    async def _keepalive(self, run: SweepRun) -> None:
+        """Write the run row every HEARTBEAT_SECS for the sweep's whole life, so no other process takes it
+        for dead while a song downloads, decodes or is fingerprinted."""
+        while True:
+            await asyncio.sleep(HEARTBEAT_SECS)
+            try:
+                self.repo.save_run(run)
+            except Exception:
+                logger.warning("Sweep %s: could not write its row", run.id, exc_info=True)
 
     async def _check_logged(self, name: str, run: SweepRun, pause: bool) -> SongResult | None:
         """check_song with its log line and its row written; None when the song was not due."""
@@ -574,10 +589,7 @@ class LibrarySweep:
         while index < len(copies) and tries > 0:
             tries -= 1
 
-            async def beat(_status, run=run) -> None:
-                self._heartbeat(run)
-
-            gated = await self.pipeline.fetch_for_library(copies, index, track, lambda _r, _i: beat)
+            gated = await self.pipeline.fetch_for_library(copies, index, track, lambda _r, _i: _no_progress)
             index = gated.index + 1
             outcome, result = gated.outcome, gated.result
             notes.extend(f"{r.result.basename}: {r.reason}" for r in gated.rejected)
@@ -863,6 +875,7 @@ class LibrarySweep:
             "pause_secs": self.config.library_sweep_pause_secs,
             "keep_days": self.config.library_sweep_keep_days,
             "fingerprint": rules.fpcalc_available(),
+            "missing_tools": rules.missing_tools(),
         }
 
 

@@ -3685,6 +3685,8 @@ class MusicBot:
             lines.append(f"Next scheduled sweep: {st['next_scheduled'].replace('T', ' ')[:16]} ({st['schedule']})")
         else:
             lines.append("No scheduled sweeps (LIBRARY_SWEEP_SCHEDULE=off)")
+        if st["missing_tools"]:
+            lines.append(f"Cannot sweep without {_esc(' and '.join(st['missing_tools']))}")
         if not st["fingerprint"]:
             lines.append("fpcalc is missing: same-recording checks use the length only")
         return "\n".join(lines)

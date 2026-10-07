@@ -21,7 +21,8 @@ The account must be in `TELEGRAM_ALLOWED_USERS` and save to the library. An acco
 | `LIBRARY_SWEEP_KEEP_DAYS` | `7` | Days a replaced song stays in `<library>/.sweep-replaced/` before it is deleted. `0` deletes it at once |
 
 The image ships `fpcalc` from Chromaprint for the same-recording check. A PyPI install without Chromaprint still
-sweeps, but judges by length and tags alone, and `/sweep status` says so.
+sweeps, but judges by length and tags alone, and `/sweep status` says so. Without ffmpeg or the `analysis`
+extra the sweep cannot measure anything, so it does not start, and `/sweep status` names what is missing.
 
 ## What it checks
 

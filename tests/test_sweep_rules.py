@@ -388,3 +388,27 @@ def test_a_long_album_is_cut_at_a_word():
     cand = _cand(album="The Complete Recordings " + "Volume " * 30)
     name = keep_both_name(STEM, "flac", _orig(), cand, lambda n: False)
     assert len(name.encode()) < 200 and name.endswith("Volume).flac")
+
+
+class TestToolFailures:
+    def test_a_decode_that_cannot_run_is_unknown_not_damaged(self, monkeypatch):
+        def boom(*a, **k):
+            raise FileNotFoundError("ffmpeg")
+
+        monkeypatch.setattr(rules.subprocess, "run", boom)
+        assert rules.strict_decode_ok("/nowhere.flac") is None
+
+    def test_a_timeout_is_unknown(self, monkeypatch):
+        def slow(*a, **k):
+            raise subprocess.TimeoutExpired("ffmpeg", 900)
+
+        monkeypatch.setattr(rules.subprocess, "run", slow)
+        assert rules.strict_decode_ok("/nowhere.flac") is None
+
+    def test_unknown_goes_by_the_cutoff_and_never_wins(self):
+        assert tier_of("flac", 16, 44100, None, 21.0) == rules.TIER_CD
+        assert not better(_a(cutoff=14.0), _a(strict=None, cutoff=22.0))
+
+    def test_missing_tools(self, monkeypatch):
+        monkeypatch.setattr(rules.shutil, "which", lambda name: None)
+        assert rules.missing_tools()[0] == "ffmpeg"

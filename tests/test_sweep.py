@@ -36,6 +36,12 @@ SAME_FP = [i * 2654435761 % 2**32 for i in range(1200)]
 OTHER_FP = [i * 40503 % 2**32 for i in range(1200)]
 
 
+@pytest.fixture(autouse=True)
+def tools_present(monkeypatch):
+    """The sweep refuses to start without ffmpeg and the analysis extra; these tests fake the measuring."""
+    monkeypatch.setattr(rules, "missing_tools", lambda: [])
+
+
 def _audit(ext="flac", cutoff=15.0, length=200.0, depth=16, rate=44100, **tags):
     a = Audit(ext=ext, length=length, depth=depth, rate=rate, strict=True, cutoff=cutoff)
     a.artist = tags.get("artist", "Elvis Presley")
@@ -664,18 +670,27 @@ class TestMusicBrainzRetry:
         assert len(calls) == 2
 
 
-async def test_a_long_download_keeps_the_run_row_fresh(tmp_path, monkeypatch):
+async def test_missing_tools_refuse_a_start(tmp_path, monkeypatch):
+    sweep, pipe = _sweep(tmp_path, _audit())
+    monkeypatch.setattr(rules, "missing_tools", lambda: ["ffmpeg"])
+    run, why = sweep.start("test")
+    assert run is None and "without ffmpeg" in why
+    assert sweep.status()["missing_tools"] == ["ffmpeg"]
+
+
+async def test_the_run_row_stays_fresh_while_a_song_is_measured(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "HEARTBEAT_SECS", 0.02)
     sweep, pipe = _sweep(tmp_path, _audit(cutoff=15.5))
-    beats = []
+    slow_audit = sweep.audit
+
+    def slow(path):
+        time.sleep(0.3)
+        return slow_audit(path)
+
+    sweep.audit = slow
+    writes = []
     real = sweep.repo.save_run
-    monkeypatch.setattr(sweep.repo, "save_run", lambda run: (beats.append(time.time()), real(run)))
-
-    async def fetch(results, index, track, progress_for):
-        before = len(beats)
-        sweep._beat_at = 0.0
-        await progress_for(results[index], index)(None)
-        assert len(beats) == before + 1, "a progress update writes the row"
-        return await FakePipeline.fetch_for_library(pipe, results, index, track, progress_for)
-
-    pipe.fetch_for_library = fetch
+    monkeypatch.setattr(sweep.repo, "save_run", lambda run: (writes.append(run.current), real(run)))
     await _run_once(sweep)
+    # The keepalive wrote the row while the song was being audited (current not yet set).
+    assert writes.count("") >= 5
