@@ -14,7 +14,7 @@ import time
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
-from telegram import BotCommand, InlineKeyboardMarkup, Message, Update
+from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
@@ -28,6 +28,7 @@ from telegram.ext import (
 )
 
 from music_downloader.bot.keyboards import (
+    SWEEP_CHOICES,
     build_album_confirm_keyboard,
     build_album_offer_keyboard,
     build_album_retry_keyboard,
@@ -46,6 +47,7 @@ from music_downloader.bot.keyboards import (
     build_retry_next_keyboard,
     build_send_format_keyboard,
     build_spotify_keyboard,
+    build_sweep_review_keyboard,
     build_wait_better_button,
     build_wishlist_keyboard,
     without_wish_buttons,
@@ -58,6 +60,12 @@ from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.album_repo import ALBUM_CANCELLED, AlbumJob, FileOutcome
 from music_downloader.persistence.import_repo import JobStatus, TrackStatus
 from music_downloader.persistence.pending_repo import PendingDownload, PendingSearch, WriteThroughDict
+from music_downloader.persistence.sweep_repo import (
+    DECISION_KEEP_BOTH,
+    DECISION_KEEP_MINE,
+    DECISION_TAKE_NEW,
+    Review,
+)
 from music_downloader.pipeline import ALBUM_DELIVER_CHAT, ALBUM_DELIVER_LIBRARY, Pipeline
 from music_downloader.pipeline.album import BROWSE_TIMEOUT_SECS, REASON_NO_ANSWER, AlbumArt, FolderListing
 from music_downloader.pipeline.album import remote_dir as album_remote_dir
@@ -80,6 +88,8 @@ from music_downloader.pipeline.search import (
     extract_latin_keywords,
     has_non_latin_script,
 )
+from music_downloader.pipeline.sweep import OUTCOME_LABELS, SweepError, SweepReport
+from music_downloader.pipeline.sweep_rules import split_stem
 from music_downloader.pipeline.wishlist import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.processor.lossless_analyzer import not_checked_display
 from music_downloader.search.scorer import PROFILE_CHAT, PROFILE_LIBRARY, TIER_LABELS, TIER_LOSSLESS_24, quality_tier
@@ -96,6 +106,26 @@ DELIVERY_CHAT = "chat"
 RESTART_EXPIRED = "⌛ This button expired after a restart. Send a new search."
 # An album button whose download row is gone (expired with DOWNLOAD_CLEANUP_HOURS, or already used).
 ALBUM_EXPIRED = "⌛ This button expired."
+# Library sweep pairs sent per report (and per /sweep reviews); the rest wait for the next one.
+SWEEP_PAIRS_PER_MESSAGE = 10
+# Automatic replacements listed in a sweep report; the count says how many more.
+SWEEP_REPLACEMENTS_LISTED = 25
+# Pause between two files sent for one report, to stay under Telegram's flood limits.
+SWEEP_SEND_PAUSE_SECS = 1.0
+# Telegram caps a caption at 1024 characters.
+CAPTION_MAX = 1000
+# The order a sweep report lists its counts in.
+SWEEP_OUTCOME_ORDER = (
+    "upgraded",
+    "review",
+    "review_waiting",
+    "none_qualified",
+    "no_better_copy",
+    "no_match",
+    "hires",
+    "skipped",
+    "error",
+)
 # File names shown under an album listing before "Get all".
 ALBUM_SAMPLE = 6
 # Why an album file failed, by FileOutcome.error (a download failure shows slskd's state instead).
@@ -116,6 +146,14 @@ class AlbumRun:
     cancel: asyncio.Event
     task: asyncio.Task | None = None
     line: str = ""
+
+
+def _duration(secs: float | None) -> str:
+    """ "3:41" for a length in seconds; "?:??" when unknown."""
+    if not secs:
+        return "?:??"
+    mins, rest = divmod(int(round(secs)), 60)
+    return f"{mins}:{rest:02d}"
 
 
 def _esc(text) -> str:
@@ -519,7 +557,12 @@ class MusicBot:
             "/wishlist — Tracks waiting for a copy, or for a better one\n"
             "/status — Show active downloads\n"
             "/history — Recent downloads\n"
-            "/help — Show this message",
+            + (
+                "/sweep — Look for better copies of your library's songs (/sweep status, /sweep reviews)\n"
+                if update.effective_user is not None and update.effective_user.id in self._sweep_users()
+                else ""
+            )
+            + "/help — Show this message",
             parse_mode=ParseMode.HTML,
         )
 
@@ -1020,6 +1063,7 @@ class MusicBot:
             "alb": self._handle_album_offer,
             "albgo": self._handle_album_confirm,
             "albno": self._handle_album_drop,
+            "swp": self._handle_sweep_decision,
         }.get(prefix)
 
         if handler:
@@ -3558,6 +3602,309 @@ class MusicBot:
 
         return "\n".join(lines)
 
+    # =========================================================================
+    # LIBRARY SWEEP
+    # =========================================================================
+
+    def _sweep_users(self) -> set[int]:
+        """LIBRARY_SWEEP_USERS that may use the bot and save to the library (never a chat-delivery account)."""
+        users = self.pipeline.sweep.users
+        allowed = set(self.config.telegram_allowed_users or ())
+        return {u for u in users if u in allowed and self._delivery_mode(u, u) == DELIVERY_LIBRARY}
+
+    async def cmd_sweep(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/sweep starts a library sweep now; /sweep status, /sweep reviews, /sweep force."""
+        if not await self._check_auth(update):
+            return
+        if update.effective_user.id not in self._sweep_users():
+            await update.message.reply_text("The library sweep is not on for this account.", parse_mode=ParseMode.HTML)
+            return
+        sweep = self.pipeline.sweep
+        arg = (context.args[0].lower() if getattr(context, "args", None) else "").strip()
+        if arg == "status":
+            await update.message.reply_text(self._sweep_status_text(), parse_mode=ParseMode.HTML)
+            return
+        if arg == "reviews":
+            reviews = sweep.repo.pending_reviews()
+            if not reviews:
+                await update.message.reply_text("No pair waits for your ear.", parse_mode=ParseMode.HTML)
+                return
+            await self._send_sweep_pairs(context.bot, update.effective_chat.id, reviews)
+            return
+        if arg not in ("", "force"):
+            await update.message.reply_text(
+                "/sweep starts a sweep now, /sweep force checks every song whatever its last check, "
+                "/sweep status shows where it is, /sweep reviews sends the pairs waiting for your ear.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        run, why = sweep.start("telegram", force=arg == "force")
+        if run is None:
+            await update.message.reply_text(
+                f"Not started: {_esc(why)}.\n\n{self._sweep_status_text()}", parse_mode=ParseMode.HTML
+            )
+            return
+        await update.message.reply_text(
+            "\U0001f9f9 Library sweep started"
+            + (" (every song)" if run.force else "")
+            + ": one song at a time, so it can take hours. I write here when it ends. "
+            "/sweep status shows where it is.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    def _sweep_status_text(self) -> str:
+        st = self.pipeline.sweep.status()
+        lines = [f"\U0001f9f9 <b>Library sweep</b>: {'running' if st['running'] else 'idle'}"]
+        run = st["run"]
+        if run is not None:
+            started = (run["started_at"] or "")[:16].replace("T", " ")
+            if st["running"]:
+                lines.append(
+                    f"Sweep {run['id']} ({run['trigger']}, since {started}): {run['position']} of {run['files']} files"
+                )
+                if run["current"]:
+                    lines.append(f"Now: <code>{_esc(run['current'])}</code>")
+            else:
+                finished = (run["finished_at"] or "")[:16].replace("T", " ")
+                lines.append(f"Last sweep {run['id']} ({run['trigger']}): {run['status']} {finished or started}")
+            counts = run["counts"]
+            if counts:
+                lines.append(
+                    ", ".join(
+                        f"{OUTCOME_LABELS.get(k, k).lower()} {counts[k]}" for k in SWEEP_OUTCOME_ORDER if counts.get(k)
+                    )
+                )
+        tiers = st["tiers"]
+        if tiers:
+            lines.append("Songs per tier: " + ", ".join(f"{k} {v}" for k, v in sorted(tiers.items())))
+        lines.append(
+            f"Pairs waiting for your ear: {st['reviews_waiting']}"
+            + (" (/sweep reviews)" if st["reviews_waiting"] else "")
+        )
+        if st["next_scheduled"]:
+            lines.append(f"Next scheduled sweep: {st['next_scheduled'].replace('T', ' ')[:16]} ({st['schedule']})")
+        else:
+            lines.append("No scheduled sweeps (LIBRARY_SWEEP_SCHEDULE=off)")
+        if st["missing_tools"]:
+            lines.append(f"Cannot sweep without {_esc(' and '.join(st['missing_tools']))}")
+        if not st["fingerprint"]:
+            lines.append("fpcalc is missing: same-recording checks use the length only")
+        return "\n".join(lines)
+
+    def _sweep_summary(self, report: SweepReport) -> str:
+        run = report.run
+        checked = sum(run.counts.values())
+        if report.in_progress:
+            return (
+                "\U0001f9f9 <b>Library sweep</b> still running: "
+                f"{run.done} of {run.total} files looked at, {checked} checked so far. I write again when it ends."
+            )
+        title = "Weekly library sweep" if run.trigger == "schedule" else "Library sweep"
+        lines = [f"\U0001f9f9 <b>{title} done</b>: {checked} of {run.total} songs checked, the rest were not due."]
+        counts = [(k, run.counts[k]) for k in SWEEP_OUTCOME_ORDER if run.counts.get(k)]
+        if counts:
+            lines.append("")
+            lines.extend(f"{OUTCOME_LABELS.get(k, k)}: {n}" for k, n in counts)
+        if report.replacements:
+            lines += ["", "<b>Upgraded automatically</b>"]
+            for rep in report.replacements[:SWEEP_REPLACEMENTS_LISTED]:
+                lines.append(f"• {_esc(rep.stem)}: {_esc(rep.from_desc)} → {_esc(rep.to_desc)}")
+            more = len(report.replacements) - SWEEP_REPLACEMENTS_LISTED
+            if more > 0:
+                lines.append(f"…and {more} more")
+            lines.append(
+                f"The replaced files are kept in .sweep-replaced for {self.config.library_sweep_keep_days} days."
+            )
+        if report.reviews:
+            shown = min(len(report.reviews), SWEEP_PAIRS_PER_MESSAGE)
+            lines += [
+                "",
+                f"{len(report.reviews)} pair(s) wait for your ear"
+                + (f", the first {shown} below" if shown < len(report.reviews) else " below")
+                + ": listen to both, then Keep mine, Take new or Keep both. "
+                "Pairs left undecided come back with the next sweep (or /sweep reviews).",
+            ]
+        elif not report.replacements:
+            lines += ["", "Nothing changed."]
+        text = "\n".join(lines)
+        return text if len(text) <= 4000 else text[:3990] + "…"
+
+    async def _send_sweep_report(self, bot, report: SweepReport) -> None:
+        """The sweep's message to every sweep user, then the pairs waiting for the ear."""
+        text = self._sweep_summary(report)
+        for user_id in sorted(self._sweep_users()):
+            try:
+                await bot.send_message(chat_id=user_id, text=text, parse_mode=ParseMode.HTML)
+            except Exception:
+                logger.exception("Sweep report to %s failed", user_id)
+                continue
+            if report.reviews:
+                await self._send_sweep_pairs(bot, user_id, report.reviews)
+
+    async def _send_sweep_pairs(self, bot, chat_id: int, reviews: list[Review]) -> None:
+        """Up to SWEEP_PAIRS_PER_MESSAGE pairs: the library's file, then the proposal with the three buttons."""
+        batch = reviews[:SWEEP_PAIRS_PER_MESSAGE]
+        for n, review in enumerate(batch, 1):
+            if await self._send_sweep_pair(bot, chat_id, review, n, len(reviews)):
+                self.pipeline.sweep.repo.mark_offered(review.id, time.time())
+
+    async def _send_sweep_pair(self, bot, chat_id: int, review: Review, n: int, total: int) -> bool:
+        artist, title = split_stem(review.stem)
+        current_ext = os.path.splitext(review.current_path)[1].lstrip(".") or "audio"
+        head = f"\U0001f442 <b>{n}/{total}</b> {_esc(review.stem)}"
+        mine = f"{head}\n1. Yours: {_esc(review.current_desc)}, {_duration(review.current_len)}"
+        theirs = (
+            f"{head}\n2. Proposal: {_esc(review.proposal_desc)}, {_duration(review.proposal_len)}\n"
+            f"Why it needs your ear: {_esc(review.reason)}\n"
+            f"Keep both saves it as <code>{_esc(review.both_name)}</code>"
+        )
+        await self._send_sweep_audio(
+            bot,
+            chat_id,
+            review.current_path,
+            f"{review.stem} (yours).{current_ext}",
+            title,
+            artist,
+            review.current_len,
+            mine,
+        )
+        await asyncio.sleep(SWEEP_SEND_PAUSE_SECS)
+        sent = await self._send_sweep_audio(
+            bot,
+            chat_id,
+            review.proposal_path,
+            f"{review.stem} (proposal).{review.proposal_ext}",
+            title,
+            artist,
+            review.proposal_len,
+            theirs,
+            build_sweep_review_keyboard(review.id),
+        )
+        await asyncio.sleep(SWEEP_SEND_PAUSE_SECS)
+        return sent
+
+    async def _send_sweep_audio(
+        self,
+        bot,
+        chat_id: int,
+        path: str,
+        filename: str,
+        title: str,
+        performer: str,
+        duration: float | None,
+        caption: str,
+        markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        """Send *path* as audio (document on BadRequest), as it is when it fits the upload cap, else as Opus."""
+        if not os.path.isfile(path):
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"{caption}\n(the file is no longer there)"[:4000],
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
+            return markup is not None
+        size = os.path.getsize(path)
+        send_path, tmp = path, None
+        if size > self.pipeline.upload_limit_bytes:
+            for kbps in self.pipeline.opus_bitrates_that_fit(int(duration or 0)):
+                tmp = await self.pipeline.convert_to_opus(path, kbps)
+                if tmp and os.path.getsize(tmp) <= self.pipeline.upload_limit_bytes:
+                    send_path = tmp
+                    filename = os.path.splitext(filename)[0] + ".ogg"
+                    caption += f"\n\U0001f3a7 Opus {kbps} kbps here; the file is {size / BYTES_PER_MB:.0f} MB"
+                    break
+                if tmp:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp)
+                    tmp = None
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"{caption}\n(too big to send: {size / BYTES_PER_MB:.0f} MB)"[:4000],
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                )
+                return markup is not None
+        caption = caption if len(caption) <= CAPTION_MAX else caption[: CAPTION_MAX - 1] + "…"
+        try:
+            for attempt in (1, 2):
+                try:
+                    with open(send_path, "rb") as f:
+                        try:
+                            await bot.send_audio(
+                                chat_id=chat_id,
+                                audio=f,
+                                filename=filename,
+                                title=title,
+                                performer=performer,
+                                duration=int(duration or 0) or None,
+                                caption=caption,
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=markup,
+                            )
+                        except BadRequest:
+                            f.seek(0)
+                            await bot.send_document(
+                                chat_id=chat_id,
+                                document=f,
+                                filename=filename,
+                                caption=caption,
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=markup,
+                            )
+                    return True
+                except RetryAfter as exc:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(_retry_after_seconds(exc) + 0.5)
+        except Exception:
+            logger.exception("Sending the sweep file %s to %s failed", filename, chat_id)
+            return False
+        finally:
+            if tmp:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+        return False
+
+    async def _handle_sweep_decision(self, update: Update, context, chat_id: int, data: str) -> None:
+        """swp:<review id>:<m|n|b>: Keep mine, Take new or Keep both, applied at once."""
+        query = update.callback_query
+        if query.from_user.id not in self._sweep_users():
+            return
+        try:
+            _, review_id, choice = data.split(":")
+            decision = SWEEP_CHOICES[choice]
+            review_id = int(review_id)
+        except (ValueError, KeyError):
+            return
+        try:
+            review, path = await self.pipeline.sweep.decide(review_id, decision)
+        except SweepError as exc:
+            note = f"⚠️ {_esc(exc)}"
+        except Exception:
+            logger.exception("Sweep decision %s on pair %s failed", decision, review_id)
+            with contextlib.suppress(Exception):
+                await query.message.reply_text(
+                    "⚠️ That did not work; the pair stays open. Try again.", parse_mode=ParseMode.HTML
+                )
+            return
+        else:
+            note = {
+                DECISION_KEEP_MINE: "✅ Kept yours. The proposal is deleted.",
+                DECISION_TAKE_NEW: f"✅ Took the new one. Yours is kept in .sweep-replaced for {self.config.library_sweep_keep_days} days.",
+                DECISION_KEEP_BOTH: f"✅ Kept both. The proposal is now <code>{_esc(os.path.basename(path))}</code>.",
+            }[decision]
+        caption = getattr(query.message, "caption_html", None) or ""
+        caption = f"{caption}\n\n{note}" if caption else note
+        try:
+            await query.edit_message_caption(
+                caption=caption[:CAPTION_MAX], parse_mode=ParseMode.HTML, reply_markup=None
+            )
+        except Exception:
+            # The pair came as a text message (file gone or too big): edit the text instead.
+            await _safe_query_edit(query, caption[:4000], reply_markup=None)
+
     async def _orphan_sweep_loop(self) -> None:
         """The pipeline's hourly orphan sweep, with this bot's in-flight downloads protected."""
         await self.pipeline.orphan_sweep_loop(
@@ -3578,25 +3925,31 @@ class MusicBot:
                 await message.reply_text("⚠️ Something went wrong. Please try again.", parse_mode=ParseMode.HTML)
 
 
-async def _register_commands(app: Application) -> None:
+async def _register_commands(app: Application, sweep_users: set[int] | None = None) -> None:
     """Publish the command menu so Telegram's `/` autocomplete shows every command.
 
     Without this the biggest feature in the bot (/import) is invisible: nothing
-    in the UI ever reveals it exists.
+    in the UI ever reveals it exists. /sweep is added only in the private
+    chats of *sweep_users*: everyone else never sees it.
     """
-    await app.bot.set_my_commands(
-        [
-            BotCommand("import", "Import a Spotify playlist or album"),
-            BotCommand("cancel", "Cancel the active import, album or search"),
-            BotCommand("auto", "Toggle auto-download mode"),
-            BotCommand("deliver", "Toggle chat delivery (send tracks here instead of saving)"),
-            BotCommand("format", "Format of tracks sent in the chat"),
-            BotCommand("wishlist", "Tracks waiting for a copy or a better one"),
-            BotCommand("status", "Show active searches and downloads"),
-            BotCommand("history", "Recent downloads"),
-            BotCommand("help", "How to use the bot"),
-        ]
-    )
+    commands = [
+        BotCommand("import", "Import a Spotify playlist or album"),
+        BotCommand("cancel", "Cancel the active import, album or search"),
+        BotCommand("auto", "Toggle auto-download mode"),
+        BotCommand("deliver", "Toggle chat delivery (send tracks here instead of saving)"),
+        BotCommand("format", "Format of tracks sent in the chat"),
+        BotCommand("wishlist", "Tracks waiting for a copy or a better one"),
+        BotCommand("status", "Show active searches and downloads"),
+        BotCommand("history", "Recent downloads"),
+        BotCommand("help", "How to use the bot"),
+    ]
+    await app.bot.set_my_commands(commands)
+    sweep = BotCommand("sweep", "Look for better copies of the library's songs")
+    for user_id in sorted(sweep_users or ()):
+        try:
+            await app.bot.set_my_commands([*commands[:-1], sweep, commands[-1]], scope=BotCommandScopeChat(user_id))
+        except Exception:
+            logger.warning("Could not publish /sweep in the menu of %s", user_id, exc_info=True)
 
 
 def _configure_api_server(builder, config: Config) -> None:
@@ -3630,7 +3983,8 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
     bot = MusicBot(config, Pipeline(config))
 
     async def _post_init(app: Application) -> None:
-        await _register_commands(app)
+        sweep = bot.pipeline.sweep
+        await _register_commands(app, bot._sweep_users() if sweep.enabled else None)
         if config.orphan_sweep_hours > 0 or config.download_cleanup_hours > 0:
             # Plain asyncio task, deliberately NOT app.create_task: PTB must
             # never await this infinite loop as part of its own lifecycle.
@@ -3662,6 +4016,15 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
             from music_downloader.mcp.server import serve_http
 
             bot._mcp_task = asyncio.get_running_loop().create_task(serve_http(bot.pipeline, config))
+        if sweep.enabled:
+            # The library sweep: continues an interrupted sweep, then runs on LIBRARY_SWEEP_SCHEDULE.
+            sweep.on_report = lambda report: bot._send_sweep_report(app.bot, report)
+            bot._sweep_loop_task = asyncio.get_running_loop().create_task(sweep.schedule_loop())
+            logger.info(
+                "Library sweep on for %d account(s), schedule %s",
+                len(bot._sweep_users()),
+                config.library_sweep_schedule or "weekly:sun:04:00",
+            )
 
     async def _post_shutdown(app: Application) -> None:
         # A running album stops here; its job stays running and the next start recovers it.
@@ -3669,7 +4032,17 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
         for task in albums:
             task.cancel()
         await asyncio.gather(*albums, return_exceptions=True)
-        for name in ("_sweep_task", "_index_task", "_album_recover_task", "_probe_task", "_wishlist_task", "_mcp_task"):
+        # A running library sweep stops here; its row stays running and the next start continues it.
+        await bot.pipeline.sweep.stop()
+        for name in (
+            "_sweep_task",
+            "_index_task",
+            "_album_recover_task",
+            "_probe_task",
+            "_wishlist_task",
+            "_mcp_task",
+            "_sweep_loop_task",
+        ):
             task = getattr(bot, name, None)
             if task is not None:
                 task.cancel()
@@ -3705,6 +4078,7 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
     app.add_handler(CommandHandler("history", bot.cmd_history, filters=new_messages))
     app.add_handler(CommandHandler("import", bot.cmd_import, filters=new_messages))
     app.add_handler(CommandHandler("cancel", bot.cmd_cancel, filters=new_messages))
+    app.add_handler(CommandHandler("sweep", bot.cmd_sweep, filters=new_messages))
 
     # Callback query handler (inline keyboard buttons)
     app.add_handler(CallbackQueryHandler(bot.handle_callback))

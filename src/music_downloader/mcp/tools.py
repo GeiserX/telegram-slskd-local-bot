@@ -18,10 +18,12 @@ from mcp.server.mcpserver.exceptions import ToolError
 from music_downloader import __version__
 from music_downloader.config import BYTES_PER_MB
 from music_downloader.metadata.spotify import TrackInfo
+from music_downloader.persistence.sweep_repo import DECISIONS, Review
 from music_downloader.persistence.wishlist_repo import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.pipeline.album import FolderListing
 from music_downloader.pipeline.fetch import ALL_REJECTED, DOWNLOAD_FAILED, FILE_NOT_FOUND, GatedFetch
 from music_downloader.pipeline.search import RankedResults, clean_search_title
+from music_downloader.pipeline.sweep import SweepError
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.scorer import TIER_LABELS, TIER_LOSSLESS_24, quality_tier
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
@@ -141,6 +143,29 @@ def _wish_dict(wish: Wish) -> dict:
         "checks": wish.checks,
         "created_at": wish.created_at,
         "last_checked_at": wish.last_checked_at,
+    }
+
+
+def _review_dict(review: Review) -> dict:
+    return {
+        "stem": review.stem,
+        "why": review.reason,
+        "current": {
+            "path": review.current_path,
+            "quality": review.current_desc,
+            "duration_secs": review.current_len,
+            "cutoff_khz": review.current_cutoff,
+        },
+        "proposal": {
+            "path": review.proposal_path,
+            "quality": review.proposal_desc,
+            "duration_secs": review.proposal_len,
+            "cutoff_khz": review.proposal_cutoff,
+        },
+        "fingerprint_similarity": review.similarity,
+        "keep_both_name": review.both_name,
+        "created_at": review.created_at,
+        "offered_at": review.offered_at,
     }
 
 
@@ -403,6 +428,45 @@ class McpTools:
         wish = self.pipeline.wishlist_repo.get(wish_id)
         removed = wish is not None and self.pipeline.wishlist_remove(wish.chat_id, wish_id)
         return {"removed": removed}
+
+    def _sweep(self):
+        sweep = self.pipeline.sweep
+        if not sweep.enabled:
+            raise ToolError("The library sweep is off: LIBRARY_SWEEP_USERS is empty (see docs/sweep.md).")
+        return sweep
+
+    async def library_sweep_run(self, force: bool = False) -> dict:
+        """Start a library sweep in the background now; *force* checks every song whatever its tier and last check."""
+        sweep = self._sweep()
+        run, why = sweep.start("mcp", force)
+        return {
+            "started": run is not None,
+            "reason": why or None,
+            "run_id": run.id if run is not None else None,
+            "status": sweep.status(),
+        }
+
+    async def library_sweep_status(self) -> dict:
+        return self._sweep().status()
+
+    async def library_sweep_reviews(self) -> dict:
+        sweep = self._sweep()
+        reviews = await asyncio.to_thread(sweep.repo.pending_reviews)
+        return {"reviews": [_review_dict(r) for r in reviews]}
+
+    async def library_sweep_decide(self, stem: str, decision: str) -> dict:
+        """Decide a pair waiting for the ear: keep_mine, take_new or keep_both."""
+        sweep = self._sweep()
+        if decision not in DECISIONS:
+            raise ToolError(f"decision must be one of {', '.join(DECISIONS)}, not {decision!r}.")
+        review = await asyncio.to_thread(sweep.find_pending, stem.strip())
+        if review is None:
+            raise ToolError(f"No pair waits for {stem!r}: library_sweep_reviews lists the ones that do.")
+        try:
+            review, path = await sweep.decide(review.id, decision)
+        except SweepError as exc:
+            raise ToolError(str(exc)) from exc
+        return {"stem": review.stem, "decision": decision, "path": path}
 
     async def status(self) -> dict:
         slskd_up = await asyncio.to_thread(self.pipeline.slskd.is_up)

@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-10-07
+
+### Added
+
+- The library sweep, off until `LIBRARY_SWEEP_USERS` names someone. On
+  `LIBRARY_SWEEP_SCHEDULE`, Sundays at 04:00 by default, the bot measures every
+  song in the library with a strict decode and its spectral cutoff, bit depth
+  and rate, then looks on Soulseek for a better copy of the weak ones. Fake,
+  lossy, uncertain and damaged songs are searched every sweep, CD-quality songs
+  monthly, hi-res songs never. A better copy that a Chromaprint fingerprint
+  says is the same recording replaces the song and takes over its missing tags
+  and cover. The old file waits in `<library>/.sweep-replaced/` for
+  `LIBRARY_SWEEP_KEEP_DAYS`, 7 by default. A better copy that may be another
+  recording comes to you as two audio files with **Keep mine**, **Take new**
+  and **Keep both**. Keep both saves the proposal as a song of its own, named
+  after its extra performers, a bracket of its title or its album. Each sweep
+  ends with one message giving the counts per outcome and the replacements
+  made. `/sweep` starts one now, with `/sweep status`, `/sweep reviews` and
+  `/sweep force` next to it. Over MCP: `library_sweep_run`,
+  `library_sweep_status`, `library_sweep_reviews` and `library_sweep_decide`.
+  It works one song and one download at a time, waits
+  `LIBRARY_SWEEP_PAUSE_SECS` between searches, and a restart continues where it
+  stopped. Chat-delivery accounts never get it. See [Library sweep](sweep.md)
+- The image ships `fpcalc` from Chromaprint
+
+### Changed
+
+- The library index behind the duplicate check leaves hidden folders out
+
+### Fixed
+
+- MusicBrainz answers 503 when it is busy. The resolver now asks once more
+  after 2 seconds instead of giving up on the song
+
 ## [0.19.0] - 2026-10-07
 
 ### Added

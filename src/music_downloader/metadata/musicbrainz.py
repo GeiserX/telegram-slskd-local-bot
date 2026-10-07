@@ -22,6 +22,8 @@ API_URL = "https://musicbrainz.org/ws/2/recording"
 USER_AGENT = f"telegram-slskd-local-bot/{__version__} ( https://github.com/GeiserX/telegram-slskd-local-bot )"
 MIN_INTERVAL_SECS = 1.0
 TIMEOUT_SECS = 10.0
+# MusicBrainz answers 503 when it is busy or the client went over its rate: wait this long and ask once more.
+RETRY_503_SECS = 2.0
 
 # A recording MusicBrainz describes with one of these words is another performance
 # or a fragment of a mix, never the studio track a file name asks for.
@@ -95,6 +97,10 @@ class MusicBrainzClient:
             self._wait_turn()
             try:
                 response = self._http.get(API_URL, params=params, headers={"User-Agent": USER_AGENT})
+                if response.status_code == 503:
+                    self._sleep(RETRY_503_SECS)
+                    self._last_request = self._clock()
+                    response = self._http.get(API_URL, params=params, headers={"User-Agent": USER_AGENT})
                 response.raise_for_status()
                 recordings = response.json().get("recordings", [])
             except (httpx.HTTPError, ValueError):

@@ -30,6 +30,10 @@ next call takes; an id is valid for an hour.
 | `wishlist_add(track_id, wanted="any")` | Searches the track again every `WISHLIST_CHECK_HOURS`. `"any"` waits for any copy; `"better"` waits for a copy above the best one `search_copies` found for that track | `wishlist_add(track_id="t3fa9c1", wanted="better")` |
 | `wishlist_list()` | Every wish, from every chat | `wishlist_list()` |
 | `wishlist_remove(id)` | Removes a wish by the id `wishlist_list` shows | `wishlist_remove(id=4)` |
+| `library_sweep_run(force=false)` | Starts a [library sweep](sweep.md) in the background and returns at once with the run id and the status. `force=true` checks every song whatever its tier and last check. Only with `LIBRARY_SWEEP_USERS` set; otherwise a tool error | `library_sweep_run()` |
+| `library_sweep_status()` | The current or last sweep (position, counts per outcome, current file), songs per tier, pairs waiting, the schedule and the next start, whether `fpcalc` is there | `library_sweep_status()` |
+| `library_sweep_reviews()` | The pairs waiting for a decision: stem, why, both files' path, quality, length and cutoff, the fingerprint similarity and the name the proposal gets with `keep_both` | `library_sweep_reviews()` |
+| `library_sweep_decide(stem, decision)` | `keep_mine` deletes the proposal, `take_new` replaces the song with it (the song is parked for `LIBRARY_SWEEP_KEEP_DAYS`), `keep_both` adds it as a song of its own | `library_sweep_decide(stem="Nancy Sinatra - Bang Bang", decision="keep_both")` |
 | `status()` | Whether slskd answers, downloads waiting on a Save, Reject or Retry button in Telegram, MCP downloads running, the number of wishes, the upload cap and the version | `status()` |
 
 ## How a track is resolved
@@ -94,6 +98,13 @@ also has:
 
 When every remaining copy is rejected the result is `ok` false with `error` `"all_rejected"` and nothing is
 saved. `deliver="path"` is not gated.
+
+## Library sweep
+
+The four `library_sweep_*` tools drive the same sweep as `/sweep` in Telegram; [Library sweep](sweep.md) has
+the rules. They answer with a tool error while `LIBRARY_SWEEP_USERS` is empty. A sweep started over HTTP
+reports in Telegram when it ends, like the scheduled one. The stdio server can run a sweep as well, but it
+tells nobody: poll `library_sweep_status`. Two processes never sweep the same library at once.
 
 ## Connect over stdio
 

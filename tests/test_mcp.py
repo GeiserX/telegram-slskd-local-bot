@@ -400,6 +400,10 @@ class TestProtocol:
                 "status",
                 "album_listing",
                 "album_download",
+                "library_sweep_run",
+                "library_sweep_status",
+                "library_sweep_reviews",
+                "library_sweep_decide",
             }
             resolved = await client.call_tool("resolve_track", {"query": "bang bang"})
             track_id = resolved.structured_content["candidates"][0]["id"]

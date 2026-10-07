@@ -40,6 +40,7 @@ from music_downloader.pipeline import fetch as _fetch
 from music_downloader.pipeline import library as _library
 from music_downloader.pipeline import resolve as _resolve
 from music_downloader.pipeline import search as _search
+from music_downloader.pipeline import sweep as _sweep
 from music_downloader.pipeline import wishlist as _wishlist
 from music_downloader.pipeline.album import FolderListing
 from music_downloader.pipeline.fetch import FetchOutcome, GatedFetch, ProgressCallback, RejectCallback
@@ -113,6 +114,8 @@ class Pipeline:
         self.album_owner = ALBUM_OWNER_BOT
         self.library_index = LibraryIndex(self.db, config.output_dir)
         self.playlist_resolver = PlaylistResolver(self.spotify)
+        # The library sweep (LIBRARY_SWEEP_USERS); idle until started or scheduled.
+        self.sweep = _sweep.LibrarySweep(self)
 
     # ------------------------------------------------------------------ resolve
 

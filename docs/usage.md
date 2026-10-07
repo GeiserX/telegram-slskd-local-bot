@@ -30,6 +30,7 @@ lossless", with the frequency where it stops. Then you tap Save to library or Re
 | `/format` | Pick the format of tracks sent into this chat: Original (default), MP3 320 kbps or Opus 192 kbps. Chat delivery only; persists across restarts |
 | `/wishlist` | Tracks this chat is waiting for, each with a Remove button (see [Wishlist](#wishlist)) |
 | `/status` | Show active searches and downloads |
+| `/sweep` | Only for accounts in `LIBRARY_SWEEP_USERS`: look for better copies of the library's songs now; `/sweep status`, `/sweep reviews`, `/sweep force` (see [Library sweep](sweep.md)) |
 | `/history` | Show recent download history |
 | `/help` | Show help message |
 

@@ -31,6 +31,17 @@ jobs:
           chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
           ffmpeg -version | head -1
 
+      - name: Install fpcalc (Chromaprint, pinned static build, no apt)
+        # The library sweep's fingerprint tests need it; same reasoning as ffmpeg above.
+        timeout-minutes: 5
+        run: |
+          curl -fsSL --retry 3 -o /tmp/fpcalc.tgz \
+            https://github.com/acoustid/chromaprint/releases/download/v1.6.0/chromaprint-fpcalc-1.6.0-linux-x86_64.tar.gz
+          echo "946dc3eade645eb835c8d163c6bb354e092239988bff190b9c42589e8d5cf00a  /tmp/fpcalc.tgz" | sha256sum -c -
+          tar -xzf /tmp/fpcalc.tgz -C /tmp
+          install -m 755 /tmp/chromaprint-fpcalc-1.6.0-linux-x86_64/fpcalc /usr/local/bin/fpcalc
+          fpcalc -version
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:

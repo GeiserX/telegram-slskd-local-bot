@@ -94,7 +94,10 @@ class LibraryIndex:
         wiping would silence the duplicate check until the next pass.
         """
         rows = []
-        for dirpath, _, files in os.walk(self.root):
+        for dirpath, dirs, files in os.walk(self.root):
+            # Hidden folders hold no songs: the library sweep parks replaced
+            # originals and staged proposals in .sweep-replaced and .sweep-review.
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
             for name in files:
                 row = self._row(os.path.join(dirpath, name))
                 if row is not None:
@@ -128,6 +131,12 @@ class LibraryIndex:
                 row,
             )
         return True
+
+    def remove(self, path: str) -> None:
+        """Forget one file (the library sweep replaced or moved it)."""
+        rel_path = os.path.relpath(path, self.root)
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM library_index WHERE rel_path = ?", (rel_path,))
 
     def find_stems(self, stem: str) -> list[str]:
         """Every library file (paths relative to root) named *stem*, accents and case aside, by path."""

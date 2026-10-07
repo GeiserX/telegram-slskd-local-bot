@@ -140,6 +140,7 @@ nav:
       - Getting started: getting-started.md
       - Usage: usage.md
       - MCP server: mcp.md
+      - Library sweep: sweep.md
   - Reference:
       - Configuration: configuration.md
       - How it works: how-it-works.md
