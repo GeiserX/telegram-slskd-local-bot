@@ -662,3 +662,20 @@ class TestMusicBrainzRetry:
         client, calls, slept = self._client([503, 503, 200])
         assert client.search_recordings("Graham Central Station", "Jam") == []
         assert len(calls) == 2
+
+
+async def test_a_long_download_keeps_the_run_row_fresh(tmp_path, monkeypatch):
+    sweep, pipe = _sweep(tmp_path, _audit(cutoff=15.5))
+    beats = []
+    real = sweep.repo.save_run
+    monkeypatch.setattr(sweep.repo, "save_run", lambda run: (beats.append(time.time()), real(run)))
+
+    async def fetch(results, index, track, progress_for):
+        before = len(beats)
+        sweep._beat_at = 0.0
+        await progress_for(results[index], index)(None)
+        assert len(beats) == before + 1, "a progress update writes the row"
+        return await FakePipeline.fetch_for_library(pipe, results, index, track, progress_for)
+
+    pipe.fetch_for_library = fetch
+    await _run_once(sweep)

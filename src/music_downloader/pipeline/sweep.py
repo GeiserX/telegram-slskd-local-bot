@@ -87,6 +87,8 @@ CD_TRIES = 2
 OTHER_TRIES = 3
 # A running sweep row not written for this long belongs to a process that stopped.
 STALE_RUN_SECS = 15 * 60
+# While a song downloads, the run row is written at least this often (STALE_RUN_SECS reads it).
+HEARTBEAT_SECS = 60
 # The schedule loop wakes at least this often (purging parked originals).
 LOOP_TICK_SECS = 3600
 
@@ -305,10 +307,6 @@ def _cover_of(path: str) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
-async def _no_progress(_status) -> None:
-    return None
-
-
 class LibrarySweep:
     """The sweep of one library (OUTPUT_DIR), over a Pipeline. Front ends set *on_report*."""
 
@@ -325,6 +323,7 @@ class LibrarySweep:
         self._run: SweepRun | None = None
         self._decide_lock = asyncio.Lock()
         self._slot_reported: float | None = None
+        self._beat_at = 0.0
 
     # ------------------------------------------------------------ properties
 
@@ -430,6 +429,7 @@ class LibrarySweep:
                 result = await self._check_logged(name, run, pause)
                 run.done += 1
                 if result is None:
+                    self._heartbeat(run)
                     continue
                 pause = result.searched
                 run.counts[result.outcome] = run.counts.get(result.outcome, 0) + 1
@@ -479,6 +479,13 @@ class LibrarySweep:
             await self.on_report(report)
         except Exception:
             logger.exception("Sending the library sweep report failed")
+
+    def _heartbeat(self, run: SweepRun) -> None:
+        """Write the run row when it is older than HEARTBEAT_SECS, so no other process takes it for dead."""
+        now = time.time()
+        if now - self._beat_at >= HEARTBEAT_SECS:
+            self._beat_at = now
+            self.repo.save_run(run)
 
     async def _check_logged(self, name: str, run: SweepRun, pause: bool) -> SongResult | None:
         """check_song with its log line and its row written; None when the song was not due."""
@@ -566,7 +573,11 @@ class LibrarySweep:
         index = 0
         while index < len(copies) and tries > 0:
             tries -= 1
-            gated = await self.pipeline.fetch_for_library(copies, index, track, lambda _r, _i: _no_progress)
+
+            async def beat(_status, run=run) -> None:
+                self._heartbeat(run)
+
+            gated = await self.pipeline.fetch_for_library(copies, index, track, lambda _r, _i: beat)
             index = gated.index + 1
             outcome, result = gated.outcome, gated.result
             notes.extend(f"{r.result.basename}: {r.reason}" for r in gated.rejected)

@@ -484,8 +484,13 @@ _JOINER_RE = re.compile(r"^(?:[,&+/;:-]|and\b|x\b|vs\.?)\s*", re.IGNORECASE)
 _FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
+# Longest suffix kept in a keep-both name: file names stop at 255 bytes.
+_SUFFIX_MAX = 80
+
+
 def _clean_suffix(text: str) -> str:
-    return re.sub(r"\s+", " ", _FORBIDDEN.sub("", text)).strip(" .-")
+    text = re.sub(r"\s+", " ", _FORBIDDEN.sub("", text)).strip(" .-")
+    return text if len(text) <= _SUFFIX_MAX else text[:_SUFFIX_MAX].rsplit(" ", 1)[0].strip(" .-")
 
 
 def keep_both_suffix(stem: str, original: Audit, candidate: Audit) -> str:

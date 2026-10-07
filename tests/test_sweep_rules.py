@@ -382,3 +382,9 @@ class TestAuditRealFiles:
         noise.write_bytes(bytes(data))
         assert rules.strict_decode_ok(str(noise)) is False
         assert rules.audit(str(noise)).tier == rules.TIER_DAMAGED
+
+
+def test_a_long_album_is_cut_at_a_word():
+    cand = _cand(album="The Complete Recordings " + "Volume " * 30)
+    name = keep_both_name(STEM, "flac", _orig(), cand, lambda n: False)
+    assert len(name.encode()) < 200 and name.endswith("Volume).flac")
