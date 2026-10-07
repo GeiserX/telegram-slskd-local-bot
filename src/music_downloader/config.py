@@ -146,6 +146,17 @@ class Config:
         self.wishlist_check_hours = max(1, int(os.getenv("WISHLIST_CHECK_HOURS") or "24"))
         self.wishlist_pause_secs = max(0, int(os.getenv("WISHLIST_PAUSE_SECS") or "20"))
 
+        # The library sweep (docs/sweep.md): off unless LIBRARY_SWEEP_USERS
+        # names someone. Those accounts (library delivery only) get /sweep and
+        # the sweep's reports; the schedule is read in the container's time zone.
+        self.library_sweep_users = self._parse_id_set(os.getenv("LIBRARY_SWEEP_USERS", ""))
+        self.library_sweep_schedule = os.getenv("LIBRARY_SWEEP_SCHEDULE", "").strip()
+        from music_downloader.pipeline.sweep_rules import parse_schedule
+
+        parse_schedule(self.library_sweep_schedule)  # a typo stops the start, not the first sweep
+        self.library_sweep_pause_secs = max(0, int(os.getenv("LIBRARY_SWEEP_PAUSE_SECS") or "20"))
+        self.library_sweep_keep_days = max(0, int(os.getenv("LIBRARY_SWEEP_KEEP_DAYS") or "7"))
+
         # Keywords in file paths that indicate unwanted versions
         exclude_kw = os.getenv(
             "EXCLUDE_KEYWORDS",

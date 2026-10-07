@@ -107,6 +107,34 @@ def build_server(tools: McpTools) -> MCPServer:
         return await tools.wishlist_remove(id)
 
     @server.tool()
+    async def library_sweep_run(force: bool = False) -> dict[str, Any]:
+        """Start a library sweep now, in the background (it can take hours): every song is audited, and the
+        due ones (fake, lossy, uncertain, damaged every sweep; CD quality monthly; hi-res never) searched for a
+        better copy. force=true checks every song. Only when LIBRARY_SWEEP_USERS is set."""
+        return await tools.library_sweep_run(force)
+
+    @server.tool()
+    async def library_sweep_status() -> dict[str, Any]:
+        """The library sweep: whether one runs, its position and counts per outcome, the schedule and the next
+        start, songs per tier, and how many pairs wait for a decision."""
+        return await tools.library_sweep_status()
+
+    @server.tool()
+    async def library_sweep_reviews() -> dict[str, Any]:
+        """Pairs the library sweep could not settle alone: the song in the library and a better copy that may
+        be another recording, with why, both qualities, lengths, cutoffs and the fingerprint similarity."""
+        return await tools.library_sweep_reviews()
+
+    @server.tool()
+    async def library_sweep_decide(
+        stem: str, decision: Literal["keep_mine", "take_new", "keep_both"]
+    ) -> dict[str, Any]:
+        """Decide a pair by its stem ("Artist - Title"): keep_mine deletes the proposal, take_new replaces the
+        song with it (the original is parked for LIBRARY_SWEEP_KEEP_DAYS), keep_both adds it as a song of its
+        own named after what sets it apart."""
+        return await tools.library_sweep_decide(stem, decision)
+
+    @server.tool()
     async def status() -> dict[str, Any]:
         """Whether slskd answers, downloads waiting or running, wishes, the upload cap and the version."""
         return await tools.status()

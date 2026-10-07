@@ -174,6 +174,78 @@ CREATE TABLE IF NOT EXISTS album_jobs (
     updated_at REAL NOT NULL
 );
 
+-- The library sweep (LIBRARY_SWEEP_USERS, pipeline/sweep.py). sweep_songs:
+-- one row per library file (file = its name under OUTPUT_DIR), its audit
+-- (JSON) taken at size/mtime, when it was last checked and how that ended;
+-- declined_at = the owner kept their file over a proposal. sweep_runs: one
+-- row per sweep, counts is a JSON object of outcomes. sweep_reviews: pairs
+-- waiting for the owner's ear (decision NULL until Keep mine, Take new or Keep
+-- both). sweep_replacements: originals parked under .sweep-replaced until
+-- purged. Times are Unix timestamps.
+CREATE TABLE IF NOT EXISTS sweep_songs (
+    file TEXT PRIMARY KEY,
+    stem TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mtime REAL NOT NULL,
+    tier TEXT NOT NULL,
+    audit TEXT NOT NULL,
+    last_checked_at REAL,
+    outcome TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    declined_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS sweep_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger TEXT NOT NULL,
+    force INTEGER NOT NULL DEFAULT 0,
+    owner TEXT NOT NULL,
+    status TEXT NOT NULL,
+    total INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    current TEXT NOT NULL DEFAULT '',
+    counts TEXT NOT NULL DEFAULT '{}',
+    started_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    finished_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS sweep_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stem TEXT NOT NULL,
+    current_path TEXT NOT NULL,
+    proposal_path TEXT NOT NULL,
+    proposal_ext TEXT NOT NULL,
+    both_name TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    current_desc TEXT NOT NULL DEFAULT '',
+    proposal_desc TEXT NOT NULL DEFAULT '',
+    current_len REAL,
+    proposal_len REAL,
+    current_cutoff REAL,
+    proposal_cutoff REAL,
+    similarity REAL,
+    run_id INTEGER,
+    created_at REAL NOT NULL,
+    offered_at REAL,
+    decided_at REAL,
+    decision TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sweep_replacements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stem TEXT NOT NULL,
+    new_path TEXT NOT NULL,
+    parked_path TEXT NOT NULL,
+    from_desc TEXT NOT NULL DEFAULT '',
+    to_desc TEXT NOT NULL DEFAULT '',
+    how TEXT NOT NULL,
+    run_id INTEGER,
+    replaced_at REAL NOT NULL,
+    purged_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sweep_reviews_pending ON sweep_reviews(decision, stem);
 CREATE INDEX IF NOT EXISTS idx_album_jobs_status ON album_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_library_index_norm_stem ON library_index(norm_stem);
 CREATE INDEX IF NOT EXISTS idx_wishlist_chat ON wishlist(chat_id);

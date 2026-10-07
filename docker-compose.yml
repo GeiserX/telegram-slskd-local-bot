@@ -1,6 +1,6 @@
 services:
   slskd-importer:
-    image: drumsergio/telegram-slskd-local-bot:0.19.0
+    image: drumsergio/telegram-slskd-local-bot:0.20.0
     build: .
     container_name: slskd_importer
     restart: unless-stopped
@@ -44,6 +44,13 @@ services:
       LOSSLESS_GATE_MAX_REJECTIONS: ${LOSSLESS_GATE_MAX_REJECTIONS:-3}
       WISHLIST_CHECK_HOURS: ${WISHLIST_CHECK_HOURS:-24}
       WISHLIST_PAUSE_SECS: ${WISHLIST_PAUSE_SECS:-20}
+      # Library sweep, see docs/sweep.md. Off while LIBRARY_SWEEP_USERS is empty;
+      # set it to your Telegram user id for a weekly search for better copies of
+      # the library's songs, with the doubtful ones sent to you to judge
+      LIBRARY_SWEEP_USERS: ${LIBRARY_SWEEP_USERS:-}
+      LIBRARY_SWEEP_SCHEDULE: ${LIBRARY_SWEEP_SCHEDULE:-weekly:sun:04:00}
+      LIBRARY_SWEEP_PAUSE_SECS: ${LIBRARY_SWEEP_PAUSE_SECS:-20}
+      LIBRARY_SWEEP_KEEP_DAYS: ${LIBRARY_SWEEP_KEEP_DAYS:-7}
       EXCLUDE_KEYWORDS: ${EXCLUDE_KEYWORDS:-live,remix,acoustic,karaoke,instrumental,cover,demo,radio edit,tribute,remaster}
       FILENAME_TEMPLATE: ${FILENAME_TEMPLATE:-{artist} - {title}}
 

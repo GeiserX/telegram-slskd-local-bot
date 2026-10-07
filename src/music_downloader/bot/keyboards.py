@@ -288,3 +288,20 @@ def build_album_retry_keyboard(dl_id: str) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+# Library sweep decisions: swp:<review id>:<m|n|b> (Keep mine, Take new, Keep both).
+SWEEP_CHOICES = {"m": "keep_mine", "n": "take_new", "b": "keep_both"}
+
+
+def build_sweep_review_keyboard(review_id: int) -> InlineKeyboardMarkup:
+    """Under the proposal of a library sweep pair: keep the library's file, take the proposal, or keep both."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Keep mine", callback_data=f"swp:{review_id}:m"),
+                InlineKeyboardButton("Take new", callback_data=f"swp:{review_id}:n"),
+                InlineKeyboardButton("Keep both", callback_data=f"swp:{review_id}:b"),
+            ]
+        ]
+    )
