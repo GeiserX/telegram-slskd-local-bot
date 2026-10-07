@@ -126,6 +126,8 @@ SWEEP_MISSES = [
 class TestFolding:
     def test_curly_apostrophe_accents_and_ampersand_fold_away(self):
         assert fold("Walkin’ on the Sun") == fold("Walkin' On The Sun") == "walkin on the sun"
+        # A file name often drops the apostrophe altogether.
+        assert fold("Dont Stop Me Now") == fold("Don’t Stop Me Now") == fold("Don't Stop Me Now")
         assert fold("Beyoncé & Jay-Z") == "beyonce and jay z"
         assert fold("Voyage, voyage") == fold("Voyage Voyage")
 
