@@ -26,7 +26,7 @@ from music_downloader.pipeline.resolve import (
     track_from_file,
 )
 from music_downloader.pipeline.search import RankedResults
-from music_downloader.search.slskd_client import SearchResult
+from music_downloader.search.slskd_client import SearchResult, SlskdUnavailableError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "musicbrainz"
 
@@ -342,6 +342,13 @@ class TestPipelineResolveMatch:
     @pytest.mark.asyncio
     async def test_no_copies_leaves_the_spotify_candidates(self):
         pipeline = _pipeline([])
+        candidates = await pipeline.resolve_match("Toshiro Masuda - The Raising Fighting Spirit")
+        assert [c.track.source for c in candidates] == ["spotify", "spotify"]
+
+    @pytest.mark.asyncio
+    async def test_slskd_down_leaves_the_metadata_candidates(self):
+        pipeline = _pipeline([])
+        pipeline.slskd.search.side_effect = SlskdUnavailableError("down")
         candidates = await pipeline.resolve_match("Toshiro Masuda - The Raising Fighting Spirit")
         assert [c.track.source for c in candidates] == ["spotify", "spotify"]
 

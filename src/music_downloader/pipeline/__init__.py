@@ -48,7 +48,7 @@ from music_downloader.pipeline.wishlist import WishDelivery
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.scorer import ResultScorer
-from music_downloader.search.slskd_client import SearchResult, SlskdClient
+from music_downloader.search.slskd_client import SearchResult, SlskdClient, SlskdUnavailableError
 
 __all__ = [
     "AlbumJob",
@@ -135,7 +135,11 @@ class Pipeline:
             return candidates
 
         async def search(text: str) -> list:
-            return await self.slskd.search(text, timeout_secs=self.config.search_timeout_secs)
+            try:
+                return await self.slskd.search(text, timeout_secs=self.config.search_timeout_secs)
+            except SlskdUnavailableError:
+                logger.warning("slskd unreachable: no Soulseek candidate for %r", text)
+                return []
 
         def rank(responses: list, track: TrackInfo) -> RankedResults:
             return self.rank(responses, track, "library")
