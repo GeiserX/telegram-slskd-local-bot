@@ -44,6 +44,8 @@ class _TrackEntry:
     # The last search_copies for this track: its profile and its ranked copies.
     profile: str | None = None
     ranked: list[SearchResult] = field(default_factory=list)
+    # A Soulseek candidate's raw slskd responses: search_copies ranks these instead of searching again.
+    responses: list | None = None
 
 
 @dataclass
@@ -91,6 +93,8 @@ def _track_dict(track: TrackInfo) -> dict:
         "year": track.year,
         "duration_secs": track.duration_secs,
         "spotify_url": track.spotify_url,
+        "source": track.source,
+        "source_id": track.source_id,
     }
 
 
@@ -173,27 +177,48 @@ class McpTools:
 
     # ------------------------------------------------------------------ tools
 
-    async def resolve_track(self, query: str) -> dict:
-        """Spotify candidates for *query*, each with a track id."""
-        query = query.strip()
-        if not query:
-            raise ToolError("The query is empty.")
-        tracks = await asyncio.to_thread(self.pipeline.resolve, query)
-        return {"candidates": [{"id": self.tracks.put(_TrackEntry(t)), **_track_dict(t)} for t in tracks]}
+    async def resolve_track(
+        self, query: str = "", artist: str = "", title: str = "", duration_secs: float | None = None
+    ) -> dict:
+        """Candidates for *query* (or *artist* and *title*), confident first, each with a track id.
+
+        Spotify first; MusicBrainz when Spotify has no confident candidate; the
+        best Soulseek copy, named after its file, when neither has one.
+        *duration_secs* (the length of the file in hand) makes length part of confidence.
+        """
+        query, artist, title = query.strip(), artist.strip(), title.strip()
+        if not query and not (artist and title):
+            raise ToolError("Give a query, or both artist and title.")
+        candidates = await self.pipeline.resolve_match(query, artist, title, duration_secs)
+        return {
+            "confident": any(c.confident for c in candidates),
+            "candidates": [
+                {
+                    "id": self.tracks.put(_TrackEntry(c.track, responses=c.responses)),
+                    **_track_dict(c.track),
+                    "confident": c.confident,
+                }
+                for c in candidates
+            ],
+        }
 
     async def search_copies(self, track_id: str, profile: str = "library", limit: int = 10) -> dict:
         """Soulseek copies of a resolved track, best first under *profile*, each with a copy id.
 
         Searches "artist title" and, when that finds nothing, the title alone.
+        A Soulseek candidate's copies come from the search that found it.
         """
         if profile not in PROFILES:
             raise ToolError(f"profile must be one of {', '.join(PROFILES)}, not {profile!r}.")
         entry = self._track(track_id)
         track = entry.track
-        clean_title = clean_search_title(track.title)
-        ranked: RankedResults = await self.pipeline.search(f"{track.artist} {clean_title}", track, profile)
-        if not ranked:
-            ranked = await self.pipeline.search(clean_title, track, profile)
+        if entry.responses is not None:
+            ranked: RankedResults = self.pipeline.rank(entry.responses, track, profile)
+        else:
+            clean_title = clean_search_title(track.title)
+            ranked = await self.pipeline.search(f"{track.artist} {clean_title}", track, profile)
+            if not ranked:
+                ranked = await self.pipeline.search(clean_title, track, profile)
         entry.profile, entry.ranked = profile, list(ranked)
         shown = list(ranked)[: max(1, limit)]
         return {

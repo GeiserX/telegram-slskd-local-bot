@@ -19,6 +19,7 @@ from music_downloader.pipeline import Pipeline
 from music_downloader.pipeline import library as _library
 from music_downloader.pipeline.album import REASON_UNREACHABLE, FolderListing
 from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, FetchOutcome
+from music_downloader.pipeline.resolve import Candidate
 from music_downloader.pipeline.search import RankedResults
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.slskd_client import DownloadStatus, SearchResult
@@ -64,6 +65,9 @@ class FakePipeline:
         self.output_dir = tmp_path / "music"
         self.results = results if results is not None else [_flac(16, 0), _mp3(320, 1), _flac(16, 2, 60_000_000)]
         self.search_queries = []
+        self.resolve_calls = []
+        self.candidates = None
+        self.ranked_responses = []
         self.saved = []
         self.slskd = MagicMock()
         self.slskd.is_up.return_value = True
@@ -89,6 +93,16 @@ class FakePipeline:
 
     def resolve(self, query):
         return [TRACK] if query else []
+
+    async def resolve_match(self, query, artist="", title="", duration_secs=None):
+        self.resolve_calls.append((query, artist, title, duration_secs))
+        if self.candidates is not None:
+            return self.candidates
+        return [Candidate(t, True) for t in self.resolve(query)]
+
+    def rank(self, responses, track, profile):
+        self.ranked_responses.append((responses, track, profile))
+        return RankedResults(self.results, 0)
 
     async def search(self, query, track, profile, **_):
         self.search_queries.append((query, profile))

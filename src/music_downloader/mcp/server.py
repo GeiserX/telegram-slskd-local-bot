@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 SERVER_NAME = "telegram-slskd-local-bot"
 HTTP_PATH = "/mcp"
 INSTRUCTIONS = (
-    "Find a song on Soulseek through slskd and save it. Chain the ids: resolve_track(query) gives track ids, "
+    "Find a song on Soulseek through slskd and save it. Chain the ids: resolve_track(query) gives track ids "
+    "(from Spotify, MusicBrainz or Soulseek file names), "
     "search_copies(track_id) gives copy ids ranked best first, download(copy_id) fetches one and saves it to the "
     "library (or leaves it in the downloads folder with deliver='path'). album_listing(copy_id) and "
     "album_download(copy_id) do the same for the whole folder the copy came from. Ids expire after an hour."
@@ -30,9 +31,14 @@ def build_server(tools: McpTools) -> MCPServer:
     server = MCPServer(name=SERVER_NAME, version=__version__, instructions=INSTRUCTIONS)
 
     @server.tool()
-    async def resolve_track(query: str) -> dict[str, Any]:
-        """Spotify candidates for a free-text query ("artist - title" works best), each with a track id."""
-        return await tools.resolve_track(query)
+    async def resolve_track(
+        query: str = "", artist: str = "", title: str = "", duration_secs: float | None = None
+    ) -> dict[str, Any]:
+        """Track candidates for a query ("artist - title" works best) or an artist and title, each with a
+        track id, a source (spotify, musicbrainz or soulseek) and confident true when artist, title and,
+        given duration_secs, length all match. Spotify first; MusicBrainz when Spotify has no confident
+        candidate; the best Soulseek copy, named after its file, when neither has one."""
+        return await tools.resolve_track(query, artist, title, duration_secs)
 
     @server.tool()
     async def search_copies(

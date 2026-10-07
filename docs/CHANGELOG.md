@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-10-07
+
+### Added
+
+- MCP `resolve_track` marks each candidate `confident` when its artist and
+  title are the asked ones and, given `duration_secs`, its length is within
+  8 seconds. Spelling is folded first: accents, apostrophes (curly or
+  missing), "&" against "and", a leading "The", and suffixes that name the same
+  recording (" - Single Edit", " - 2011 Remaster", "(feat. ...)"). A suffix that
+  names another recording (" - Live", "(Remix)") still tells the titles apart
+- When Spotify has no confident candidate, `resolve_track` asks MusicBrainz;
+  when neither has one, it searches Soulseek and offers the best copy, named
+  after its file. Every candidate says its `source` (`spotify`, `musicbrainz`
+  or `soulseek`) and a `source_id`, and works in `search_copies`, `download`,
+  the album tools and `wishlist_add` like a Spotify one
+- `resolve_track` takes `artist` and `title` instead of a query, so a caller
+  that already knows them does not have to rely on the query being split
+
 ## [0.17.1] - 2026-10-04
 
 ### Fixed

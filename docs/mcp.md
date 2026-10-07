@@ -20,7 +20,7 @@ next call takes; an id is valid for an hour.
 
 | Tool | What it does | Example call |
 |------|--------------|--------------|
-| `resolve_track(query)` | Spotify candidates for a free-text query, each with a track id, artist, title, album, year and duration | `resolve_track(query="Nancy Sinatra - Bang Bang")` |
+| `resolve_track(query, artist, title, duration_secs)` | Track candidates for a free-text query, or for an artist and title, confident ones first, each with a track id, artist, title, album, year, duration, `source` (`spotify`, `musicbrainz` or `soulseek`), `source_id` and `confident`. Spotify first, MusicBrainz when Spotify has no confident candidate, the best Soulseek copy when neither has one. See [How a track is resolved](#how-a-track-is-resolved) | `resolve_track(artist="Graham Central Station", title="Jam", duration_secs=219.9)` |
 | `search_copies(track_id, profile="library", limit=10)` | Soulseek copies of that track, best first, each with a copy id, format, quality, quality tier, size, duration, source user, score, `lossless` and `fits_cap` (under `TELEGRAM_MAX_UPLOAD_MB`). `profile="library"` puts lossless first; `"chat"` ranks for sound per megabyte. Searches "artist title", then the title alone | `search_copies(track_id="t3fa9c1", profile="library", limit=5)` |
 | `download(copy_id, deliver="library")` | Downloads the copy and waits for it, up to `DOWNLOAD_TIMEOUT_SECS`, sending progress notifications. `deliver="library"` renames it, embeds the cover, moves it into `OUTPUT_DIR` and records it in the history; `"path"` leaves the file in `DOWNLOAD_DIR` and returns its path. Both return the lossless check verdict (FLAC, WAV and AIFF; `null` otherwise) | `download(copy_id="c81d0e2", deliver="library")` |
 | `album_listing(copy_id)` | The audio files of the peer folder the copy came from, usually its whole release: name, format, quality, size and duration of each, the total size and the formats present. `answered` is false, with a `reason` (`no_answer`, `unreachable`), when the peer is offline or does not answer within 30 s; `no_audio` when the folder holds no audio | `album_listing(copy_id="c81d0e2")` |
@@ -31,6 +31,33 @@ next call takes; an id is valid for an hour.
 | `wishlist_list()` | Every wish, from every chat | `wishlist_list()` |
 | `wishlist_remove(id)` | Removes a wish by the id `wishlist_list` shows | `wishlist_remove(id=4)` |
 | `status()` | Whether slskd answers, downloads waiting on a Save, Reject or Retry button in Telegram, MCP downloads running, the number of wishes, the upload cap and the version | `status()` |
+
+## How a track is resolved
+
+`resolve_track` asks Spotify first. A candidate is `confident` when its artist and title are the asked ones
+once spelling is folded and, if you pass `duration_secs` (the length of the file you have), when it lasts within
+8 seconds of it. Folding ignores accents, apostrophes (straight, curly or missing), `&` against "and", a leading
+"The", and suffixes that name the same recording: " - Single Edit", " - 2011 Remaster", "(feat. ...)",
+"(From ...)", "Mono". A suffix that names another recording, such as " - Live", "(Remix)", " - Acoustic" or
+"Karaoke", keeps the titles apart. The artist matches when one name holds the other, so "Kevin Rowland & Dexys
+Midnight Runners" matches "Dexys Midnight Runners".
+
+When no Spotify candidate is confident, the server asks [MusicBrainz](https://musicbrainz.org) for recordings
+of that artist and title. It sends no key, at most one request per second, with a User-Agent that names this
+project. Recordings MusicBrainz marks as live or a remix are left out unless the asked title says so. Its
+confident recordings come first, `source` `musicbrainz`, followed by the Spotify candidates.
+
+When neither has a confident candidate, the server searches Soulseek for "artist title" and turns the best copy
+into a candidate with `source` `soulseek`, `confident` false, and the artist, title and length read from the file
+name. Its `search_copies` ranks the copies of that same search instead of searching again.
+
+The fallbacks need both an artist and a title. Pass them as `artist` and `title`, write the query as
+"Artist - Title", or use a free-text query whose artist Spotify recognises at its start or end. A query that is
+only a title gets the Spotify candidates and nothing more.
+
+Every candidate's track id works the same way in `search_copies`, `download`, `album_listing`,
+`album_download` and `wishlist_add`, whatever its source. A wish keeps the track's `source` and `source_id`
+(`spotify:track:<id>`, `musicbrainz:recording:<mbid>`, `soulseek:<user>:<path>`).
 
 A typical chain: `resolve_track` → `search_copies` with the track id → `download` with the copy id → `history`.
 For the whole release: `album_listing` with the same copy id, then `album_download`.

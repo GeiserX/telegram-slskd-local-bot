@@ -40,7 +40,7 @@ Configuration via `.env` (see `.env.example`).
   - `config.py` — all environment variables and their handling (incl. the upload cap: `BYTES_PER_MB`, `DEFAULT_UPLOAD_LIMIT_BYTES`, `TELEGRAM_MAX_UPLOAD_MB`; the local Bot API server: `TELEGRAM_API_BASE_URL`, `TELEGRAM_UPLOAD_TIMEOUT_SECS`, `LOCAL_SERVER_MAX_UPLOAD_MB`; MCP: `MCP_PORT`, `MCP_HOST`, `MCP_TOKEN`, `telegram_owner_id`; album downloads: `ALBUM_TIMEOUT_SECS`)
   - `pipeline/` — everything between a query and a file ready to hand over; never imports `telegram` (`tests/test_pipeline_no_telegram.py` enforces it)
     - `__init__.py` — `Pipeline`: owns the Spotify resolver, slskd client, scorer, file processor, repos and library index; `resolve`, `search`, `rank`, `fetch`, `save`, `discard`, `find_similar`, `library_index_loop`
-    - `resolve.py` — Spotify lookup, "Artist - Title" parsing, synthetic tracks for direct search
+    - `resolve.py` — Spotify lookup, "Artist - Title" parsing, synthetic tracks for direct search; `match` (folded artist/title + length within `MATCH_MAX_DIFF_SECS` = `confident`, MusicBrainz when Spotify has none) and `soulseek_candidate` (best copy named from its file), joined by `Pipeline.resolve_match` for the MCP `resolve_track`
     - `search.py` — query cleanup and fallbacks, the title guard, `rank()` (lossless-first or chat order, unknown-length copies never lead) returning `RankedResults` (`.hidden` = copies the guard dropped)
     - `fetch.py` — enqueue/wait/locate/lossless check as `FetchOutcome`; Opus conversion and the bitrate ladder that fits the cap; the `/format` send formats (`SEND_FORMATS`, `already_in_format`, `transcode`)
     - `library.py` — artwork, history rows, deleting sources, the orphan sweep loop
@@ -108,6 +108,7 @@ Exclude keywords filter out live/remix/etc unless the original title contains th
 ## External Dependencies
 
 - **Spotify API**: Client Credentials flow (no user login). Used only for metadata resolution.
+- **MusicBrainz API**: no key; `metadata/musicbrainz.py` sends a User-Agent naming the repo and at most one request per second. Only the MCP resolver's fallback uses it.
 - **slskd API**: REST API with API key auth. Used for search, download, and file management.
 - **Telegram Bot API**: Long-polling mode. Restricted to allowed user IDs via `TELEGRAM_ALLOWED_USERS`. Cloud API by default (50 MB uploads); with `TELEGRAM_API_BASE_URL` a local Bot API server (compose profile `bigfiles`, 2000 MB uploads), wired in `bot/handlers.py` `_configure_api_server`.
 
