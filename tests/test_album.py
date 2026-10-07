@@ -292,6 +292,12 @@ class TestFetchFolder:
             outcomes = await fetch_folder(slskd, processor, _listing(names), 600, 7200, on_progress, on_file)
         assert [o.error for o in outcomes] == [None, DOWNLOAD_FAILED, DOWNLOAD_FAILED, DOWNLOAD_FAILED, FILE_NOT_FOUND]
         assert [o.state for o in outcomes[1:4]] == ["Completed, Errored", "Timeout", "slskd went away"]
+        # Every file given up on is cancelled in slskd; the one that finished (E, not found on disk) is not.
+        assert [c.args[1].rsplit("\\", 1)[-1] for c in slskd.cancel_downloads.call_args_list] == [
+            "02 - B.flac",
+            "03 - C.flac",
+            "04 - D.flac",
+        ]
         assert finished == [(i, o.error) for i, o in enumerate(outcomes)]
         assert (0, 5, "Queued", 0.0) in progress and (0, 5, "InProgress", 40.0) in progress
         assert (0, 5, "Completed, Succeeded", 100.0) in progress
@@ -311,6 +317,7 @@ class TestFetchFolder:
         outcomes = await fetch_folder(slskd, _processor(tmp_path), _listing(), 600, 150, None, on_file, clock)
         assert [o.error for o in outcomes] == [None, None, DOWNLOAD_FAILED]
         assert outcomes[2].state == "Timeout"
+        slskd.cancel_downloads.assert_called_once_with(PEER, _listing().files[2].filename)
         assert slskd.wait_for_download.await_count == 2
         # The second file only had what was left of the album cap.
         assert slskd.wait_for_download.await_args_list[1].kwargs["timeout_secs"] == 50
@@ -356,7 +363,7 @@ class TestFetchFolder:
         outcomes = await fetch_folder(slskd, _processor(tmp_path), _listing(), 600, 7200, boom, boom)
         assert [o.ok for o in outcomes] == [True, True, True]
 
-    async def test_cancel_drops_the_wait_and_leaves_the_rest(self, tmp_path):
+    async def test_cancel_drops_the_wait_and_cancels_the_rest_in_slskd(self, tmp_path):
         slskd = _slskd()
         cancel = asyncio.Event()
         landed = _waiter(tmp_path, {})
@@ -378,6 +385,10 @@ class TestFetchFolder:
         )
         assert [o.ok for o in outcomes] == [True] and finished == [0]
         assert slskd.wait_for_download.await_count == 2
+        # The file being waited on and the one after it are cancelled in slskd.
+        assert [c.args for c in slskd.cancel_downloads.call_args_list] == [
+            (PEER, f.filename) for f in _listing().files[1:]
+        ]
 
     async def test_empty_listing_does_nothing(self, tmp_path):
         slskd = _slskd()

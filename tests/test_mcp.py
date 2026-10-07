@@ -53,13 +53,15 @@ class FakePipeline:
     wishlist_find = Pipeline.wishlist_find
     wishlist_list = Pipeline.wishlist_list
     wishlist_remove = Pipeline.wishlist_remove
+    fetch_for_library = Pipeline.fetch_for_library
 
     def __init__(self, tmp_path, results=None):
         db = Database(str(tmp_path / "importer.db"))
         self.history_repo = HistoryRepository(db)
         self.wishlist_repo = WishlistRepository(db)
         self.pending_repo = PendingRepository(db)
-        self.config = SimpleNamespace(telegram_owner_id=OWNER)
+        self.config = SimpleNamespace(telegram_owner_id=OWNER, lossless_gate=True, lossless_gate_max_rejections=3)
+        self.discarded = []
         self.upload_limit_bytes = 50_000_000
         self.output_dir = tmp_path / "music"
         self.results = results if results is not None else [_flac(16, 0), _mp3(320, 1), _flac(16, 2, 60_000_000)]
@@ -103,6 +105,9 @@ class FakePipeline:
 
     async def record_history(self, track, result, status, filename=None):
         await _library.record_history(self.history_repo, track, result, status, filename)
+
+    async def discard(self, path, username="", transfer_id=""):
+        self.discarded.append(path)
 
     async def save(self, source_path, track, result, transfer_id=""):
         self.saved.append((source_path, transfer_id))

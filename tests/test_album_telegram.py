@@ -334,7 +334,7 @@ class TestGetAll:
             ("Echoes", "send_failed", "album"),
         }
 
-    async def test_timed_out_files_say_slskd_keeps_them_and_nothing_saves_them(self, tmp_path):
+    async def test_timed_out_files_are_cancelled_in_slskd(self, tmp_path):
         bot = _bot(tmp_path)
         bot.slskd.wait_for_download = _waiter(tmp_path, {"02 - Pillow of Winds.flac": None})
         _offer(bot)
@@ -345,8 +345,10 @@ class TestGetAll:
         await _finish(bot)
         summary = _status_texts(status)[-1]
         assert "• <code>02 - Pillow of Winds.flac</code>: Timeout" in summary
-        assert "⏳ 1 stopped moving or ran past the album's time limit: slskd keeps their transfers" in summary
-        assert "a file that lands later is not saved" in summary
+        assert (
+            "⏳ 1 stopped moving or ran past the album's time limit: their transfers were cancelled in slskd" in summary
+        )
+        bot.slskd.cancel_downloads.assert_called_once_with(PEER, f"{FOLDER}\\02 - Pillow of Winds.flac")
 
     async def test_the_album_runs_outside_ptbs_tasks_so_a_stop_never_waits_on_it(self, tmp_path):
         bot = _bot(tmp_path)
@@ -416,12 +418,16 @@ class TestCancel:
         assert "Album download stopped" in update.message.reply_text.call_args.args[0]
         summary = _status_texts(status)[-1]
         assert "✅ Saved 1 of 3" in summary
-        assert "⏹ Cancelled with 2 not fetched: slskd keeps their transfers" in summary
+        assert "⏹ Cancelled with 2 not fetched: their transfers were cancelled in slskd" in summary
         assert os.listdir(tmp_path / "music") == ["Pink Floyd - One of These Days.flac"]
         [job] = bot.pipeline.album_repo.list_by_status(ALBUM_CANCELLED)
         assert job.unfinished == [1, 2]
-        # Only the saved file's finished transfer is forgotten; the unfinished ones stay in slskd.
+        # Only the saved file's finished transfer is forgotten; the unfinished ones are cancelled.
         assert {c.args for c in bot.slskd.remove_transfer.call_args_list} <= {(PEER, "tx-01")}
+        assert [c.args[1].rsplit("\\", 1)[-1] for c in bot.slskd.cancel_downloads.call_args_list] == [
+            "02 - Pillow of Winds.flac",
+            "06 - Echoes.mp3",
+        ]
         assert bot.slskd.wait_for_download.await_count == 2
 
 

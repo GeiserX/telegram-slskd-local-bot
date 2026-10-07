@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-10-07
+
+### Added
+
+- The lossless gate keeps lossless files made from lossy ones out of the
+  library. A copy headed for the library (a track you save, an `/import` track,
+  the MCP `download` with `deliver="library"`) whose spectrum stops below
+  16 kHz (44.1 or 48 kHz files) or below 19.5 kHz (hi-res files, an upsampled
+  fake) is deleted and the next copy on the result list downloaded instead. The
+  status message says which copy was rejected and why ("#1 rejected: transcoded
+  from lossy, cutoff 14.0 kHz"), and so does the MCP result (`rejected`). After
+  `LOSSLESS_GATE_MAX_REJECTIONS` rejected copies (3) the next copy is kept and
+  flagged; when nothing is kept, or a flagged copy is, the bot offers "Wait for
+  a better copy". `LOSSLESS_GATE=false` turns it off. Chat delivery and album
+  downloads are not gated. Rejected copies are recorded in the history as
+  `lossy_source`
+- `ORPHAN_SWEEP_HOURS` (default 6): leftover files in `DOWNLOAD_DIR` that
+  nothing waits on are deleted after this many hours, at startup and hourly
+
+### Changed
+
+- `/import` tracks headed for the library now run the lossless check, which
+  the gate needs
+- `DOWNLOAD_CLEANUP_HOURS` now only sets how long a download waiting on a
+  button is kept; the sweep of leftover files follows `ORPHAN_SWEEP_HOURS`.
+  `DOWNLOAD_CLEANUP_HOURS=0` no longer turns the sweep off: set
+  `ORPHAN_SWEEP_HOURS=0` for that
+
+### Fixed
+
+- A download the bot gave up on kept running in slskd: after a timeout the
+  files landed later with nobody to pick them up. Every transfer the bot gives
+  up on (timed out, failed, or cancelled, for one track or an album file) is
+  now cancelled in slskd and removed from its list, and whatever of it already
+  landed in `DOWNLOAD_DIR` is deleted
+
 ## [0.17.1] - 2026-10-04
 
 ### Fixed

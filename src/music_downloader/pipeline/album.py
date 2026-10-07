@@ -23,7 +23,14 @@ import mutagen.id3
 from music_downloader.formats import AUDIO_EXTENSIONS
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.album_repo import FileOutcome, FolderFile
-from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, ENQUEUE_FAILED, FILE_NOT_FOUND, locate_landed
+from music_downloader.pipeline.fetch import (
+    DOWNLOAD_FAILED,
+    ENQUEUE_FAILED,
+    FILE_NOT_FOUND,
+    abandon,
+    locate,  # noqa: F401  (Pipeline.album_recover and the tests reach it here)
+    locate_landed,
+)
 from music_downloader.processor.file_handler import FileProcessor
 from music_downloader.search.slskd_client import DownloadStatus, SlskdClient
 from music_downloader.tools.embed_artwork import fetch_spotify_artwork
@@ -151,30 +158,6 @@ def _error_detail(exc: Exception) -> str:
     return (response.text or "").strip() or response.reason or f"HTTP {response.status_code}"
 
 
-def locate(processor: FileProcessor, username: str, remote_filename: str, folder_only: bool = False) -> str | None:
-    """Where slskd put *remote_filename*: <download dir>[/<username>]/<remote folder name>/<file> first.
-
-    Album files share names across releases ("01 - Intro.flac"), so the file
-    inside a folder named like the remote one wins over a bare name match.
-    *folder_only* skips that bare name match: after a restart another album's
-    file of the same name may be the only one on disk.
-    """
-    parts = remote_filename.split("\\")
-    basename, leaf = parts[-1], parts[-2] if len(parts) > 1 else ""
-    if leaf:
-        root = os.path.realpath(processor.download_dir)
-        for candidate in (
-            os.path.join(processor.download_dir, leaf, basename),
-            os.path.join(processor.download_dir, username, leaf, basename),
-        ):
-            real = os.path.realpath(candidate)
-            if real.startswith(root + os.sep) and os.path.isfile(real):
-                return candidate
-    if folder_only:
-        return None
-    return processor.find_downloaded_file(username, remote_filename)
-
-
 async def _call(cb, *args) -> None:
     if cb is not None:
         with contextlib.suppress(Exception):
@@ -275,13 +258,16 @@ async def fetch_folder(
     A file gives up when its transfer moves no byte for *per_file_timeout_secs*
     (a file still queued at the peer keeps waiting), and the whole album
     after *total_timeout_secs*: once that is spent the files left fail with
-    state "Timeout" (slskd keeps their transfers). Never raises on a
-    failed file. *on_file* runs as each file finishes (the pipeline saves it
-    there), so what landed is known even if the album never completes.
+    state "Timeout". Never raises on a failed file. *on_file* runs as each
+    file finishes (the pipeline saves it there), so what landed is known
+    even if the album never completes.
 
     Setting *cancel* stops the waiting: the file being waited on and the ones
-    after it get no outcome (the list comes back shorter) and slskd keeps
-    their transfers. A file already handed to *on_file* is finished first.
+    after it get no outcome (the list comes back shorter). A file already
+    handed to *on_file* is finished first.
+
+    Every file given up on (failed, stalled, out of time, cancelled) has its
+    transfer cancelled in slskd and whatever of it landed deleted.
     """
     files, username, total = listing.files, listing.username, len(listing.files)
     outcomes: list[FileOutcome] = []
@@ -293,9 +279,18 @@ async def fetch_folder(
         logger.exception("Enqueueing %s from %s failed", listing.remote_dir, username)
         not_queued = set(range(total))
     started = clock()
+    since = time.time()
+
+    async def give_up(given_up: list[FolderFile]) -> None:
+        def run() -> None:
+            for g in given_up:
+                abandon(slskd, lambda g=g: locate(processor, username, g.filename, True), username, g.filename, since)
+
+        await asyncio.to_thread(run)
 
     for i, f in enumerate(files):
         if cancel is not None and cancel.is_set():
+            await give_up([g for j, g in enumerate(files[i:], i) if j not in not_queued])
             break
         outcome = FileOutcome(filename=f.filename)
         try:
@@ -304,6 +299,7 @@ async def fetch_folder(
                 outcome.error = ENQUEUE_FAILED
             elif remaining <= 0:
                 outcome.error, outcome.state = DOWNLOAD_FAILED, "Timeout"
+                await give_up([f])
             else:
                 await _call(progress_cb, i, total, "Queued", 0.0)
 
@@ -321,9 +317,11 @@ async def fetch_folder(
                 )
                 if cancelled:
                     logger.info("Album fetch of %s from %s cancelled at %s", listing.remote_dir, username, f.basename)
+                    await give_up([g for j, g in enumerate(files[i:], i) if j not in not_queued])
                     break
                 if status is None or status.is_failed:
                     outcome.error, outcome.state = DOWNLOAD_FAILED, status.state if status else "Timeout"
+                    await give_up([f])
                 else:
                     outcome.transfer_id = status.transfer_id
                     outcome.path = await locate_landed(lambda f=f: locate(processor, username, f.filename))
@@ -333,6 +331,7 @@ async def fetch_folder(
         except Exception as exc:
             logger.exception("Album file %s from %s failed", f.basename, username)
             outcome.path, outcome.error, outcome.state = None, DOWNLOAD_FAILED, str(exc)
+            await give_up([f])
         if on_file is not None:
             try:
                 await on_file(i, outcome)

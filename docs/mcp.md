@@ -22,7 +22,7 @@ next call takes; an id is valid for an hour.
 |------|--------------|--------------|
 | `resolve_track(query)` | Spotify candidates for a free-text query, each with a track id, artist, title, album, year and duration | `resolve_track(query="Nancy Sinatra - Bang Bang")` |
 | `search_copies(track_id, profile="library", limit=10)` | Soulseek copies of that track, best first, each with a copy id, format, quality, quality tier, size, duration, source user, score, `lossless` and `fits_cap` (under `TELEGRAM_MAX_UPLOAD_MB`). `profile="library"` puts lossless first; `"chat"` ranks for sound per megabyte. Searches "artist title", then the title alone | `search_copies(track_id="t3fa9c1", profile="library", limit=5)` |
-| `download(copy_id, deliver="library")` | Downloads the copy and waits for it, up to `DOWNLOAD_TIMEOUT_SECS`, sending progress notifications. `deliver="library"` renames it, embeds the cover, moves it into `OUTPUT_DIR` and records it in the history; `"path"` leaves the file in `DOWNLOAD_DIR` and returns its path. Both return the lossless check verdict (FLAC, WAV and AIFF; `null` otherwise) | `download(copy_id="c81d0e2", deliver="library")` |
+| `download(copy_id, deliver="library")` | Downloads the copy and waits for it, up to `DOWNLOAD_TIMEOUT_SECS`, sending progress notifications. `deliver="library"` renames it, embeds the cover, moves it into `OUTPUT_DIR` and records it in the history; `"path"` leaves the file in `DOWNLOAD_DIR` and returns its path. Both return the lossless check verdict (FLAC, WAV and AIFF; `null` otherwise). `"library"` goes through the lossless gate, see below | `download(copy_id="c81d0e2", deliver="library")` |
 | `album_listing(copy_id)` | The audio files of the peer folder the copy came from, usually its whole release: name, format, quality, size and duration of each, the total size and the formats present. `answered` is false, with a `reason` (`no_answer`, `unreachable`), when the peer is offline or does not answer within 30 s; `no_audio` when the folder holds no audio | `album_listing(copy_id="c81d0e2")` |
 | `album_download(copy_id, deliver="library")` | Downloads every audio file of that folder (one slskd request for the lot), with progress per file. `deliver="library"` saves each file into `OUTPUT_DIR` as it lands, named from its tags (or its file name when the tags are missing), with the album's Spotify cover and a history row noted `album`; a file the library already has under that name is skipped (`skipped` true, `path` the library's file) and its download deleted. `"path"` leaves the files in `DOWNLOAD_DIR`. A file gives up when its transfer moves no byte for `DOWNLOAD_TIMEOUT_SECS`; the whole album waits up to `ALBUM_TIMEOUT_SECS`. Returns one outcome per file (`ok`, `path`, `skipped`, `error`, `state`) and the counts; a failed file never stops the others | `album_download(copy_id="c81d0e2", deliver="library")` |
 | `history(limit=20)` | The latest downloads, newest first, with their status (`success`, `delivered`, `failed`...) | `history(limit=10)` |
@@ -50,7 +50,23 @@ An album the stdio server runs is its own: a bot restart on the same `DATA_DIR` 
 stdio server stops mid-album, nothing saves the files that land after it; the hourly sweep removes them.
 
 A file left with `deliver="path"` stays in `DOWNLOAD_DIR` until the sweep removes it after
-`DOWNLOAD_CLEANUP_HOURS`, so copy it out before then.
+`ORPHAN_SWEEP_HOURS` (6 by default), so copy it out before then. A `download` that times out cancels its
+transfer in slskd and deletes whatever of it landed.
+
+With `deliver="library"` the download goes through the lossless gate (`LOSSLESS_GATE`, on by default). A
+lossless copy whose spectrum shows it was made from a lossy file is deleted and the next copy from the same
+`search_copies` downloaded instead, up to `LOSSLESS_GATE_MAX_REJECTIONS` times. When the gate acted, the result
+also has:
+
+| Field | Meaning |
+|-------|---------|
+| `rejected` | Each copy thrown away: `filename`, `source`, `reason` (`"transcoded from lossy, cutoff 14.0 kHz"`, or `"upsampled from lossy, ..."` for a hi-res file) |
+| `copy` | The copy the result is about: `filename`, `source`, `quality` |
+| `kept_lossy` | Present when the copy was kept only because the gate ran out of rejections, with the reason it would have been rejected |
+| `wishlist_hint` | The `wishlist_add` call that searches the track again later |
+
+When every remaining copy is rejected the result is `ok` false with `error` `"all_rejected"` and nothing is
+saved. `deliver="path"` is not gated.
 
 ## Connect over stdio
 

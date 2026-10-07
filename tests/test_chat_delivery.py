@@ -53,6 +53,9 @@ def _make_config(td=None, chat_users=None):
     config.search_timeout_secs = 30
     config.download_timeout_secs = 600
     config.download_cleanup_hours = 24
+    config.orphan_sweep_hours = 6
+    config.lossless_gate = True
+    config.lossless_gate_max_rejections = 3
     return config
 
 

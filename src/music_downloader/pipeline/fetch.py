@@ -2,8 +2,11 @@
 
 import asyncio
 import logging
+import os
+import threading
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from music_downloader.config import BYTES_PER_MB, DEFAULT_UPLOAD_LIMIT_BYTES
 from music_downloader.processor.file_handler import FileProcessor
@@ -24,12 +27,45 @@ logger = logging.getLogger(__name__)
 ENQUEUE_FAILED = "enqueue_failed"
 DOWNLOAD_FAILED = "failed"
 FILE_NOT_FOUND = "file_not_found"
+# fetch_gated: every copy left on the list was made from a lossy file.
+ALL_REJECTED = "all_rejected"
+
+# The lossless gate (library deliveries only). A lossless copy whose spectrum
+# stops below these was made from a lossy file: at 44.1 or 48 kHz, below 16 kHz
+# means a low-bitrate MP3 or AAC source; above 48 kHz (hi-res), below 19.5 kHz
+# means a CD-rate lossy file upsampled.
+LOSSY_CUTOFF_KHZ = 16.0
+UPSAMPLED_CUTOFF_KHZ = 19.5
 
 # slskd reports a transfer "Completed" a moment before the file is moved from its incomplete
 # folder into the downloads folder, so the first look on disk can miss it (seen live on
 # 2026-10-04). Keep looking this long, this often, before giving up.
 LOCATE_RETRY_SECS = 10.0
 LOCATE_RETRY_STEP_SECS = 0.5
+
+
+def locate(processor: FileProcessor, username: str, remote_filename: str, folder_only: bool = False) -> str | None:
+    """Where slskd put *remote_filename*: <download dir>[/<username>]/<remote folder name>/<file> first.
+
+    Album files share names across releases ("01 - Intro.flac"), so the file
+    inside a folder named like the remote one wins over a bare name match.
+    *folder_only* skips that bare name match: after a restart another album's
+    file of the same name may be the only one on disk.
+    """
+    parts = remote_filename.split("\\")
+    basename, leaf = parts[-1], parts[-2] if len(parts) > 1 else ""
+    if leaf:
+        root = os.path.realpath(processor.download_dir)
+        for candidate in (
+            os.path.join(processor.download_dir, leaf, basename),
+            os.path.join(processor.download_dir, username, leaf, basename),
+        ):
+            real = os.path.realpath(candidate)
+            if real.startswith(root + os.sep) and os.path.isfile(real):
+                return candidate
+    if folder_only:
+        return None
+    return processor.find_downloaded_file(username, remote_filename)
 
 
 async def locate_landed(find: Callable[[], str | None], *, sleep=asyncio.sleep) -> str | None:
@@ -41,6 +77,30 @@ async def locate_landed(find: Callable[[], str | None], *, sleep=asyncio.sleep) 
             return path
         await sleep(LOCATE_RETRY_STEP_SECS)
         waited += LOCATE_RETRY_STEP_SECS
+
+
+def abandon(slskd: SlskdClient, find: Callable[[], str | None], username: str, filename: str, since: float) -> None:
+    """Give up on a transfer: cancel it in slskd and delete what of it already landed.
+
+    *find* is the disk lookup for the file; only a file written at or after
+    *since* (when the fetch began) is deleted, so an older copy of the same
+    remote file, still waiting on a button, is left alone. Never raises.
+    """
+    try:
+        slskd.cancel_downloads(username, filename)
+        path = find()
+        if path and os.path.getmtime(path) >= since:
+            os.remove(path)
+            logger.info("Deleted %s: its transfer was given up", path)
+    except Exception:
+        logger.warning("Giving up on %s from %s did not finish cleanly", filename, username, exc_info=True)
+
+
+def abandon_in_background(*args) -> threading.Thread:
+    """abandon() in a daemon thread: for a task being cancelled, which must not wait on slskd."""
+    thread = threading.Thread(target=abandon, args=args, daemon=True, name="slskd-abandon")
+    thread.start()
+    return thread
 
 
 # Opus bitrates tried (highest first) when a chat-delivery track is over the limit.
@@ -104,26 +164,128 @@ async def fetch(
     *analyze* runs only on formats the spectrum check understands
     (CHECKABLE_EXTENSIONS); pass None to skip the check entirely.
     Exceptions from slskd propagate: the caller decides how to report them.
+
+    A transfer that times out, fails or is cancelled (the task is) is
+    cancelled in slskd too, and whatever of it landed is deleted.
     """
     success = await asyncio.to_thread(slskd.enqueue_download, result)
     if not success:
         return FetchOutcome(error=ENQUEUE_FAILED)
 
-    status = await slskd.wait_for_download(
-        username=result.username,
-        filename=result.filename,
-        timeout_secs=timeout_secs,
-        progress_cb=progress_cb,
-    )
+    def find() -> str | None:
+        return processor.find_downloaded_file(result.username, result.filename)
+
+    def find_own() -> str | None:
+        # Only in the folder named like the remote one: a bare name match may be another download's file.
+        return locate(processor, result.username, result.filename, folder_only=True)
+
+    started = time.time()
+    try:
+        status = await slskd.wait_for_download(
+            username=result.username,
+            filename=result.filename,
+            timeout_secs=timeout_secs,
+            progress_cb=progress_cb,
+        )
+    except BaseException:
+        abandon_in_background(slskd, find_own, result.username, result.filename, started)
+        raise
     if status is None or status.is_failed:
+        await asyncio.to_thread(abandon, slskd, find_own, result.username, result.filename, started)
         return FetchOutcome(error=DOWNLOAD_FAILED, state=status.state if status else "Timeout")
 
-    path = await locate_landed(lambda: processor.find_downloaded_file(result.username, result.filename))
+    path = await locate_landed(find)
     if not path:
         return FetchOutcome(error=FILE_NOT_FOUND)
 
     verdict = await analyze(path) if analyze is not None and result.extension in CHECKABLE_EXTENSIONS else None
     return FetchOutcome(path=path, verdict=verdict, transfer_id=status.transfer_id)
+
+
+def lossy_source(verdict: LosslessVerdict | None) -> str | None:
+    """Why a lossless copy with this spectrum was made from a lossy file; None when it passes.
+
+    None also when there is no verdict (format not checkable, check failed)
+    or the sample rate is below 44.1 kHz: nothing to judge by.
+    """
+    if verdict is None:
+        return None
+    if verdict.sample_rate > 48000:
+        if verdict.cutoff_khz < UPSAMPLED_CUTOFF_KHZ:
+            return f"upsampled from lossy, cutoff {verdict.cutoff_khz:.1f} kHz"
+    elif verdict.sample_rate >= 44100 and verdict.cutoff_khz < LOSSY_CUTOFF_KHZ:
+        return f"transcoded from lossy, cutoff {verdict.cutoff_khz:.1f} kHz"
+    return None
+
+
+@dataclass
+class Rejection:
+    """A copy the lossless gate threw away: *index* on the ranked list, and why."""
+
+    result: SearchResult
+    index: int
+    reason: str
+
+
+@dataclass
+class GatedFetch:
+    """What fetch_gated produced: the outcome for the copy at *index*, and the copies rejected before it."""
+
+    outcome: FetchOutcome
+    result: SearchResult
+    index: int
+    rejected: list[Rejection] = field(default_factory=list)
+    # The copy was kept although it is lossy-sourced: the gate had used up its rejections.
+    kept_lossy: str | None = None
+
+
+# (the copy rejected, the next copy to try or None when the list is spent, its index)
+RejectCallback = Callable[[Rejection, SearchResult | None, int], Awaitable[None]]
+
+
+async def fetch_gated(
+    fetch_one: Callable[[SearchResult, int], Awaitable[FetchOutcome]],
+    discard: Callable[[SearchResult, FetchOutcome, str], Awaitable[None]],
+    results: list[SearchResult],
+    index: int,
+    max_rejections: int,
+    on_reject: RejectCallback | None = None,
+) -> GatedFetch:
+    """Fetch results[index]; while the copy is lossless but lossy-sourced, discard it and fetch the next.
+
+    *fetch_one* must run the spectrum check (FetchOutcome.verdict).
+    *discard* deletes a rejected copy (and records why). After
+    *max_rejections* copies the next one is kept whatever its spectrum, with
+    kept_lossy saying why it would have been rejected. A copy that fails to
+    download ends the run with that outcome; a list spent by rejections ends
+    it with ALL_REJECTED.
+    """
+    rejected: list[Rejection] = []
+    while True:
+        result = results[index]
+        outcome = await fetch_one(result, index)
+        reason = lossy_source(outcome.verdict) if outcome.ok else None
+        if reason is None:
+            return GatedFetch(outcome, result, index, rejected)
+        if len(rejected) >= max_rejections:
+            logger.warning(
+                "Lossless gate kept %s from %s after %d rejections: %s",
+                result.basename,
+                result.username,
+                len(rejected),
+                reason,
+            )
+            return GatedFetch(outcome, result, index, rejected, kept_lossy=reason)
+        logger.info("Lossless gate rejected %s from %s: %s", result.basename, result.username, reason)
+        await discard(result, outcome, reason)
+        rejection = Rejection(result, index, reason)
+        rejected.append(rejection)
+        index += 1
+        following = results[index] if index < len(results) else None
+        if on_reject is not None:
+            await on_reject(rejection, following, index)
+        if following is None:
+            return GatedFetch(FetchOutcome(error=ALL_REJECTED), result, index - 1, rejected)
 
 
 def opus_bitrates_that_fit(duration_secs: int, limit_bytes: int = DEFAULT_UPLOAD_LIMIT_BYTES) -> list[int]:

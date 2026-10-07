@@ -388,6 +388,19 @@ class SlskdClient:
             return [raw]
         return list(raw or [])
 
+    def _transfers(self, username: str, filename: str) -> list[dict]:
+        """slskd's download records of *filename* from *username* (raises when slskd fails)."""
+        downloads = self.client.transfers.get_downloads(username=username)
+        if not downloads:
+            return []
+        # Downloads response is a dict with 'directories' containing transfer info
+        return [
+            transfer
+            for directory in downloads.get("directories", [])
+            for transfer in directory.get("files", [])
+            if transfer.get("filename") == filename
+        ]
+
     def get_download_status(self, username: str, filename: str) -> DownloadStatus | None:
         """
         Get the download status for a specific file.
@@ -402,18 +415,7 @@ class SlskdClient:
             one still running wins, else the newest.
         """
         try:
-            downloads = self.client.transfers.get_downloads(username=username)
-
-            if not downloads:
-                return None
-
-            # Downloads response is a dict with 'directories' containing transfer info
-            matches = [
-                transfer
-                for directory in downloads.get("directories", [])
-                for transfer in directory.get("files", [])
-                if transfer.get("filename") == filename
-            ]
+            matches = self._transfers(username, filename)
             if not matches:
                 return None
             statuses = [
@@ -505,6 +507,36 @@ class SlskdClient:
         if not ok:
             logger.info("slskd refused to remove transfer %s from %s", transfer_id, username)
         return bool(ok)
+
+    def cancel_downloads(self, username: str, filename: str) -> int:
+        """Stop every slskd transfer of *filename* from *username* and drop its record (remove=true).
+
+        For a transfer the bot gave up on (timeout, cancel, error). Without
+        this slskd keeps downloading and the file lands later with nobody to
+        pick it up. Best effort: returns how many transfers slskd cancelled,
+        logging failures at INFO instead of raising.
+        """
+        try:
+            transfers = self._transfers(username, filename)
+        except Exception as exc:
+            logger.info("Could not list the transfers of %s from %s to cancel them: %s", filename, username, exc)
+            return 0
+        cancelled = 0
+        for transfer in transfers:
+            transfer_id = transfer.get("id")
+            if not transfer_id:
+                continue
+            try:
+                ok = self.client.transfers.cancel_download(username, transfer_id, remove=True)
+            except Exception as exc:
+                logger.info("Could not cancel transfer %s of %s from %s: %s", transfer_id, filename, username, exc)
+                continue
+            if ok:
+                cancelled += 1
+                logger.info(
+                    "Cancelled transfer %s of %s from %s (%s)", transfer_id, filename, username, transfer.get("state")
+                )
+        return cancelled
 
     def is_up(self) -> bool:
         """Whether slskd answers application/state (the health probe)."""

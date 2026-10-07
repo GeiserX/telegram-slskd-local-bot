@@ -109,12 +109,11 @@ As with one track, the bot deletes each download once it is saved or sent and re
 from slskd. A file that could not be sent stays in `DOWNLOAD_DIR` for the hourly sweep. A file gives up when its
 transfer moves no byte for `DOWNLOAD_TIMEOUT_SECS`; one still queued at the peer keeps waiting. The whole album
 waits at most `ALBUM_TIMEOUT_SECS`, two hours by default (see [Configuration](configuration.md)). Files still
-waiting when that runs out fail as timed out, and the summary says so: slskd keeps their transfers, but a file
-that lands later is not saved, and the hourly sweep removes it.
+waiting when that runs out fail as timed out, and the summary says so. Every file the bot gives up on (timed
+out, stalled, failed or cancelled) has its transfer cancelled in slskd, and whatever of it already landed is deleted.
 
 One album runs per chat at a time, and a new search does not stop it. `/cancel` does: the bot stops waiting,
-keeps every file that already arrived, and leaves the transfers still queued in slskd (remove them there if you
-do not want them). After a restart the bot tells the chat how far an interrupted album got; files that landed
+keeps every file that already arrived, and cancels the transfers still queued in slskd. After a restart the bot tells the chat how far an interrupted album got; files that landed
 while it was down are saved to the library (library delivery) or left for the hourly sweep (chat delivery), and
 slskd keeps the rest. The album button expires with its track
 after `DOWNLOAD_CLEANUP_HOURS`. `/import` tracks do not get one.
@@ -169,5 +168,22 @@ transcoded from MP3, and it is marked "Fake lossless". The check needs the analy
 Docker image; `pip install 'telegram-slskd-local-bot[analysis]'` elsewhere). It reads FLAC, WAV and AIFF; an APE,
 WavPack, TTA, TAK or ALAC file says "Lossless check: not checked", and a lossy file gets no check. Without the
 analysis extra every lossless file says "not checked". Auto-mode saves the file
-without waiting for you, whatever the check says. Tracks from `/import` are downloaded and saved without
-the check.
+without waiting for you once the check passes.
+
+**The lossless gate.** A copy going to the library (picked by you, by `/auto`, or an `/import` track) that the
+check shows was made from a lossy file never reaches it: the bot deletes the copy and downloads the next one on
+the result list, and the status message says which copy was rejected and why:
+
+```
+🚫 #1 rejected: transcoded from lossy, cutoff 14.0 kHz
+⬇️ Downloading #2...
+```
+
+The line is drawn at a cutoff below 16 kHz for a 44.1 or 48 kHz file, and below 19.5 kHz for a file above
+48 kHz, which is a hi-res file upsampled from a lossy one. A cutoff between those and the top of the range
+("Possible transcode", "Likely transcode" at 17 kHz and up) is shown but not rejected. After
+`LOSSLESS_GATE_MAX_REJECTIONS` rejected copies (3) the next copy is kept whatever it is, with a line saying it
+would have been rejected. When every copy on the list is rejected nothing is kept. In both cases the message
+offers "Wait for a better copy". The wishlist ranks copies by the format they advertise, so it cannot tell a
+fake FLAC from a real one: after fakes it waits for a copy of a higher tier. Chat delivery is not gated, and
+neither are album downloads. `LOSSLESS_GATE=false` turns the gate off.

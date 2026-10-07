@@ -123,10 +123,23 @@ class Config:
         # most DOWNLOAD_TIMEOUT_SECS); files left when it runs out fail.
         self.album_timeout_secs = max(1, int(os.getenv("ALBUM_TIMEOUT_SECS") or "7200"))
 
-        # Hours before an abandoned file in DOWNLOAD_DIR is swept away (0 disables).
-        # Abandoned = superseded search, restart, timeout — anything never
-        # approved or rejected. Active transfers are safe (fresh mtime).
+        # Hours a download waiting on a button (Save, Reject, Retry) is kept,
+        # with its file, before it expires (0: never expires).
         self.download_cleanup_hours = max(0, int(os.getenv("DOWNLOAD_CLEANUP_HOURS", "24")))
+
+        # Hours before a file in DOWNLOAD_DIR that nothing waits on is deleted
+        # by the hourly sweep (0 disables). Such a file is a leftover: a
+        # superseded search, a restart, a transfer that finished after the bot
+        # gave up. Files of downloads waiting on a button are never swept, and
+        # transfers in flight are safe (fresh mtime).
+        self.orphan_sweep_hours = max(0, int(os.getenv("ORPHAN_SWEEP_HOURS") or "6"))
+
+        # The lossless gate, library deliveries only: a lossless copy whose
+        # spectrum shows it was made from a lossy file is deleted and the next
+        # ranked copy tried; after LOSSLESS_GATE_MAX_REJECTIONS rejected copies
+        # the next one is kept whatever it is, and the user is told.
+        self.lossless_gate = (os.getenv("LOSSLESS_GATE") or "true").strip().lower() != "false"
+        self.lossless_gate_max_rejections = max(0, int(os.getenv("LOSSLESS_GATE_MAX_REJECTIONS") or "3"))
 
         # Wishlist: hours between two searches for the same wish, and seconds
         # between two wish searches in one pass (Soulseek etiquette).

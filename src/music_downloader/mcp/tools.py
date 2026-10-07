@@ -20,7 +20,7 @@ from music_downloader.config import BYTES_PER_MB
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.wishlist_repo import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.pipeline.album import FolderListing
-from music_downloader.pipeline.fetch import DOWNLOAD_FAILED, FILE_NOT_FOUND
+from music_downloader.pipeline.fetch import ALL_REJECTED, DOWNLOAD_FAILED, FILE_NOT_FOUND, GatedFetch
 from music_downloader.pipeline.search import RankedResults, clean_search_title
 from music_downloader.processor.lossless_analyzer import LosslessVerdict
 from music_downloader.search.scorer import TIER_LABELS, TIER_LOSSLESS_24, quality_tier
@@ -50,6 +50,10 @@ class _TrackEntry:
 class _CopyEntry:
     track: TrackInfo
     result: SearchResult
+    # The ranked list the copy came from and its place there: the lossless gate tries the next ones.
+    ranked: list[SearchResult] = field(default_factory=list)
+    index: int = 0
+    track_id: str = ""
 
 
 class IdMap:
@@ -201,17 +205,25 @@ class McpTools:
             "profile": profile,
             "total": len(ranked),
             "hidden_by_title_guard": getattr(ranked, "hidden", 0),
-            "copies": [self._copy_dict(self.copies.put(_CopyEntry(track, r)), r) for r in shown],
+            "copies": [
+                self._copy_dict(self.copies.put(_CopyEntry(track, r, entry.ranked, i, track_id)), r)
+                for i, r in enumerate(shown)
+            ],
         }
 
     async def download(self, copy_id: str, deliver: str = DELIVER_LIBRARY, progress: Progress | None = None) -> dict:
-        """Fetch a copy and save it to the library (deliver="library") or leave it in DOWNLOAD_DIR ("path")."""
+        """Fetch a copy and save it to the library (deliver="library") or leave it in DOWNLOAD_DIR ("path").
+
+        deliver="library" goes through the lossless gate: a lossless copy made
+        from a lossy file is deleted and the next copy of the same search tried
+        (listed under "rejected"); "copy" names the copy that was kept.
+        """
         if deliver not in (DELIVER_LIBRARY, DELIVER_PATH):
             raise ToolError(f"deliver must be {DELIVER_LIBRARY!r} or {DELIVER_PATH!r}, not {deliver!r}.")
         entry = self.copies.get(copy_id)
         if entry is None:
             raise ToolError(f"Unknown or expired copy id {copy_id!r}: run search_copies again.")
-        track, result = entry.track, entry.result
+        track = entry.track
 
         async def on_status(status: DownloadStatus) -> None:
             if progress is not None:
@@ -219,13 +231,41 @@ class McpTools:
 
         self.downloads_in_progress += 1
         try:
-            outcome = await self.pipeline.fetch(result, on_status)
+            if deliver == DELIVER_LIBRARY:
+                ranked, index = entry.ranked, entry.index
+                if not (index < len(ranked) and ranked[index] == entry.result):
+                    ranked, index = [entry.result], 0
+                gated = await self.pipeline.fetch_for_library(ranked, index, track, lambda _r, _i: on_status)
+            else:
+                gated = GatedFetch(await self.pipeline.fetch(entry.result, on_status), entry.result, 0)
         finally:
             self.downloads_in_progress -= 1
+        outcome, result = gated.outcome, gated.result
+        # What the lossless gate did, only when it did something: the copy kept, the ones thrown away.
+        gate = {}
+        if gated.rejected or gated.kept_lossy:
+            gate = {
+                "copy": {"filename": result.basename, "source": result.username, "quality": result.quality_display},
+                "rejected": [
+                    {"filename": r.result.basename, "source": r.result.username, "reason": r.reason}
+                    for r in gated.rejected
+                ],
+                "wishlist_hint": (
+                    f"wishlist_add(track_id={entry.track_id!r}, wanted='better') searches again later"
+                    if entry.track_id
+                    else "run resolve_track and wishlist_add to search again later"
+                ),
+            }
+        if gated.kept_lossy:
+            after = f" after {len(gated.rejected)} rejected copies" if gated.rejected else ""
+            gate["kept_lossy"] = f"kept anyway{after}: {gated.kept_lossy}"
         if not outcome.ok:
             if outcome.error in (DOWNLOAD_FAILED, FILE_NOT_FOUND):
                 await self.pipeline.record_history(track, result, outcome.error)
-            return {"ok": False, "error": outcome.error, "state": outcome.state or None}
+            error = {"ok": False, "error": outcome.error, "state": outcome.state or None, **gate}
+            if outcome.error == ALL_REJECTED:
+                error["detail"] = "every copy tried was a lossless file made from a lossy one; none was kept"
+            return error
 
         verdict = _verdict_dict(outcome.verdict)
         if deliver == DELIVER_PATH:
@@ -233,8 +273,8 @@ class McpTools:
             return {"ok": True, "deliver": DELIVER_PATH, "path": outcome.path, "lossless_check": verdict}
         target = await self.pipeline.save(outcome.path, track, result, outcome.transfer_id)
         if target is None:
-            return {"ok": False, "error": "process_failed", "path": outcome.path, "lossless_check": verdict}
-        return {"ok": True, "deliver": DELIVER_LIBRARY, "path": target, "lossless_check": verdict}
+            return {"ok": False, "error": "process_failed", "path": outcome.path, "lossless_check": verdict, **gate}
+        return {"ok": True, "deliver": DELIVER_LIBRARY, "path": target, "lossless_check": verdict, **gate}
 
     def _copy(self, copy_id: str) -> _CopyEntry:
         entry = self.copies.get(copy_id)
