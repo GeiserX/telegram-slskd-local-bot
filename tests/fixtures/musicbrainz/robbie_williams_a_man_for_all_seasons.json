@@ -1,0 +1,29 @@
+{
+ "created": "2026-10-07T15:55:49.712Z",
+ "count": 1,
+ "offset": 0,
+ "recordings": [
+  {
+   "id": "e4825193-3c7b-43eb-b660-c9ffa793295d",
+   "score": 100,
+   "title": "A Man for All Seasons",
+   "length": 239760,
+   "first-release-date": "2003-04-14",
+   "artist-credit": [
+    {
+     "name": "Robbie Williams",
+     "artist": {
+      "id": "db4624cf-0e44-481e-a9dc-2142b833ec2f",
+      "name": "Robbie Williams"
+     }
+    }
+   ],
+   "releases": [
+    {
+     "id": "1761b806-53f4-4f8a-8e2c-6f44b9884475",
+     "title": "Superhits"
+    }
+   ]
+  }
+ ]
+}
