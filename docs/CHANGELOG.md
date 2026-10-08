@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one list cancelled the other list's downloads too, with its preview marked
   Cancelled and its running transfer stopped. Now only the list the saved copy
   came from is dismissed; the other wish keeps its copies and its downloads.
-  A new search typed meanwhile leaves a wish list's downloads alone as well
+  A new search typed meanwhile leaves a wish list's downloads alone as well;
+  `/cancel` still stops everything
 
 ## [0.20.0] - 2026-10-07
 

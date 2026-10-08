@@ -794,6 +794,7 @@ class TestTwoWishListsInOneChat:
         self._download(bot, "d2", second_list, source=None)
         bot.downloads["d2"].status_message_id = 500
         wish_task = self._running(bot, second_list)
+        bot.pending[CHAT] = PendingSearch(query="own", track=_make_track(), search_id="own12345")
         own_task = asyncio.get_running_loop().create_future()
         bot._track_task(CHAT, own_task, "own12345")
 
@@ -807,3 +808,44 @@ class TestTwoWishListsInOneChat:
         assert "d2" in bot.downloads
         superseded = [c.kwargs.get("message_id") for c in context.bot.edit_message_text.call_args_list]
         assert 500 not in superseded
+
+    @pytest.mark.asyncio
+    async def test_cancel_stops_wish_list_downloads_too(self, tmp_path):
+        bot = _make_bot(_config(tmp_path))
+        bot._launch_download = AsyncMock()
+        bot.slskd.search = AsyncMock(return_value=[])
+        bot.slskd.parse_results = MagicMock(return_value=[_mp3(320, 1), _flac(16, 2)])
+        context = _make_context()
+        context.bot.send_message.return_value = MagicMock(message_id=77)
+        first, second, first_list, second_list = await self._two_lists(bot, context)
+        self._download(bot, "d2", second_list, source=None)
+        wish_task = self._running(bot, second_list)
+        bot.pipeline.forget_transfer = MagicMock()
+
+        update = _update()
+        update.message.reply_text = AsyncMock()
+        await bot.cmd_cancel(update, context)
+
+        assert wish_task.cancelled() and "d2" not in bot.downloads
+        assert update.message.reply_text.call_args.args[0] == "❌ Cancelled."
+
+    @pytest.mark.asyncio
+    async def test_a_download_from_a_replaced_wish_list_still_counts_as_the_wish(self, tmp_path):
+        bot = _make_bot(_config(tmp_path))
+        bot._launch_download = AsyncMock()
+        bot.slskd.search = AsyncMock(return_value=[])
+        bot.slskd.parse_results = MagicMock(return_value=[_mp3(320, 1), _flac(16, 2)])
+        context = _make_context()
+        context.bot.send_message.return_value = MagicMock(message_id=77)
+        first, second, first_list, second_list = await self._two_lists(bot, context)
+        self._download(bot, "d2", second_list, source=None)
+        wish_task = self._running(bot, second_list)
+        del bot.wish_searches[(CHAT, second_list.search_id)]  # a newer list for the same wish replaced it
+
+        bot._do_search = AsyncMock()
+        bot.pipeline.find_similar = AsyncMock(return_value=None)
+        update = _update()
+        update.message.text = "Daft Punk - One More Time"
+        await bot.handle_text(update, context)
+
+        assert not wish_task.cancelled() and "d2" in bot.downloads

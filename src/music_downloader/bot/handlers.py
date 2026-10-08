@@ -487,11 +487,13 @@ class MusicBot:
     # CANCELLATION
     # =========================================================================
 
-    def _cancel_chat_operations(self, chat_id: int) -> bool:
-        """Cancel all active operations for a chat.
+    def _cancel_chat_operations(self, chat_id: int, everything: bool = False) -> bool:
+        """Cancel the chat's own flow: a new request supersedes it, /cancel stops it.
 
         Bumps the generation counter (signals running search flows to abort)
-        and cancels tracked background tasks (downloads).
+        and cancels the tracked download tasks. The lists the wishlist checker
+        sent run apart from the chat's own flow, so their downloads go on
+        unless *everything* is set (/cancel).
 
         Returns True if something was actually cancelled.
         """
@@ -501,8 +503,14 @@ class MusicBot:
 
         self._chat_generation[chat_id] = self._chat_generation.get(chat_id, 0) + 1
 
-        # A wish's list runs apart from the chat's own flow: its downloads go on.
-        self._cancel_tasks(chat_id, lambda search_id: not self._is_wish_search(chat_id, search_id))
+        def goes(search_id: str) -> bool:
+            return everything or self._is_chat_owned(chat_id, search_id)
+
+        self._cancel_tasks(chat_id, goes)
+        # A delivered row only backs an album button: it stays.
+        stale = [
+            (k, v) for k, v in self.downloads.items() if v.chat_id == chat_id and not v.delivered and goes(v.search_id)
+        ]
 
         self.pending.pop(chat_id, None)
         self._import_pending.pop(chat_id, None)
@@ -512,13 +520,6 @@ class MusicBot:
         self._spotify_page.pop(chat_id, None)
         self._awaiting_direct_metadata.pop(chat_id, None)
 
-        # A delivered row only backs an album button: a new search leaves it,
-        # and so does a download from a wish's list.
-        stale = [
-            (k, v)
-            for k, v in self.downloads.items()
-            if v.chat_id == chat_id and not v.delivered and not self._is_wish_search(chat_id, v.search_id)
-        ]
         for dl_id, dl in stale:
             del self.downloads[dl_id]
             # The file is left to the orphan sweep; the finished transfer goes now.
@@ -526,9 +527,16 @@ class MusicBot:
 
         return had_work
 
-    def _is_wish_search(self, chat_id: int, search_id: str) -> bool:
-        """True when *search_id* is a list the wishlist checker sent to *chat_id*."""
-        return bool(search_id) and (chat_id, search_id) in self.wish_searches
+    def _is_chat_owned(self, chat_id: int, search_id: str) -> bool:
+        """True when *search_id* belongs to the chat's own flow: its search, its import, or no search at all.
+
+        Any other id is a list the wishlist checker sent, current or already
+        replaced by a newer list for the same wish.
+        """
+        if not search_id:
+            return True
+        own = (self.pending.get(chat_id), self._import_pending.get(chat_id))
+        return any(search is not None and search.search_id == search_id for search in own)
 
     def _cancel_tasks(self, chat_id: int, cancel_if: "Callable[[str], bool]") -> None:
         """Cancel the chat's tracked tasks whose search id *cancel_if* accepts (import tasks carry none)."""
@@ -813,7 +821,7 @@ class MusicBot:
             and dl.status_message_id
             and dl.source_path is None
             and not dl.delivered
-            and not self._is_wish_search(chat_id, dl.search_id)
+            and self._is_chat_owned(chat_id, dl.search_id)
         ]
         self._cancel_chat_operations(chat_id)
         generation = self._chat_generation[chat_id]
@@ -2546,12 +2554,12 @@ class MusicBot:
                 job_id = active.id
         if job_id:
             await asyncio.to_thread(self.import_repo.update_job_status, job_id, JobStatus.cancelled)
-            self._cancel_chat_operations(chat_id)
+            self._cancel_chat_operations(chat_id, everything=True)
             await update.message.reply_text(f"❌ Import cancelled.{album_note}", parse_mode=ParseMode.HTML)
             return
 
-        # Otherwise cancel regular operations
-        had_work = self._cancel_chat_operations(chat_id)
+        # Otherwise cancel regular operations, wish-list downloads included
+        had_work = self._cancel_chat_operations(chat_id, everything=True)
         if had_work or album:
             text = f"❌ Cancelled.{album_note}" if had_work else album_note.lstrip("\n")
             await update.message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -3304,7 +3312,7 @@ class MusicBot:
             ),
             update=update,
         )
-        self._track_task(chat_id, task)
+        self._track_task(chat_id, task, pending_dl.search_id)
 
     async def _handle_next_result(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, data: str):
         """Try the next-best search result after a failed download."""
@@ -3378,7 +3386,7 @@ class MusicBot:
             ),
             update=update,
         )
-        self._track_task(chat_id, task)
+        self._track_task(chat_id, task, pending.search_id)
 
     # =========================================================================
     # WISHLIST
