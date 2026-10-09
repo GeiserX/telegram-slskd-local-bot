@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.2] - 2026-10-10
+
+### Fixed
+
+- A Retry or Try next tap on a result list now stops the download chain still running for that list, so one song has one chain. Before, every tap started another chain over the same list while the earlier ones went on: eight taps in 35 seconds ran eight chains at once, two of them waiting on the same file.
+- A transfer slskd no longer lists (its record removed by another chain or in slskd's UI) ends the wait at once as "Removed from slskd". Before, the 404 was logged as an error with a traceback every 3 seconds until the 10-minute timeout, and the chat was told "Timeout" for a file that had arrived.
+- The status message of a chain that was stopped says so, instead of staying on "Downloading…".
+
 ## [0.20.1] - 2026-10-08
 
 ### Fixed

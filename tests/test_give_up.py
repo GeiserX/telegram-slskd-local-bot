@@ -75,6 +75,20 @@ class TestCancelDownloads:
         client.client.transfers.cancel_download.side_effect = [ConnectionError("down"), True]
         assert client.cancel_downloads("peer", REMOTE) == 1
 
+    def test_a_peer_with_no_transfers_listed_is_nothing_to_cancel(self, caplog):
+        import logging
+
+        import requests
+
+        client = self._client([])
+        client.client.transfers.get_downloads.side_effect = requests.exceptions.HTTPError(
+            response=MagicMock(status_code=404)
+        )
+        with caplog.at_level(logging.INFO):
+            assert client.cancel_downloads("peer", REMOTE) == 0
+        client.client.transfers.cancel_download.assert_not_called()
+        assert "Could not list" not in caplog.text
+
     def test_slskd_down_returns_zero(self):
         client = self._client([])
         client.client.transfers.get_downloads.side_effect = ConnectionError("down")

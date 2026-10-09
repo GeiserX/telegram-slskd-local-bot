@@ -81,6 +81,18 @@ class SearchResult:
         return f"{self.basename} ({self.duration_display}, {self.quality_display}, {self.size_mb:.1f}MB)"
 
 
+# The state the bot gives a transfer slskd no longer lists: another flow removed
+# it (a rejected copy is deleted together with its record), or someone did in
+# slskd's own UI. Nothing is coming any more, so a wait on it ends here.
+REMOVED_STATE = "Removed from slskd"
+
+
+def _not_found(exc: BaseException) -> bool:
+    """True for slskd's 404: the peer has no transfers listed at all."""
+    response = getattr(exc, "response", None)
+    return isinstance(exc, requests.exceptions.HTTPError) and getattr(response, "status_code", None) == 404
+
+
 @dataclass
 class DownloadStatus:
     """Status of a file download."""
@@ -103,7 +115,7 @@ class DownloadStatus:
     @property
     def is_failed(self) -> bool:
         state_lower = self.state.lower()
-        return any(kw in state_lower for kw in ("errored", "rejected", "timedout", "cancelled"))
+        return any(kw in state_lower for kw in ("errored", "rejected", "timedout", "cancelled", "removed"))
 
     @property
     def is_active(self) -> bool:
@@ -437,7 +449,10 @@ class SlskdClient:
             )
             return statuses[newest]
 
-        except Exception:
+        except Exception as exc:
+            if _not_found(exc):
+                logger.info("slskd no longer lists %s from %s: its transfer was removed", filename, username)
+                return DownloadStatus(username=username, filename=filename, state=REMOVED_STATE)
             logger.exception(f"Failed to get download status for {filename}")
             return None
 
@@ -519,6 +534,9 @@ class SlskdClient:
         try:
             transfers = self._transfers(username, filename)
         except Exception as exc:
+            if _not_found(exc):
+                logger.debug("Nothing of %s from %s left in slskd to cancel", filename, username)
+                return 0
             logger.info("Could not list the transfers of %s from %s to cancel them: %s", filename, username, exc)
             return 0
         cancelled = 0
