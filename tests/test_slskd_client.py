@@ -328,6 +328,34 @@ class TestSlskdClientGetDownloadStatus:
         status = client.get_download_status("user1", "\\Music\\Song.flac")
         assert status is None
 
+    def test_a_404_means_the_transfer_was_removed_and_is_not_an_error(self, client, caplog):
+        """slskd answers 404 when a peer has no transfers left: the record is gone, nothing is coming.
+
+        On 2026-10-09 a chain polled a transfer another chain had removed and
+        logged a traceback every 3 seconds for 10 minutes, then said Timeout.
+        """
+        import logging
+
+        import requests
+
+        from music_downloader.search.slskd_client import REMOVED_STATE
+
+        response = MagicMock(status_code=404)
+        client.client.transfers.get_downloads = MagicMock(side_effect=requests.exceptions.HTTPError(response=response))
+        with caplog.at_level(logging.INFO):
+            status = client.get_download_status("user1", "\\Music\\Song.flac")
+        assert status is not None
+        assert status.state == REMOVED_STATE
+        assert status.is_failed and not status.is_complete
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    def test_other_http_errors_still_count_as_no_status(self, client):
+        import requests
+
+        response = MagicMock(status_code=500)
+        client.client.transfers.get_downloads = MagicMock(side_effect=requests.exceptions.HTTPError(response=response))
+        assert client.get_download_status("user1", "\\Music\\Song.flac") is None
+
 
 class TestSlskdClientSearch:
     """Test SlskdClient.search async method."""
@@ -420,6 +448,18 @@ class TestSlskdClientWaitForDownload:
         client.get_download_status = MagicMock(return_value=in_progress)
         result = await client.wait_for_download("u", "f.flac", timeout_secs=1)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_wait_ends_at_once_when_the_transfer_was_removed(self, client):
+        """A removed transfer ends the wait as a failure instead of running out the timeout."""
+        from music_downloader.search.slskd_client import REMOVED_STATE
+
+        gone = DownloadStatus(username="u", filename="f.flac", state=REMOVED_STATE)
+        client.get_download_status = MagicMock(return_value=gone)
+        result = await client.wait_for_download("u", "f.flac", timeout_secs=60)
+        assert result is gone
+        assert result.is_failed
+        assert client.get_download_status.call_count == 1
 
     @pytest.mark.asyncio
     async def test_wait_no_status_yet(self, client):

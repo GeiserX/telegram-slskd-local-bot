@@ -544,6 +544,16 @@ class MusicBot:
             if cancel_if(self._task_search.get(task, "")):
                 task.cancel()
 
+    def _supersede_chain(self, chat_id: int, search_id: str) -> None:
+        """Stop the download chain still running for *search_id*: a Retry or Try next tap on that list replaces it.
+
+        One song gets one chain. On 2026-10-09 eight taps in 35 seconds ran
+        eight chains over the same list at once, two of them waiting on the
+        same file; the one that lost polled a removed transfer for 10 minutes.
+        """
+        if search_id:
+            self._cancel_tasks(chat_id, lambda task_search: task_search == search_id)
+
     def _is_stale(self, chat_id: int, generation: int) -> bool:
         """True when *generation* has been superseded by a newer request."""
         return self._chat_generation.get(chat_id, 0) != generation
@@ -1598,7 +1608,12 @@ class MusicBot:
 
         except asyncio.CancelledError:
             logger.info("Download cancelled for %s", result.basename)
-            self.downloads.pop(dl_id, None)
+            if self.downloads.pop(dl_id, None) is None:
+                # Still fetching, so nothing else owns the status message yet:
+                # the chat sees why it stopped moving. A stored row's message
+                # is worded by whoever dismissed the row.
+                with contextlib.suppress(Exception):
+                    await status_msg.edit_text("⏹ Stopped: replaced by a newer tap, or cancelled.")
             raise
         except Exception:
             logger.exception(f"Download failed for {result.basename}")
@@ -3292,6 +3307,7 @@ class MusicBot:
             f"\U0001f504 Retrying: <code>{_esc(result.basename)}</code>...",
             parse_mode=ParseMode.HTML,
         )
+        self._supersede_chain(chat_id, pending_dl.search_id)
 
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
@@ -3366,6 +3382,7 @@ class MusicBot:
             f"⏭ Trying next result: <code>{_esc(next_result.basename)}</code>",
             parse_mode=ParseMode.HTML,
         )
+        self._supersede_chain(chat_id, pending.search_id)
 
         status_msg = await context.bot.send_message(
             chat_id=chat_id,

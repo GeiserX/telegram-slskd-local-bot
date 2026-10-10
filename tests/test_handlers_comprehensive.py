@@ -1192,6 +1192,56 @@ class TestRetryResultIndex:
         assert "No more results" in edit_call.call_args[0][0]
 
 
+class TestATapReplacesTheRunningChain:
+    """Retry or Try next on a list stops the chain still running for that list, and no other.
+
+    On 2026-10-09 eight taps in 35 seconds ran eight chains over one list at
+    once; two of them waited on the same file.
+    """
+
+    CHAT = 67890
+
+    def _bot(self):
+        bot = MusicBot(_make_config())
+        track = _make_track()
+        results = [_make_search_result(i) for i in range(3)]
+        bot.pending[self.CHAT] = PendingSearch(query="t", track=track, results=results, search_id="list-a")
+        bot.downloads["1"] = PendingDownload(
+            track=track, result=results[1], chat_id=self.CHAT, result_index=1, search_id="list-a"
+        )
+        return bot
+
+    def _running(self, bot, search_id):
+        future = asyncio.get_running_loop().create_future()
+        bot._track_task(self.CHAT, future, search_id)
+        return future
+
+    @pytest.mark.parametrize("data", ["retry:1", "next:1"])
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
+    @pytest.mark.asyncio
+    async def test_the_chain_of_that_list_stops_and_another_list_goes_on(self, mock_slskd, mock_spotify, data):
+        bot = self._bot()
+        same_list = self._running(bot, "list-a")
+        other_list = self._running(bot, "list-b")
+        with patch.object(bot, "_do_download", new_callable=AsyncMock) as mock_dl:
+            await bot.handle_callback(_make_callback_update(chat_id=self.CHAT, data=data), _make_context())
+            mock_dl.assert_called_once()
+        assert same_list.cancelled()
+        assert not other_list.cancelled()
+
+    @patch("music_downloader.pipeline.SpotifyResolver")
+    @patch("music_downloader.pipeline.SlskdClient")
+    @pytest.mark.asyncio
+    async def test_a_download_without_a_list_stops_nothing(self, mock_slskd, mock_spotify):
+        bot = self._bot()
+        bot.downloads["1"].search_id = ""
+        running = self._running(bot, "list-a")
+        with patch.object(bot, "_do_download", new_callable=AsyncMock):
+            await bot.handle_callback(_make_callback_update(chat_id=self.CHAT, data="retry:1"), _make_context())
+        assert not running.cancelled()
+
+
 # ---------------------------------------------------------------------------
 # _rank_responses tests
 # ---------------------------------------------------------------------------
