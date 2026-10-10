@@ -168,9 +168,6 @@ async def fetch(
     A transfer that times out, fails or is cancelled (the task is) is
     cancelled in slskd too, and whatever of it landed is deleted.
     """
-    success = await asyncio.to_thread(slskd.enqueue_download, result)
-    if not success:
-        return FetchOutcome(error=ENQUEUE_FAILED)
 
     def find() -> str | None:
         return processor.find_downloaded_file(result.username, result.filename)
@@ -180,6 +177,22 @@ async def fetch(
         return locate(processor, result.username, result.filename, folder_only=True)
 
     started = time.time()
+    enqueue = asyncio.ensure_future(asyncio.to_thread(slskd.enqueue_download, result))
+    try:
+        success = await asyncio.shield(enqueue)
+    except asyncio.CancelledError:
+        # The enqueue thread cannot be stopped; what slskd accepts after this
+        # point is cancelled as soon as it answers, or it would land with
+        # nobody to pick it up.
+        def cancel_late(done: asyncio.Future) -> None:
+            if not done.cancelled() and done.exception() is None and done.result():
+                abandon_in_background(slskd, find_own, result.username, result.filename, started)
+
+        enqueue.add_done_callback(cancel_late)
+        raise
+    if not success:
+        return FetchOutcome(error=ENQUEUE_FAILED)
+
     try:
         status = await slskd.wait_for_download(
             username=result.username,

@@ -163,6 +163,46 @@ class TestFetchGivesUp:
         thread.join(5)
         slskd.cancel_downloads.assert_called_once_with("peer", REMOTE)
 
+    async def test_a_fetch_cancelled_during_the_enqueue_cancels_what_slskd_then_accepts(self, tmp_path):
+        """The enqueue thread cannot be stopped: a Retry tap that cancels a chain mid-enqueue must not leave the transfer running."""
+        import threading
+
+        enqueue_started = threading.Event()
+        release = threading.Event()
+
+        def enqueue(result):
+            enqueue_started.set()
+            release.wait(5)
+            return True
+
+        slskd = _slskd(AsyncMock())
+        slskd.enqueue_download.side_effect = enqueue
+        threads = []
+        real = pipeline_fetch.abandon_in_background
+
+        def capture(*args):
+            threads.append(real(*args))
+            return threads[-1]
+
+        with patch.object(pipeline_fetch, "abandon_in_background", side_effect=capture):
+            task = asyncio.create_task(
+                pipeline_fetch.fetch(slskd, _processor(tmp_path), _result(), 60, AsyncMock(), None)
+            )
+            await asyncio.to_thread(enqueue_started.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            slskd.cancel_downloads.assert_not_called()  # slskd has not answered yet: nothing to cancel
+            release.set()
+            for _ in range(100):
+                if threads:
+                    break
+                await asyncio.sleep(0.05)
+        [thread] = threads
+        thread.join(5)
+        slskd.cancel_downloads.assert_called_once_with("peer", REMOTE)
+        slskd.wait_for_download.assert_not_called()
+
     async def test_a_finished_download_is_not_cancelled(self, tmp_path):
         path = _landed(tmp_path)
         slskd = _slskd(AsyncMock(return_value=DownloadStatus("peer", REMOTE, "Completed, Succeeded", transfer_id="t")))

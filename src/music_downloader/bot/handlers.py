@@ -1608,10 +1608,12 @@ class MusicBot:
 
         except asyncio.CancelledError:
             logger.info("Download cancelled for %s", result.basename)
-            self.downloads.pop(dl_id, None)
-            # The chat sees why the status message stopped moving.
-            with contextlib.suppress(Exception):
-                await status_msg.edit_text("⏹ Stopped: replaced by a newer tap, or cancelled.")
+            if self.downloads.pop(dl_id, None) is None:
+                # Still fetching, so nothing else owns the status message yet:
+                # the chat sees why it stopped moving. A stored row's message
+                # is worded by whoever dismissed the row.
+                with contextlib.suppress(Exception):
+                    await status_msg.edit_text("⏹ Stopped: replaced by a newer tap, or cancelled.")
             raise
         except Exception:
             logger.exception(f"Download failed for {result.basename}")
