@@ -535,6 +535,25 @@ class TestTelegram:
         if choice == "b":
             assert os.path.exists(os.path.join(config.output_dir, f"{STEM} (alternate).flac"))
 
+    async def test_a_flood_refusal_waits_the_seconds_asked_before_the_second_try(self, tmp_path, monkeypatch):
+        """Through the local Bot API server flood control is a plain 400, not RetryAfter."""
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        slept = []
+
+        async def fake_sleep(secs):
+            slept.append(secs)
+
+        monkeypatch.setattr("music_downloader.bot.handlers.asyncio.sleep", fake_sleep)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        tg = AsyncMock()
+        tg.send_audio = AsyncMock(side_effect=[BadRequest("Too many requests: retry after 8"), None, None])
+        assert await bot._send_sweep_pair(tg, CHAT, review, 1, 1)
+        assert slept[0] == 8.5 and tg.send_audio.await_count == 3
+        names = [c.kwargs["filename"] for c in tg.send_audio.await_args_list]
+        assert names == [f"{STEM} (yours).flac"] * 2 + [f"{STEM} (proposal).flac"]
+        tg.send_document.assert_not_awaited()
+
     async def test_a_refused_audio_goes_as_opus_not_as_a_document(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
         bot, config = _bot(tmp_path)
