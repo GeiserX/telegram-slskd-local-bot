@@ -581,6 +581,28 @@ class TestTelegram:
             await bot._handle_sweep_decision(update, context, CHAT, f"swp:{third.id}:m")
             assert context.bot.send_message.await_args.kwargs["text"] == "\u2705 No pairs left for your ear."
 
+    @pytest.mark.parametrize("state", ["waiting", "one_still_open", "none"])
+    async def test_the_start_sends_the_pairs_waiting_when_the_offered_ones_are_decided(
+        self, tmp_path, monkeypatch, state
+    ):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path, chat_users={12345})
+        tg = AsyncMock()
+        if state != "none":
+            first = _review(bot, config, tmp_path)
+            bot.pipeline.sweep.repo.mark_offered(first.id, 1.0)
+            if state == "waiting":
+                bot.pipeline.sweep.repo.decide(first.id, sw.DECISION_KEEP_MINE, 2.0)
+            _review(bot, config, tmp_path, stem="Second - Song")
+        await bot._resume_sweep_batches(tg)
+        sent = [c.kwargs["filename"] for c in tg.send_audio.await_args_list]
+        texts = [c.kwargs["text"] for c in tg.send_message.await_args_list]
+        if state == "waiting":
+            assert sent == ["Second - Song (yours).flac", "Second - Song (proposal).flac"]
+            assert texts == ["\U0001f442 1 pair(s) left, the next 1 below."]
+        else:
+            assert sent == [] and texts == []
+
     async def test_a_second_tap_says_it_was_decided(self, tmp_path):
         bot, config = _bot(tmp_path)
         review = _review(bot, config, tmp_path)
