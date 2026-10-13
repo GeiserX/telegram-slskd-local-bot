@@ -3989,14 +3989,15 @@ class MusicBot:
         if decided:
             await self._offer_next_sweep_batch(context.bot, chat_id)
 
-    async def _offer_next_sweep_batch(self, bot, chat_id: int) -> None:
+    async def _offer_next_sweep_batch(self, bot, chat_id: int, quiet_when_empty: bool = False) -> None:
         """Once every offered pair is decided, the next batch follows by itself (or "none left")."""
         try:
             pending = self.pipeline.sweep.repo.pending_reviews()
             if any(r.offered_at for r in pending):
                 return
             if not pending:
-                await bot.send_message(chat_id=chat_id, text="\u2705 No pairs left for your ear.")
+                if not quiet_when_empty:
+                    await bot.send_message(chat_id=chat_id, text="\u2705 No pairs left for your ear.")
                 return
             shown = min(len(pending), SWEEP_PAIRS_PER_MESSAGE)
             await bot.send_message(
@@ -4005,6 +4006,11 @@ class MusicBot:
             await self._send_sweep_pairs(bot, chat_id, pending)
         except Exception:
             logger.exception("Offering the next sweep pairs to %s failed", chat_id)
+
+    async def _resume_sweep_batches(self, bot) -> None:
+        """At start: pairs waiting with every offered one decided (decided before 0.20.3, or a restart) go out now."""
+        for user_id in sorted(self._sweep_users()):
+            await self._offer_next_sweep_batch(bot, user_id, quiet_when_empty=True)
 
     async def _orphan_sweep_loop(self) -> None:
         """The pipeline's hourly orphan sweep, with this bot's in-flight downloads protected."""
@@ -4121,6 +4127,7 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
             # The library sweep: continues an interrupted sweep, then runs on LIBRARY_SWEEP_SCHEDULE.
             sweep.on_report = lambda report: bot._send_sweep_report(app.bot, report)
             bot._sweep_loop_task = asyncio.get_running_loop().create_task(sweep.schedule_loop())
+            bot._sweep_resume_task = asyncio.get_running_loop().create_task(bot._resume_sweep_batches(app.bot))
             logger.info(
                 "Library sweep on for %d account(s), schedule %s",
                 len(bot._sweep_users()),

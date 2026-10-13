@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.4] - 2026-10-13
+
+### Fixed
+
+- At start the bot sends the sweep pairs still waiting when every offered pair is decided. Pairs decided before 0.20.3, or a restart between two batches, left the rest waiting for /sweep reviews.
+
 ## [0.20.3] - 2026-10-13
 
 ### Fixed
