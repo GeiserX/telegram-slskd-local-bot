@@ -1787,32 +1787,83 @@ class MusicBot:
                     os.unlink(ogg_path)
         return too_large
 
-    @staticmethod
-    async def _send_audio_file(context, chat_id: int, path: str, filename: str, track: TrackInfo, caption: str):
-        """Send *path* as audio (document on BadRequest). Returns None, or an HTML-safe error."""
+    async def _send_audio_file(self, context, chat_id: int, path: str, filename: str, track: TrackInfo, caption: str):
+        """Send *path* as playable audio (see _send_playable). Returns None, or an HTML-safe error."""
         try:
-            try:
-                with open(path, "rb") as f:
-                    await context.bot.send_audio(
-                        chat_id=chat_id,
-                        audio=f,
-                        filename=filename,
-                        title=track.title,
-                        performer=track.artist,
-                        duration=track.duration_secs,
-                        caption=caption,
-                        parse_mode=ParseMode.HTML,
-                    )
-            except BadRequest:
-                logger.info("send_audio failed, falling back to send_document for %s", filename)
-                with open(path, "rb") as f:
-                    await context.bot.send_document(
-                        chat_id=chat_id, document=f, filename=filename, caption=caption, parse_mode=ParseMode.HTML
-                    )
+            await self._send_playable(
+                context.bot, chat_id, path, filename, track.title, track.artist, track.duration_secs, caption
+            )
         except Exception as exc:
             logger.exception("Sending %s to chat %s failed", filename, chat_id)
             return f"Could not send the file to Telegram: {_esc(str(exc))}"
         return None
+
+    async def _send_playable(
+        self,
+        bot,
+        chat_id: int,
+        path: str,
+        filename: str,
+        title: str,
+        performer: str,
+        duration: float | None,
+        caption: str,
+        markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
+        """Send *path* so the chat can play it: audio, once more on a refusal, then an Opus copy.
+
+        Telegram refuses a file as audio now and then with a BadRequest that has
+        no pattern (the same file, the same call, goes through a minute later).
+        A document is no use in the chat, nobody can listen to it there, so the
+        refusal is logged with its reason, the audio is tried once more, then an
+        Opus copy goes as audio; a document only when the Opus copy fails too.
+        RetryAfter waits once on every send.
+        """
+
+        async def send(method, field: str, file_path: str, name: str, text: str, **extra):
+            for attempt in (1, 2):
+                try:
+                    with open(file_path, "rb") as f:
+                        return await method(
+                            chat_id=chat_id,
+                            filename=name,
+                            caption=text if len(text) <= CAPTION_MAX else text[: CAPTION_MAX - 1] + "…",
+                            parse_mode=ParseMode.HTML,
+                            **({"reply_markup": markup} if markup is not None else {}),
+                            **extra,
+                            **{field: f},
+                        )
+                except RetryAfter as exc:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(_retry_after_seconds(exc) + 0.5)
+            return None
+
+        audio = {"title": title, "performer": performer, "duration": int(duration or 0) or None}
+        reason = ""
+        for _ in (1, 2):
+            try:
+                await send(bot.send_audio, "audio", path, filename, caption, **audio)
+                return
+            except BadRequest as exc:
+                reason = exc.message
+                logger.warning("Telegram refused %s as audio: %s", filename, reason)
+        if not path.lower().endswith(".ogg"):
+            for kbps in self.pipeline.opus_bitrates_that_fit(int(duration or 0))[:1]:
+                ogg = await self.pipeline.convert_to_opus(path, kbps)
+                if not ogg:
+                    break
+                try:
+                    note = f"\n\U0001f3a7 Opus {kbps} kbps here: Telegram refused the file as audio ({_esc(reason)})"
+                    text = caption + note if len(caption + note) <= CAPTION_MAX else caption
+                    await send(bot.send_audio, "audio", ogg, os.path.splitext(filename)[0] + ".ogg", text, **audio)
+                    return
+                except BadRequest as exc:
+                    logger.warning("Telegram refused the Opus copy of %s as audio too: %s", filename, exc.message)
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(ogg)
+        await send(bot.send_document, "document", path, filename, caption)
 
     async def _send_large_file(
         self,
@@ -3782,7 +3833,7 @@ class MusicBot:
                 f"{len(report.reviews)} pair(s) wait for your ear"
                 + (f", the first {shown} below" if shown < len(report.reviews) else " below")
                 + ": listen to both, then Keep mine, Take new or Keep both. "
-                "Pairs left undecided come back with the next sweep (or /sweep reviews).",
+                "Decide them all and the next ones follow; pairs left undecided come back with /sweep reviews.",
             ]
         elif not report.replacements:
             lines += ["", "Nothing changed."]
@@ -3855,7 +3906,7 @@ class MusicBot:
         caption: str,
         markup: InlineKeyboardMarkup | None = None,
     ) -> bool:
-        """Send *path* as audio (document on BadRequest), as it is when it fits the upload cap, else as Opus."""
+        """Send *path* as playable audio: as it is when it fits the upload cap, else as Opus."""
         if not os.path.isfile(path):
             await bot.send_message(
                 chat_id=chat_id,
@@ -3886,38 +3937,9 @@ class MusicBot:
                     reply_markup=markup,
                 )
                 return markup is not None
-        caption = caption if len(caption) <= CAPTION_MAX else caption[: CAPTION_MAX - 1] + "…"
         try:
-            for attempt in (1, 2):
-                try:
-                    with open(send_path, "rb") as f:
-                        try:
-                            await bot.send_audio(
-                                chat_id=chat_id,
-                                audio=f,
-                                filename=filename,
-                                title=title,
-                                performer=performer,
-                                duration=int(duration or 0) or None,
-                                caption=caption,
-                                parse_mode=ParseMode.HTML,
-                                reply_markup=markup,
-                            )
-                        except BadRequest:
-                            f.seek(0)
-                            await bot.send_document(
-                                chat_id=chat_id,
-                                document=f,
-                                filename=filename,
-                                caption=caption,
-                                parse_mode=ParseMode.HTML,
-                                reply_markup=markup,
-                            )
-                    return True
-                except RetryAfter as exc:
-                    if attempt == 2:
-                        raise
-                    await asyncio.sleep(_retry_after_seconds(exc) + 0.5)
+            await self._send_playable(bot, chat_id, send_path, filename, title, performer, duration, caption, markup)
+            return True
         except Exception:
             logger.exception("Sending the sweep file %s to %s failed", filename, chat_id)
             return False
@@ -3925,7 +3947,6 @@ class MusicBot:
             if tmp:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp)
-        return False
 
     async def _handle_sweep_decision(self, update: Update, context, chat_id: int, data: str) -> None:
         """swp:<review id>:<m|n|b>: Keep mine, Take new or Keep both, applied at once."""
@@ -3941,7 +3962,7 @@ class MusicBot:
         try:
             review, path = await self.pipeline.sweep.decide(review_id, decision)
         except SweepError as exc:
-            note = f"⚠️ {_esc(exc)}"
+            note, decided = f"⚠️ {_esc(exc)}", False
         except Exception:
             logger.exception("Sweep decision %s on pair %s failed", decision, review_id)
             with contextlib.suppress(Exception):
@@ -3950,6 +3971,7 @@ class MusicBot:
                 )
             return
         else:
+            decided = True
             note = {
                 DECISION_KEEP_MINE: "✅ Kept yours. The proposal is deleted.",
                 DECISION_TAKE_NEW: f"✅ Took the new one. Yours is kept in .sweep-replaced for {self.config.library_sweep_keep_days} days.",
@@ -3964,6 +3986,25 @@ class MusicBot:
         except Exception:
             # The pair came as a text message (file gone or too big): edit the text instead.
             await _safe_query_edit(query, caption[:4000], reply_markup=None)
+        if decided:
+            await self._offer_next_sweep_batch(context.bot, chat_id)
+
+    async def _offer_next_sweep_batch(self, bot, chat_id: int) -> None:
+        """Once every offered pair is decided, the next batch follows by itself (or "none left")."""
+        try:
+            pending = self.pipeline.sweep.repo.pending_reviews()
+            if any(r.offered_at for r in pending):
+                return
+            if not pending:
+                await bot.send_message(chat_id=chat_id, text="\u2705 No pairs left for your ear.")
+                return
+            shown = min(len(pending), SWEEP_PAIRS_PER_MESSAGE)
+            await bot.send_message(
+                chat_id=chat_id, text=f"\U0001f442 {len(pending)} pair(s) left, the next {shown} below."
+            )
+            await self._send_sweep_pairs(bot, chat_id, pending)
+        except Exception:
+            logger.exception("Offering the next sweep pairs to %s failed", chat_id)
 
     async def _orphan_sweep_loop(self) -> None:
         """The pipeline's hourly orphan sweep, with this bot's in-flight downloads protected."""

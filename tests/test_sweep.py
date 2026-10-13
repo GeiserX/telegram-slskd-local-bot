@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from telegram.error import BadRequest
 
 from music_downloader.bot.keyboards import build_sweep_review_keyboard
 from music_downloader.mcp.tools import McpTools
@@ -490,7 +491,7 @@ class TestTelegram:
         assert "MP3 320 kbps → FLAC 16/44.1" in text
         sent = tg.send_audio.await_args_list
         assert [c.kwargs["filename"] for c in sent] == [f"{STEM} (yours).flac", f"{STEM} (proposal).flac"]
-        assert sent[0].kwargs["reply_markup"] is None
+        assert sent[0].kwargs.get("reply_markup") is None
         assert sent[1].kwargs["reply_markup"] == build_sweep_review_keyboard(review.id)
         assert "Why it needs your ear" in sent[1].kwargs["caption"]
         assert bot.pipeline.sweep.repo.get_review(review.id).offered_at is not None
@@ -533,6 +534,52 @@ class TestTelegram:
         assert note in kwargs["caption"] and kwargs["reply_markup"] is None
         if choice == "b":
             assert os.path.exists(os.path.join(config.output_dir, f"{STEM} (alternate).flac"))
+
+    async def test_a_refused_audio_goes_as_opus_not_as_a_document(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        ogg = tmp_path / "copy.ogg"
+        ogg.write_bytes(b"o")
+        bot.pipeline.opus_bitrates_that_fit = lambda secs: [160, 128]
+        bot.pipeline.convert_to_opus = AsyncMock(side_effect=lambda p, k: shutil.copy(ogg, tmp_path / f"{k}.ogg"))
+        tg = AsyncMock()
+        tg.send_audio = AsyncMock(side_effect=[BadRequest("nope"), BadRequest("nope"), None, None])
+        assert await bot._send_sweep_pair(tg, CHAT, review, 1, 1)
+        names = [c.kwargs["filename"] for c in tg.send_audio.await_args_list]
+        assert names == [f"{STEM} (yours).flac"] * 2 + [f"{STEM} (yours).ogg", f"{STEM} (proposal).flac"]
+        caption = tg.send_audio.await_args_list[2].kwargs["caption"]
+        assert "Opus 160 kbps here: Telegram refused the file as audio (nope)" in caption
+        tg.send_document.assert_not_awaited()
+        assert not (tmp_path / "160.ogg").exists()
+
+    @pytest.mark.parametrize("left_open", [False, True])
+    async def test_deciding_the_last_offered_pair_sends_the_next_batch(self, tmp_path, monkeypatch, left_open):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        first = _review(bot, config, tmp_path)
+        second = _review(bot, config, tmp_path, stem="Second - Song")
+        third = _review(bot, config, tmp_path, stem="Third - Song")
+        bot.pipeline.sweep.repo.mark_offered(first.id, 1.0)
+        bot.pipeline.sweep.repo.mark_offered(second.id, 1.0)
+        context = MagicMock(bot=AsyncMock())
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        update.callback_query.message.caption_html = ""
+        await bot._handle_sweep_decision(update, context, CHAT, f"swp:{first.id}:m")
+        if not left_open:
+            await bot._handle_sweep_decision(update, context, CHAT, f"swp:{second.id}:m")
+        sent = [c.kwargs["filename"] for c in context.bot.send_audio.await_args_list]
+        texts = [c.kwargs["text"] for c in context.bot.send_message.await_args_list]
+        if left_open:
+            assert sent == [] and texts == []
+        else:
+            assert sent == ["Third - Song (yours).flac", "Third - Song (proposal).flac"]
+            assert texts == ["\U0001f442 1 pair(s) left, the next 1 below."]
+            assert bot.pipeline.sweep.repo.get_review(third.id).offered_at
+            await bot._handle_sweep_decision(update, context, CHAT, f"swp:{third.id}:m")
+            assert context.bot.send_message.await_args.kwargs["text"] == "\u2705 No pairs left for your ear."
 
     async def test_a_second_tap_says_it_was_decided(self, tmp_path):
         bot, config = _bot(tmp_path)

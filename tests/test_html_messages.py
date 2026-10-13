@@ -312,7 +312,7 @@ class TestErrorMessages:
         source.write_bytes(b"x")
         context = _context()
         context.bot.send_audio = AsyncMock(side_effect=NetworkError(f"refused {NAME}"))
-        reason = await MusicBot._send_audio_file(context, CHAT, str(source), "t.flac", _track(), "c")
+        reason = await _make_bot()._send_audio_file(context, CHAT, str(source), "t.flac", _track(), "c")
         _assert_html(reason, f"refused {ESC_NAME}")
 
 
