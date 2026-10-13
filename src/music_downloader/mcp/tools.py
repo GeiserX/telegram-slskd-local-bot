@@ -266,7 +266,8 @@ class McpTools:
 
         deliver="library" goes through the lossless gate: a lossless copy made
         from a lossy file is deleted and the next copy of the same search tried
-        (listed under "rejected"); "copy" names the copy that was kept.
+        (listed under "rejected"), up to LOSSLESS_GATE_MAX_REJECTIONS times;
+        after that nothing is saved. "copy" names the copy the result is about.
         """
         if deliver not in (DELIVER_LIBRARY, DELIVER_PATH):
             raise ToolError(f"deliver must be {DELIVER_LIBRARY!r} or {DELIVER_PATH!r}, not {deliver!r}.")
@@ -291,9 +292,9 @@ class McpTools:
         finally:
             self.downloads_in_progress -= 1
         outcome, result = gated.outcome, gated.result
-        # What the lossless gate did, only when it did something: the copy kept, the ones thrown away.
+        # What the lossless gate did, only when it did something: the copy the result is about, the ones thrown away.
         gate = {}
-        if gated.rejected or gated.kept_lossy:
+        if gated.rejected:
             gate = {
                 "copy": {"filename": result.basename, "source": result.username, "quality": result.quality_display},
                 "rejected": [
@@ -306,15 +307,15 @@ class McpTools:
                     else "run resolve_track and wishlist_add to search again later"
                 ),
             }
-        if gated.kept_lossy:
-            after = f" after {len(gated.rejected)} rejected copies" if gated.rejected else ""
-            gate["kept_lossy"] = f"kept anyway{after}: {gated.kept_lossy}"
         if not outcome.ok:
             if outcome.error in (DOWNLOAD_FAILED, FILE_NOT_FOUND):
                 await self.pipeline.record_history(track, result, outcome.error)
             error = {"ok": False, "error": outcome.error, "state": outcome.state or None, **gate}
             if outcome.error == ALL_REJECTED:
-                error["detail"] = "every copy tried was a lossless file made from a lossy one; none was kept"
+                error["detail"] = (
+                    f"the {len(gated.rejected)} copies tried were all lossless files made from a lossy one; "
+                    "none was kept"
+                )
             return error
 
         verdict = _verdict_dict(outcome.verdict)

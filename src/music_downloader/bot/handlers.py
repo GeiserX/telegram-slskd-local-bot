@@ -166,6 +166,13 @@ def _esc(text) -> str:
     return html.escape(str(text), quote=False)
 
 
+def _no_copy_kept(gated: GatedFetch) -> str:
+    """The gate's verdict when nothing passed: every copy tried was made from a lossy file."""
+    tried = len(gated.rejected)
+    copies = "the copy tried was" if tried == 1 else f"the {tried} copies tried were all"
+    return f"❌ No copy kept: {copies} made from a lossy file."
+
+
 def _retry_after_seconds(exc: RetryAfter) -> float:
     """RetryAfter.retry_after is an int today and a timedelta under PTB_TIMEDELTA."""
     value = exc.retry_after
@@ -1380,12 +1387,8 @@ class MusicBot:
 
     @classmethod
     def _gate_note(cls, gated: GatedFetch, offset: int = 0) -> str:
-        """HTML lines for what the lossless gate did: each rejected copy, and a lossy copy kept anyway."""
-        lines = [cls._rejection_line(r, offset) for r in gated.rejected]
-        if gated.kept_lossy:
-            after = f" after {len(gated.rejected)} rejected copies" if gated.rejected else ""
-            lines.append(f"⚠️ Kept anyway{after}: {_esc(gated.kept_lossy)}")
-        return "\n".join(lines)
+        """HTML lines for what the lossless gate did: each rejected copy."""
+        return "\n".join(cls._rejection_line(r, offset) for r in gated.rejected)
 
     def _next_dl_id(self) -> str:
         """Generate a short unique download ID.
@@ -1453,16 +1456,16 @@ class MusicBot:
             label = f"#{result_index + 1}"
             gate_note = self._gate_note(gated, offset)
             gate_head = f"{gate_note}\n" if gate_note else ""
-            # Offered as on the result list when the gate kept nothing, or kept a lossy copy.
+            # Offered as on the result list when the gate kept nothing.
             wish_markup = (
                 InlineKeyboardMarkup([[build_wait_better_button(search_id)]])
-                if search_id and (outcome.error == ALL_REJECTED or gated.kept_lossy)
+                if search_id and outcome.error == ALL_REJECTED
                 else None
             )
             if outcome.error == ALL_REJECTED:
                 await _safe_edit(
                     status_msg,
-                    f"{gate_head}❌ No copy kept: every copy left on the list was made from a lossy file.",
+                    f"{gate_head}{_no_copy_kept(gated)}",
                     parse_mode=ParseMode.HTML,
                     reply_markup=wish_markup,
                 )
@@ -2966,7 +2969,7 @@ class MusicBot:
             gate_note = self._gate_note(gated, offset)
             gate_head = f"{gate_note}\n" if gate_note else ""
             if outcome.error == ALL_REJECTED:
-                failed = "❌ No copy kept: every copy left on the list was made from a lossy file"
+                failed = _no_copy_kept(gated)
                 if self._import_auto.get(chat_id):
                     await self._import_auto_fail(
                         context,

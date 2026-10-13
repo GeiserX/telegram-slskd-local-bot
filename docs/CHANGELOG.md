@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.5] - 2026-10-13
+
+### Changed
+
+- The lossless gate keeps nothing once its budget is spent. After `LOSSLESS_GATE_MAX_REJECTIONS` rejected copies it gives up with "No copy kept" and offers "Wait for a better copy", the same as when the list runs out. Before, the next copy was saved to the library whatever its spectrum, flagged "Kept anyway", which is how a fake 24/192 FLAC got into a library through the MCP door. The `kept_lossy` field of the MCP `download` result is gone with it.
+
 ## [0.20.4] - 2026-10-13
 
 ### Fixed

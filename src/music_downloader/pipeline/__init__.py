@@ -201,7 +201,8 @@ class Pipeline:
 
         A lossless copy made from a lossy file is deleted, recorded in the
         history as "lossy_source", and the next copy on *results* fetched,
-        up to LOSSLESS_GATE_MAX_REJECTIONS times; see fetch.fetch_gated.
+        up to LOSSLESS_GATE_MAX_REJECTIONS times; after that nothing is kept.
+        See fetch.fetch_gated.
         *progress_for* gives the progress callback of each copy tried.
         With the gate off this is one fetch() and nothing is rejected.
         """

@@ -18,7 +18,7 @@ The bot at [@slskdimporterbot](https://t.me/slskdimporterbot) is a private, allo
 ```yaml
 services:
   slskd-importer:
-    image: drumsergio/telegram-slskd-local-bot:0.20.4
+    image: drumsergio/telegram-slskd-local-bot:0.20.5
     container_name: slskd_importer
     restart: unless-stopped
     environment:
