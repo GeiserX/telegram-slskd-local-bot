@@ -10,6 +10,7 @@ import functools
 import html
 import logging
 import os
+import re
 import time
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
@@ -164,6 +165,12 @@ def _esc(text) -> str:
     Constants do not, and keyboard button labels (plain text) never do.
     """
     return html.escape(str(text), quote=False)
+
+
+def _retry_after_in(message: str) -> float:
+    """The seconds a "retry after N" error text asks for, 0 when it is not one."""
+    found = re.search(r"retry after (\d+(?:\.\d+)?)", message, re.IGNORECASE)
+    return float(found.group(1)) if found else 0.0
 
 
 def _no_copy_kept(gated: GatedFetch) -> str:
@@ -1844,13 +1851,18 @@ class MusicBot:
 
         audio = {"title": title, "performer": performer, "duration": int(duration or 0) or None}
         reason = ""
-        for _ in (1, 2):
+        for attempt in (1, 2):
             try:
                 await send(bot.send_audio, "audio", path, filename, caption, **audio)
                 return
             except BadRequest as exc:
                 reason = exc.message
                 logger.warning("Telegram refused %s as audio: %s", filename, reason)
+                # Flood control through the local Bot API server comes as a plain 400
+                # ("Too many requests: retry after 8"), not as RetryAfter: wait as asked.
+                wait = _retry_after_in(reason)
+                if attempt == 1 and wait:
+                    await asyncio.sleep(wait + 0.5)
         if not path.lower().endswith(".ogg"):
             for kbps in self.pipeline.opus_bitrates_that_fit(int(duration or 0))[:1]:
                 ogg = await self.pipeline.convert_to_opus(path, kbps)
