@@ -1855,9 +1855,8 @@ class MusicBot:
                     break
                 try:
                     note = f"\n\U0001f3a7 Opus {kbps} kbps here: Telegram refused the file as audio ({_esc(reason)})"
-                    await send(
-                        bot.send_audio, "audio", ogg, os.path.splitext(filename)[0] + ".ogg", caption + note, **audio
-                    )
+                    text = caption + note if len(caption + note) <= CAPTION_MAX else caption
+                    await send(bot.send_audio, "audio", ogg, os.path.splitext(filename)[0] + ".ogg", text, **audio)
                     return
                 except BadRequest as exc:
                     logger.warning("Telegram refused the Opus copy of %s as audio too: %s", filename, exc.message)
