@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.3] - 2026-10-13
+
+### Fixed
+
+- A file Telegram refuses as audio is no longer sent as a document, which nobody can play in the chat. The refusal is logged with Telegram's reason, the audio is tried once more, then an Opus copy goes as audio; a document only when the Opus copy fails too. Same for the sweep pairs and for chat delivery.
+- Deciding the last pair of a sweep batch sends the next batch by itself, and the last decision of all says so. Before, the next pairs only came with /sweep reviews or the next sweep.
+
 ## [0.20.2] - 2026-10-10
 
 ### Fixed

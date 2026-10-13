@@ -459,11 +459,32 @@ class TestChatDownload:
         assert bot.history_repo.get_recent(1)[0].status == "delivered"
 
     @pytest.mark.asyncio
-    async def test_bad_request_falls_back_to_document(self, tmp_path):
+    async def test_a_refused_audio_is_tried_again_then_sent_as_opus(self, tmp_path):
+        """Telegram refuses a file as audio now and then; a document cannot be played in the chat."""
+        bot = _chat_bot()
+        _setup_download(bot, _file(tmp_path))
+        context = _make_context()
+        context.bot.send_audio = AsyncMock(side_effect=[BadRequest("nope"), BadRequest("nope"), None])
+        ogg = tmp_path / "copy.ogg"
+        ogg.write_bytes(b"o")
+        bot.pipeline.convert_to_opus = AsyncMock(return_value=str(ogg))
+
+        await bot._do_download(context, CHAT, _make_track(), _make_result(), _status_msg())
+
+        assert context.bot.send_audio.await_count == 3
+        last = context.bot.send_audio.await_args.kwargs
+        assert last["filename"].endswith(".ogg") and "refused the file as audio (nope)" in last["caption"]
+        context.bot.send_document.assert_not_awaited()
+        assert not ogg.exists()
+        assert bot.history_repo.get_recent(1)[0].status == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_a_document_only_when_the_opus_copy_fails_too(self, tmp_path):
         bot = _chat_bot()
         _setup_download(bot, _file(tmp_path))
         context = _make_context()
         context.bot.send_audio = AsyncMock(side_effect=BadRequest("nope"))
+        bot.pipeline.convert_to_opus = AsyncMock(return_value=None)
 
         await bot._do_download(context, CHAT, _make_track(), _make_result(), _status_msg())
 
