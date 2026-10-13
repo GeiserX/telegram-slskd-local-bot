@@ -93,11 +93,10 @@ also has:
 |-------|---------|
 | `rejected` | Each copy thrown away: `filename`, `source`, `reason` (`"transcoded from lossy, cutoff 14.0 kHz"`, or `"upsampled from lossy, ..."` for a hi-res file) |
 | `copy` | The copy the result is about: `filename`, `source`, `quality` |
-| `kept_lossy` | Present when the copy was kept only because the gate ran out of rejections, with the reason it would have been rejected |
 | `wishlist_hint` | The `wishlist_add` call that searches the track again later |
 
-When every remaining copy is rejected the result is `ok` false with `error` `"all_rejected"` and nothing is
-saved. `deliver="path"` is not gated.
+When every remaining copy is rejected, or `LOSSLESS_GATE_MAX_REJECTIONS` copies have been, the result is `ok`
+false with `error` `"all_rejected"` and nothing is saved. `deliver="path"` is not gated.
 
 ## Library sweep
 

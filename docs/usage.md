@@ -183,8 +183,8 @@ the result list, and the status message says which copy was rejected and why:
 The line is drawn at a cutoff below 16 kHz for a 44.1 or 48 kHz file, and below 19.5 kHz for a file above
 48 kHz, which is a hi-res file upsampled from a lossy one. A cutoff between those and the top of the range
 ("Possible transcode", "Likely transcode" at 17 kHz and up) is shown but not rejected. After
-`LOSSLESS_GATE_MAX_REJECTIONS` rejected copies (3) the next copy is kept whatever it is, with a line saying it
-would have been rejected. When every copy on the list is rejected nothing is kept. In both cases the message
-offers "Wait for a better copy". The wishlist ranks copies by the format they advertise, so it cannot tell a
+`LOSSLESS_GATE_MAX_REJECTIONS` rejected copies (3), or when every copy on the list is rejected, the bot gives up
+and nothing is kept: the library never gets a copy that failed the gate. The message offers "Wait for a better
+copy". The wishlist ranks copies by the format they advertise, so it cannot tell a
 fake FLAC from a real one: after fakes it waits for a copy of a higher tier. Chat delivery is not gated, and
 neither are album downloads. `LOSSLESS_GATE=false` turns the gate off.

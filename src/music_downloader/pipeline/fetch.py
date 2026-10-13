@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 ENQUEUE_FAILED = "enqueue_failed"
 DOWNLOAD_FAILED = "failed"
 FILE_NOT_FOUND = "file_not_found"
-# fetch_gated: every copy left on the list was made from a lossy file.
+# fetch_gated: every copy tried was made from a lossy file (the list ran out, or the gate gave up).
 ALL_REJECTED = "all_rejected"
 
 # The lossless gate (library deliveries only). A lossless copy whose spectrum
@@ -248,8 +248,6 @@ class GatedFetch:
     result: SearchResult
     index: int
     rejected: list[Rejection] = field(default_factory=list)
-    # The copy was kept although it is lossy-sourced: the gate had used up its rejections.
-    kept_lossy: str | None = None
 
 
 # (the copy rejected, the next copy to try or None when the list is spent, its index)
@@ -267,11 +265,10 @@ async def fetch_gated(
     """Fetch results[index]; while the copy is lossless but lossy-sourced, discard it and fetch the next.
 
     *fetch_one* must run the spectrum check (FetchOutcome.verdict).
-    *discard* deletes a rejected copy (and records why). After
-    *max_rejections* copies the next one is kept whatever its spectrum, with
-    kept_lossy saying why it would have been rejected. A copy that fails to
-    download ends the run with that outcome; a list spent by rejections ends
-    it with ALL_REJECTED.
+    *discard* deletes a rejected copy (and records why). A copy that fails to
+    download ends the run with that outcome. After *max_rejections* rejected
+    copies, or when the list is spent, the run ends with ALL_REJECTED and
+    nothing is kept: the library never gets a copy that failed the gate.
     """
     rejected: list[Rejection] = []
     while True:
@@ -280,15 +277,6 @@ async def fetch_gated(
         reason = lossy_source(outcome.verdict) if outcome.ok else None
         if reason is None:
             return GatedFetch(outcome, result, index, rejected)
-        if len(rejected) >= max_rejections:
-            logger.warning(
-                "Lossless gate kept %s from %s after %d rejections: %s",
-                result.basename,
-                result.username,
-                len(rejected),
-                reason,
-            )
-            return GatedFetch(outcome, result, index, rejected, kept_lossy=reason)
         logger.info("Lossless gate rejected %s from %s: %s", result.basename, result.username, reason)
         await discard(result, outcome, reason)
         rejection = Rejection(result, index, reason)
@@ -297,7 +285,9 @@ async def fetch_gated(
         following = results[index] if index < len(results) else None
         if on_reject is not None:
             await on_reject(rejection, following, index)
-        if following is None:
+        if following is None or len(rejected) >= max_rejections:
+            if following is not None:
+                logger.warning("Lossless gate gave up on %s after %d rejected copies", result.basename, len(rejected))
             return GatedFetch(FetchOutcome(error=ALL_REJECTED), result, index - 1, rejected)
 
 

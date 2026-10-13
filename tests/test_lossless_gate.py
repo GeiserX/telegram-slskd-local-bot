@@ -139,7 +139,7 @@ class TestFetchGated:
         results = [_make_result(i) for i in range(3)]
         gated = await fetch_gated(fetch_one, discard, results, 0, 3, on_reject)
         assert gated.outcome.ok and gated.index == 1 and gated.result is results[1]
-        assert calls == [0, 1] and gated.kept_lossy is None
+        assert calls == [0, 1]
         assert [(r.index, r.reason) for r in gated.rejected] == [(0, "transcoded from lossy, cutoff 14.0 kHz")]
         assert discard.await_args.args[1].path == "/dl/0.flac"
         on_reject.assert_awaited_once()
@@ -152,13 +152,13 @@ class TestFetchGated:
         assert gated.outcome.error == ALL_REJECTED and len(gated.rejected) == 2
         assert discard.await_count == 2
 
-    async def test_after_max_rejections_the_next_copy_is_kept_and_flagged(self):
+    async def test_after_max_rejections_the_gate_gives_up_and_keeps_nothing(self):
+        """The library never gets a copy that failed the gate: no fourth download, nothing kept."""
         fetch_one, calls = _fetcher([_verdict(14.0)] * 5)
         discard = AsyncMock()
         gated = await fetch_gated(fetch_one, discard, [_make_result(i) for i in range(5)], 0, 3)
-        assert calls == [0, 1, 2, 3] and gated.index == 3 and gated.outcome.ok
-        assert gated.kept_lossy == "transcoded from lossy, cutoff 14.0 kHz"
-        assert discard.await_count == 3
+        assert calls == [0, 1, 2] and gated.index == 2 and gated.outcome.error == ALL_REJECTED
+        assert len(gated.rejected) == 3 and discard.await_count == 3
 
     async def test_a_failed_download_ends_the_run_with_its_outcome(self):
         failed = FetchOutcome(error=DOWNLOAD_FAILED, state="Timeout")
@@ -232,15 +232,19 @@ class TestBotSingleTrack:
         assert "No copy kept" in last.args[0] and "#2 rejected: upsampled from lossy" in last.args[0]
         assert _buttons(last.kwargs["reply_markup"]) == ["wish:better:s1"]
 
-    async def test_after_the_limit_the_next_copy_is_kept_and_the_user_told(self, tmp_path, flacs):
+    async def test_after_the_limit_nothing_is_kept_and_the_user_told(self, tmp_path, flacs):
         bot, results = _gate_bot(tmp_path, flacs, ["mp3_64", "mp3_64"], lossless_gate_max_rejections=1)
         context, status = _make_context(), _status_msg()
         await bot._do_download(context, CHAT, _make_track(), results[0], status, 0, "s1", user_id=CHAT)
 
+        # Copy 0 was rejected and deleted; copy 1 was never fetched, so its file is untouched.
         assert not _landed(bot, 0) and _landed(bot, 1)
-        caption = context.bot.send_audio.call_args.kwargs["caption"]
-        assert "⚠️ Kept anyway after 1 rejected copies: transcoded from lossy, cutoff 14.0 kHz" in caption
-        assert "wish:better:s1" in _buttons(status.edit_text.call_args.kwargs["reply_markup"])
+        assert bot.slskd.enqueue_download.call_count == 1
+        context.bot.send_audio.assert_not_called()
+        last = status.edit_text.call_args
+        assert "No copy kept: the copy tried was made from a lossy file" in last.args[0]
+        assert "#1 rejected: transcoded from lossy" in last.args[0]
+        assert _buttons(last.kwargs["reply_markup"]) == ["wish:better:s1"]
 
     async def test_auto_mode_saves_the_genuine_copy(self, tmp_path, flacs):
         bot, results = _gate_bot(tmp_path, flacs, ["mp3_64", "real16"], auto_mode=True)
@@ -326,7 +330,14 @@ class TestMcpDownload:
             {"filename": seen[0], "source": copies[0]["source"], "reason": "transcoded from lossy, cutoff 14.0 kHz"}
         ]
         assert pipeline.discarded == [f"/downloads/{seen[0]}"]
-        assert "kept_lossy" not in done
+
+    async def test_after_the_limit_the_mcp_download_saves_nothing(self, tmp_path):
+        tools, pipeline, copies, seen = await self._tools(tmp_path, [_verdict(14.0)] * 4)
+        done = await tools.download(copies[0]["id"])
+        assert done["ok"] is False and done["error"] == ALL_REJECTED and len(seen) == 3
+        assert [r["filename"] for r in done["rejected"]] == seen
+        assert done["detail"].startswith("the 3 copies tried were all")
+        assert pipeline.discarded == [f"/downloads/{name}" for name in seen]
 
     async def test_a_genuine_copy_adds_nothing_to_the_result(self, tmp_path):
         tools, _, copies, _ = await self._tools(tmp_path, [_verdict(22.05)])
