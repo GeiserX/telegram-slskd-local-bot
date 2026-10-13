@@ -4150,6 +4150,7 @@ def create_bot(config: Config, health: HealthState | None = None) -> Application
             "_wishlist_task",
             "_mcp_task",
             "_sweep_loop_task",
+            "_sweep_resume_task",
         ):
             task = getattr(bot, name, None)
             if task is not None:
