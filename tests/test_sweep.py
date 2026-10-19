@@ -291,6 +291,14 @@ class TestFilesAndPurge:
         assert not old.exists() and new.exists()
         assert outside.read_bytes() == b"user file", "a path outside .sweep-replaced is never deleted"
 
+    async def test_keep_days_never_deletes_nothing(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5), keep_days=None)
+        await _run_once(sweep)
+        await sweep.decide(sweep.repo.pending_review_for(STEM).id, "take_new")
+        parked = pipe.lib / sw.REPLACED_DIR / f"{STEM}.flac.sweep"
+        assert sweep.purge_parked(now=time.time() + 10**10) == 0
+        assert parked.read_bytes() == b"original"
+
     async def test_keep_days_zero_deletes_at_once(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5), keep_days=0)
         await _run_once(sweep)
@@ -754,6 +762,8 @@ class TestConfig:
             config = Config()
         assert config.library_sweep_users == {1, 2}
         assert (config.library_sweep_pause_secs, config.library_sweep_keep_days) == (5, 0)
+        with patch.dict(os.environ, {**env, "LIBRARY_SWEEP_KEEP_DAYS": "never"}, clear=True):
+            assert Config().library_sweep_keep_days is None
         with (
             patch.dict(os.environ, {**env, "LIBRARY_SWEEP_SCHEDULE": "fortnightly"}, clear=True),
             pytest.raises(ValueError),

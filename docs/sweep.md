@@ -18,7 +18,7 @@ The account must be in `TELEGRAM_ALLOWED_USERS` and save to the library. An acco
 | `LIBRARY_SWEEP_USERS` | *(empty: off)* | Telegram user ids that get `/sweep`, the reports and the pairs to judge. Empty turns the feature off, MCP tools included |
 | `LIBRARY_SWEEP_SCHEDULE` | `weekly:sun:04:00` | When a sweep starts on its own. `weekly:<day>:HH:MM` with a day from `mon` to `sun`, `daily:HH:MM`, or `off` to sweep only with `/sweep` or MCP. The time is the container's local time, so set `TZ`. A start missed while the bot was down runs when it comes back. A bad value stops the bot at start |
 | `LIBRARY_SWEEP_PAUSE_SECS` | `20` | Seconds between two songs that searched Soulseek, to keep the load on peers low |
-| `LIBRARY_SWEEP_KEEP_DAYS` | `7` | Days a song you replaced with Take new stays in `<library>/.sweep-replaced/` before it is deleted. `0` deletes it at once |
+| `LIBRARY_SWEEP_KEEP_DAYS` | `7` | Days a song you replaced with Take new stays in `<library>/.sweep-replaced/` before it is deleted. `0` deletes it at once, `never` never deletes it |
 
 The image ships `fpcalc` from Chromaprint for the same-recording check. A PyPI install without Chromaprint still
 sweeps, but judges by length and tags alone, and `/sweep status` says so. Without ffmpeg or the `analysis`

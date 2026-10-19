@@ -3984,7 +3984,12 @@ class MusicBot:
             decided = True
             note = {
                 DECISION_KEEP_MINE: "✅ Kept yours. The proposal is deleted.",
-                DECISION_TAKE_NEW: f"✅ Took the new one. Yours is kept in .sweep-replaced for {self.config.library_sweep_keep_days} days.",
+                DECISION_TAKE_NEW: "✅ Took the new one. Yours is kept in .sweep-replaced"
+                + (
+                    "."
+                    if self.config.library_sweep_keep_days is None
+                    else f" for {self.config.library_sweep_keep_days} days."
+                ),
                 DECISION_KEEP_BOTH: f"✅ Kept both. The proposal is now <code>{_esc(os.path.basename(path))}</code>.",
             }[decision]
         caption = getattr(query.message, "caption_html", None) or ""

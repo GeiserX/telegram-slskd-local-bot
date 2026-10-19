@@ -757,7 +757,12 @@ class LibrarySweep:
     # ----------------------------------------------------------------- purge
 
     def purge_parked(self, now: float | None = None) -> int:
-        """Delete parked originals older than LIBRARY_SWEEP_KEEP_DAYS (only files this sweep parked). Blocking."""
+        """Delete parked originals older than LIBRARY_SWEEP_KEEP_DAYS (only files this sweep parked). Blocking.
+
+        LIBRARY_SWEEP_KEEP_DAYS=never (keep_days None) deletes nothing.
+        """
+        if self.config.library_sweep_keep_days is None:
+            return 0
         now = time.time() if now is None else now
         cutoff = now - self.config.library_sweep_keep_days * 86400
         purged = 0
