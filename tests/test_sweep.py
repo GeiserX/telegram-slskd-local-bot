@@ -504,6 +504,14 @@ class TestTelegram:
         assert "Why it needs your ear" in sent[1].kwargs["caption"]
         assert bot.pipeline.sweep.repo.get_review(review.id).offered_at is not None
 
+    def test_a_legacy_upgraded_count_is_not_called_nothing_changed(self, tmp_path):
+        bot, _ = _bot(tmp_path)
+        run = SweepRun(id=1, trigger="schedule", total=10, done=10, counts={"upgraded": 2})
+        text = bot._sweep_summary(sw.SweepReport(run))
+        assert "Upgraded: 2" in text and "Nothing changed" not in text
+        quiet = bot._sweep_summary(sw.SweepReport(SweepRun(id=2, trigger="schedule", total=10, done=10)))
+        assert "Nothing changed" in quiet
+
     async def test_a_same_recording_pair_says_so_first_in_both_messages(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
         bot, config = _bot(tmp_path)

@@ -89,7 +89,7 @@ from music_downloader.pipeline.search import (
     extract_latin_keywords,
     has_non_latin_script,
 )
-from music_downloader.pipeline.sweep import OUTCOME_LABELS, SAME_AND_BETTER, SweepError, SweepReport
+from music_downloader.pipeline.sweep import OUTCOME_LABELS, OUTCOME_UPGRADED, SAME_AND_BETTER, SweepError, SweepReport
 from music_downloader.pipeline.sweep_rules import split_stem
 from music_downloader.pipeline.wishlist import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.processor.lossless_analyzer import not_checked_display
@@ -3839,7 +3839,8 @@ class MusicBot:
                 + ": listen to both, then Keep mine, Take new or Keep both. "
                 "Decide them all and the next ones follow; pairs left undecided come back with /sweep reviews.",
             ]
-        else:
+        elif not run.counts.get(OUTCOME_UPGRADED):
+            # A sweep started before 0.21.0 may have replaced songs on its own.
             lines += ["", "Nothing changed."]
         text = "\n".join(lines)
         return text if len(text) <= 4000 else text[:3990] + "…"
