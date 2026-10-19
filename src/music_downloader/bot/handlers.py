@@ -89,7 +89,7 @@ from music_downloader.pipeline.search import (
     extract_latin_keywords,
     has_non_latin_script,
 )
-from music_downloader.pipeline.sweep import OUTCOME_LABELS, SweepError, SweepReport
+from music_downloader.pipeline.sweep import OUTCOME_LABELS, OUTCOME_UPGRADED, SAME_AND_BETTER, SweepError, SweepReport
 from music_downloader.pipeline.sweep_rules import split_stem
 from music_downloader.pipeline.wishlist import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.processor.lossless_analyzer import not_checked_display
@@ -110,7 +110,6 @@ ALBUM_EXPIRED = "⌛ This button expired."
 # Library sweep pairs sent per report (and per /sweep reviews); the rest wait for the next one.
 SWEEP_PAIRS_PER_MESSAGE = 10
 # Automatic replacements listed in a sweep report; the count says how many more.
-SWEEP_REPLACEMENTS_LISTED = 25
 # Pause between two files sent for one report, to stay under Telegram's flood limits.
 SWEEP_SEND_PAUSE_SECS = 1.0
 # Telegram caps a caption at 1024 characters.
@@ -3831,16 +3830,6 @@ class MusicBot:
         if counts:
             lines.append("")
             lines.extend(f"{OUTCOME_LABELS.get(k, k)}: {n}" for k, n in counts)
-        if report.replacements:
-            lines += ["", "<b>Upgraded automatically</b>"]
-            for rep in report.replacements[:SWEEP_REPLACEMENTS_LISTED]:
-                lines.append(f"• {_esc(rep.stem)}: {_esc(rep.from_desc)} → {_esc(rep.to_desc)}")
-            more = len(report.replacements) - SWEEP_REPLACEMENTS_LISTED
-            if more > 0:
-                lines.append(f"…and {more} more")
-            lines.append(
-                f"The replaced files are kept in .sweep-replaced for {self.config.library_sweep_keep_days} days."
-            )
         if report.reviews:
             shown = min(len(report.reviews), SWEEP_PAIRS_PER_MESSAGE)
             lines += [
@@ -3850,7 +3839,8 @@ class MusicBot:
                 + ": listen to both, then Keep mine, Take new or Keep both. "
                 "Decide them all and the next ones follow; pairs left undecided come back with /sweep reviews.",
             ]
-        elif not report.replacements:
+        elif not run.counts.get(OUTCOME_UPGRADED):
+            # A sweep started before 0.21.0 may have replaced songs on its own.
             lines += ["", "Nothing changed."]
         text = "\n".join(lines)
         return text if len(text) <= 4000 else text[:3990] + "…"
@@ -3878,11 +3868,16 @@ class MusicBot:
         artist, title = split_stem(review.stem)
         current_ext = os.path.splitext(review.current_path)[1].lstrip(".") or "audio"
         head = f"\U0001f442 <b>{n}/{total}</b> {_esc(review.stem)}"
+        if review.reason.startswith(SAME_AND_BETTER):
+            # The same recording, better: said first, so the pair reads as an easy yes.
+            head += f"\n\u2705 <b>{_esc(SAME_AND_BETTER)}</b>{_esc(review.reason[len(SAME_AND_BETTER) :])}"
+            why = ""
+        else:
+            why = f"Why it needs your ear: {_esc(review.reason)}\n"
         mine = f"{head}\n1. Yours: {_esc(review.current_desc)}, {_duration(review.current_len)}"
         theirs = (
             f"{head}\n2. Proposal: {_esc(review.proposal_desc)}, {_duration(review.proposal_len)}\n"
-            f"Why it needs your ear: {_esc(review.reason)}\n"
-            f"Keep both saves it as <code>{_esc(review.both_name)}</code>"
+            f"{why}Keep both saves it as <code>{_esc(review.both_name)}</code>"
         )
         await self._send_sweep_audio(
             bot,

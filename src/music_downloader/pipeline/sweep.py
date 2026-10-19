@@ -1,4 +1,4 @@
-"""The library sweep: look for a better copy of every library song, replace it when sure, ask the ear when not.
+"""The library sweep: look for a better copy of every library song and ask the owner's ear before any change.
 
 Off unless LIBRARY_SWEEP_USERS names someone. One sweep at a time, one song at
 a time, one download at a time, LIBRARY_SWEEP_PAUSE_SECS between songs that
@@ -7,16 +7,16 @@ mtime), and checked when due: fake, lossy, uncertain and damaged songs every
 sweep, CD-quality songs once a month, hi-res songs never unless forced. A due
 song is resolved (Spotify, MusicBrainz), searched, and up to three copies that
 could beat it are downloaded through the lossless gate and measured. A better
-copy of the same recording replaces the song: the original's missing tags and
-cover are carried over, the original is parked as
-<OUTPUT_DIR>/.sweep-replaced/<name>.sweep for LIBRARY_SWEEP_KEEP_DAYS. A
-better copy that may be another recording is staged as
-<OUTPUT_DIR>/.sweep-review/<name>.sweep for the owner to judge (Keep mine,
-Take new, Keep both). The parked and staged files end in ".sweep" so no
+copy, of the same recording (marked SAME_AND_BETTER) or maybe another one, is
+staged as <OUTPUT_DIR>/.sweep-review/<name>.sweep, its missing tags and cover
+carried over from the original, for the owner to judge (Keep mine, Take new,
+Keep both). Nothing replaces a song without that decision. Take new parks the
+original as <OUTPUT_DIR>/.sweep-replaced/<name>.sweep for
+LIBRARY_SWEEP_KEEP_DAYS. The parked and staged files end in ".sweep" so no
 player or transcoder watching the library takes them for songs.
 
-The sweep touches only files it downloaded, the one file it replaces (parked
-first) and files it staged or parked itself. Every state is in SQLite
+The sweep touches only files it downloaded, the file the owner chose to
+replace (parked first) and files it staged or parked itself. Every state is in SQLite
 (persistence/sweep_repo.py), so a restart continues the sweep where it stopped.
 """
 
@@ -54,7 +54,8 @@ from music_downloader.pipeline.sweep_rules import Audit
 
 logger = logging.getLogger(__name__)
 
-# How a song's check ended (sweep_songs.outcome and the report's counts).
+# How a song's check ended (sweep_songs.outcome and the report's counts). "upgraded" is
+# from sweeps before 0.21.0, which replaced the same recording without asking.
 OUTCOME_UPGRADED = "upgraded"
 OUTCOME_REVIEW = "review"
 OUTCOME_NONE_QUALIFIED = "none_qualified"
@@ -75,6 +76,9 @@ OUTCOME_LABELS = {
     OUTCOME_SKIPPED: "Skipped (not named Artist - Title)",
     OUTCOME_ERROR: "Errors",
 }
+
+# The reason of a pair whose proposal is the same recording and better: the owner still decides.
+SAME_AND_BETTER = "Same recording, better copy"
 
 REPLACED_DIR = ".sweep-replaced"
 REVIEW_DIR = ".sweep-review"
@@ -102,13 +106,12 @@ class SongResult:
 
 @dataclass
 class SweepReport:
-    """What the owner is told: the run, its automatic replacements, every pair still waiting for the ear.
+    """What the owner is told: the run and every pair still waiting for the ear.
 
     *in_progress*: the schedule came round while a sweep was still running.
     """
 
     run: SweepRun
-    replacements: list[Replacement] = field(default_factory=list)
     reviews: list[Review] = field(default_factory=list)
     in_progress: bool = False
 
@@ -479,7 +482,6 @@ class LibrarySweep:
     def report(self, run: SweepRun, in_progress: bool = False) -> SweepReport:
         return SweepReport(
             run=run,
-            replacements=self.repo.replacements_for_run(run.id) if run.id is not None else [],
             reviews=[] if in_progress else self.repo.pending_reviews(),
             in_progress=in_progress,
         )
@@ -607,9 +609,9 @@ class LibrarySweep:
     async def _consider(
         self, path, stem, original: Audit, cand_path, result, transfer_id, track, run
     ) -> tuple[str | None, str]:
-        """Judge one downloaded copy; replace, stage, or discard it.
+        """Judge one downloaded copy; stage it for the owner's ear or discard it. Nothing is replaced without asking.
 
-        Returns (OUTCOME_UPGRADED or OUTCOME_REVIEW, detail), or (None, why it was discarded).
+        Returns (OUTCOME_REVIEW, detail), or (None, why it was discarded).
         The download is deleted from DOWNLOAD_DIR whatever happens.
         """
         try:
@@ -618,15 +620,14 @@ class LibrarySweep:
                 return None, f"not better ({rules.describe(cand)})"
             similarity = await self._similarity(path, cand_path)
             kind, why = rules.judge(original, cand, stem, similarity)
+            if kind == rules.REJECT:
+                return None, f"rejected: {why}"
+            if self.repo.is_declined(stem):
+                return None, f"you kept your file over another proposal before ({why})"
             if kind == rules.SAME:
-                await self._replace(run, stem, path, original, cand_path, cand, track, result, transfer_id)
-                return OUTCOME_UPGRADED, f"{rules.describe(original)} -> {rules.describe(cand)} ({why})"
-            if kind == rules.REVIEW:
-                if self.repo.is_declined(stem):
-                    return None, f"you kept your file over another proposal before ({why})"
-                await self._stage(run, stem, path, original, cand_path, cand, why, similarity)
-                return OUTCOME_REVIEW, why
-            return None, f"rejected: {why}"
+                why = f"{SAME_AND_BETTER}: {why}"
+            await self._stage(run, stem, path, original, cand_path, cand, why, similarity)
+            return OUTCOME_REVIEW, why
         finally:
             if os.path.exists(cand_path):
                 await self.pipeline.discard(cand_path, result.username, transfer_id)
@@ -639,28 +640,6 @@ class LibrarySweep:
         if not a or not b:
             return None
         return await asyncio.to_thread(rules.similarity, a, b)
-
-    async def _replace(self, run, stem, path, original: Audit, cand_path, cand: Audit, track, result, transfer_id):
-        await asyncio.to_thread(carry_tags_and_cover, path, cand_path)
-        target, parked = await asyncio.to_thread(replace_in_library, path, cand_path, cand.ext, self.replaced_dir)
-        self._index_moved(path, target)
-        self.repo.add_replacement(
-            Replacement(
-                stem=stem,
-                new_path=target,
-                parked_path=parked,
-                from_desc=rules.describe(original),
-                to_desc=rules.describe(cand),
-                how="auto",
-                run_id=run.id,
-            )
-        )
-        with contextlib.suppress(Exception):
-            await self.pipeline.record_history(
-                track, result, "success", filename=os.path.basename(target), note="sweep"
-            )
-        if self.config.library_sweep_keep_days == 0:
-            await asyncio.to_thread(self.purge_parked)
 
     async def _stage(self, run, stem, path, original: Audit, cand_path, cand: Audit, why, similarity):
         await asyncio.to_thread(carry_tags_and_cover, path, cand_path)
@@ -710,7 +689,7 @@ class LibrarySweep:
         """Apply the owner's decision on a pair; returns the review and the library path it left.
 
         keep_mine deletes the proposal; take_new replaces the song with it (the
-        song parked like an automatic replacement); keep_both adds it as a song
+        song parked in .sweep-replaced); keep_both adds it as a song
         of its own under the review's both_name. Either keep marks the song
         declined: no other recording is proposed for it again. Raises
         SweepError when the pair is unknown or already decided.

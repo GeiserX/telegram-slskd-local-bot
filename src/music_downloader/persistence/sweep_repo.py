@@ -323,12 +323,6 @@ class SweepRepository:
         rep.id = cursor.lastrowid
         return rep
 
-    def replacements_for_run(self, run_id: int) -> list[Replacement]:
-        rows = self._conn.execute(
-            "SELECT * FROM sweep_replacements WHERE run_id = ? AND how = 'auto' ORDER BY id", (run_id,)
-        ).fetchall()
-        return [Replacement(**{k: r[k] for k in (*_REPLACEMENT_COLUMNS, "id")}) for r in rows]
-
     def unpurged_before(self, cutoff: float) -> list[Replacement]:
         rows = self._conn.execute(
             "SELECT * FROM sweep_replacements WHERE purged_at IS NULL AND replaced_at <= ? ORDER BY id", (cutoff,)

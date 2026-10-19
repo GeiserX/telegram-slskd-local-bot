@@ -39,7 +39,7 @@ The Docker image runs as uid 1000, so the three host folders mounted into it (`S
 | `LIBRARY_SWEEP_USERS` | No | *(off)* | Comma-separated Telegram user IDs that get the [library sweep](sweep.md): `/sweep`, its reports and the pairs to judge. Only accounts in `TELEGRAM_ALLOWED_USERS` that save to the library qualify; chat-delivery accounts never get it. Empty turns the sweep off, its MCP tools included |
 | `LIBRARY_SWEEP_SCHEDULE` | No | `weekly:sun:04:00` | When a sweep starts on its own: `weekly:<mon..sun>:HH:MM`, `daily:HH:MM`, or `off`. Container local time (`TZ`). A bad value stops the bot at start |
 | `LIBRARY_SWEEP_PAUSE_SECS` | No | `20` | Seconds between two sweep songs that searched Soulseek |
-| `LIBRARY_SWEEP_KEEP_DAYS` | No | `7` | Days a song the sweep replaced stays in `<library>/.sweep-replaced/` before it is deleted (`0`: at once) |
+| `LIBRARY_SWEEP_KEEP_DAYS` | No | `7` | Days a song you replaced with Take new stays in `<library>/.sweep-replaced/` before it is deleted (`0`: at once) |
 | `EXCLUDE_KEYWORDS` | No | `live,remix,...` | Comma-separated keywords to filter out |
 | `FILENAME_TEMPLATE` | No | `{artist} - {title}` | Output filename template. Variables: `{artist}`, `{title}`, and `{track}`, the two-digit track number of a file saved from an album download (`03`). Without `{track}` the number never reaches the name; for a file with no number the placeholder is dropped with the separator next to it. The file's own extension is always added |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
