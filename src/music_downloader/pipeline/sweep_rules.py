@@ -396,11 +396,11 @@ def judge(original: Audit, candidate: Audit, stem: str, similarity: float | None
 
     Without a fingerprint (None) this is sameness(). With one, the tags still
     reject a copy that cannot be this song; then the fingerprint decides:
-    the same recording (SAME_RECORDING_SIMILARITY or more) is replaced
-    automatically when its length is within REVIEW_MAX_DIFF_SECS and its tags
-    name nobody new, and goes to the ear otherwise; another recording is never
-    replaced automatically: the ear decides, unless its length is off by more
-    than REVIEW_MAX_DIFF_SECS.
+    the same recording (SAME_RECORDING_SIMILARITY or more) is SAME when its
+    length is within REVIEW_MAX_DIFF_SECS and its tags name nobody new, REVIEW
+    otherwise; another recording is REVIEW, unless its length is off by more
+    than REVIEW_MAX_DIFF_SECS. The sweep replaces nothing by itself: SAME and
+    REVIEW both go to the owner's ear, SAME marked as the same recording.
     """
     if similarity is None:
         return sameness(original, candidate, stem)

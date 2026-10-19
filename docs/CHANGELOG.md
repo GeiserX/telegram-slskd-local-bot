@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-10-19
+
+### Changed
+
+- The library sweep never replaces a song by itself. A copy that is the same recording, only better, now comes to you as a pair like any other, with "Same recording, better copy" on the first line of both messages, so you can accept it with Take new. Before, the sweep replaced those songs on its own and only listed them under "Upgraded automatically". Keep mine on such a pair declines the song like on any other pair: no copy of it is proposed again.
+
 ## [0.20.6] - 2026-10-13
 
 ### Fixed

@@ -112,17 +112,25 @@ async def _run_once(sweep, force=False):
 
 
 class TestOneSong:
-    async def test_same_recording_and_better_replaces_and_parks_the_original(self, tmp_path):
+    async def test_same_recording_and_better_is_staged_for_the_ear_never_replaced(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
         run = await _run_once(sweep)
-        assert run.counts == {sw.OUTCOME_UPGRADED: 1}
-        assert (pipe.lib / f"{STEM}.flac").read_bytes() == b"candidate 0"
-        parked = pipe.lib / sw.REPLACED_DIR / f"{STEM}.flac.sweep"
-        assert parked.read_bytes() == b"original"
+        assert run.counts == {sw.OUTCOME_REVIEW: 1}
+        assert (pipe.lib / f"{STEM}.flac").read_bytes() == b"original", "nothing is replaced without asking"
+        assert not (pipe.lib / sw.REPLACED_DIR).exists()
         assert not list(pipe.dl.iterdir()), "the download is deleted"
-        reps = sweep.repo.replacements_for_run(run.id)
-        assert [r.stem for r in reps] == [STEM] and reps[0].parked_path == str(parked)
-        pipe.record_history.assert_awaited()
+        review = sweep.repo.pending_review_for(STEM)
+        assert Path(review.proposal_path).read_bytes() == b"candidate 0"
+        assert review.reason.startswith(sw.SAME_AND_BETTER) and "same recording (fingerprint" in review.reason
+
+    async def test_a_declined_song_gets_no_same_recording_pair(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
+        await _run_once(sweep)
+        await sweep.decide(sweep.repo.pending_review_for(STEM).id, "keep_mine")
+        run = await _run_once(sweep, force=True)
+        assert run.counts == {sw.OUTCOME_NONE_QUALIFIED: 1}
+        assert sweep.repo.pending_reviews() == []
+        assert (pipe.lib / f"{STEM}.flac").read_bytes() == b"original"
 
     async def test_another_recording_is_staged_for_the_ear_and_the_library_is_untouched(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=200.5), fp=OTHER_FP)
@@ -286,6 +294,7 @@ class TestFilesAndPurge:
     async def test_keep_days_zero_deletes_at_once(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5), keep_days=0)
         await _run_once(sweep)
+        await sweep.decide(sweep.repo.pending_review_for(STEM).id, "take_new")
         assert not (pipe.lib / sw.REPLACED_DIR / f"{STEM}.flac.sweep").exists()
         assert (pipe.lib / f"{STEM}.flac").read_bytes() == b"candidate 0"
 
@@ -446,7 +455,7 @@ def _bot(tmp_path, chat_users=None):
     return bot, config
 
 
-def _review(bot, config, tmp_path, stem=STEM):
+def _review(bot, config, tmp_path, stem=STEM, reason="another recording (fingerprint 0.60), length differs 0.4 s"):
     lib = config.output_dir
     current = os.path.join(lib, f"{stem}.flac")
     with open(current, "wb") as f:
@@ -463,7 +472,7 @@ def _review(bot, config, tmp_path, stem=STEM):
             proposal_path=staged,
             proposal_ext="flac",
             both_name=f"{stem} (alternate).flac",
-            reason="another recording (fingerprint 0.60), length differs 0.4 s",
+            reason=reason,
             current_desc="FLAC 16/44.1, cutoff 15.0 kHz",
             proposal_desc="FLAC 16/44.1, cutoff 21.5 kHz",
             current_len=200.0,
@@ -481,20 +490,32 @@ class TestTelegram:
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
         bot, config = _bot(tmp_path, chat_users={12345})
         review = _review(bot, config, tmp_path)
-        run = SweepRun(id=1, trigger="schedule", total=2400, done=2400, counts={"upgraded": 2, "review": 1})
-        rep = sw.Replacement(STEM, "x", "y", "MP3 320 kbps", "FLAC 16/44.1, cutoff 21.9 kHz", "auto")
+        run = SweepRun(id=1, trigger="schedule", total=2400, done=2400, counts={"review": 1})
         tg = AsyncMock()
-        await bot._send_sweep_report(tg, sw.SweepReport(run, [rep], [review]))
+        await bot._send_sweep_report(tg, sw.SweepReport(run, [review]))
         assert [c.kwargs["chat_id"] for c in tg.send_message.await_args_list] == [CHAT]
         text = tg.send_message.await_args.kwargs["text"]
-        assert "Weekly library sweep done" in text and "Upgraded: 2" in text and "For your ear: 1" in text
-        assert "MP3 320 kbps → FLAC 16/44.1" in text
+        assert "Weekly library sweep done" in text and "For your ear: 1" in text
+        assert "automatically" not in text
         sent = tg.send_audio.await_args_list
         assert [c.kwargs["filename"] for c in sent] == [f"{STEM} (yours).flac", f"{STEM} (proposal).flac"]
         assert sent[0].kwargs.get("reply_markup") is None
         assert sent[1].kwargs["reply_markup"] == build_sweep_review_keyboard(review.id)
         assert "Why it needs your ear" in sent[1].kwargs["caption"]
         assert bot.pipeline.sweep.repo.get_review(review.id).offered_at is not None
+
+    async def test_a_same_recording_pair_says_so_first_in_both_messages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        why = "same recording (fingerprint 0.91), length within 1.1 s"
+        review = _review(bot, config, tmp_path, reason=f"{sw.SAME_AND_BETTER}: {why}")
+        tg = AsyncMock()
+        await bot._send_sweep_pairs(tg, CHAT, [review])
+        captions = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
+        assert len(captions) == 2
+        for caption in captions:
+            assert caption.splitlines()[1] == f"\u2705 <b>{sw.SAME_AND_BETTER}</b>: {why}"
+        assert "Why it needs your ear" not in captions[1]
 
     async def test_a_file_over_the_cap_goes_as_opus(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)

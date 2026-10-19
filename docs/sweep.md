@@ -1,9 +1,9 @@
 # Library sweep
 
-The library sweep goes through every song in your library and looks on Soulseek for a better copy of it. When
-it is sure the copy is the same recording, only better, it replaces the song. When the copy may be a different
-recording, it leaves the call to you. It sends you both files in Telegram with three buttons, so you can listen
-before you choose. By default it runs once a week and writes to you when it ends.
+The library sweep goes through every song in your library and looks on Soulseek for a better copy of it. It never
+replaces a song by itself. Every better copy comes to you in Telegram next to your file, with three buttons, so
+you can listen before you choose. When the copy is the same recording, only better, the pair says so on its first
+line. By default it runs once a week and writes to you when it ends.
 
 It is off unless you turn it on, and only the accounts you name get it.
 
@@ -18,7 +18,7 @@ The account must be in `TELEGRAM_ALLOWED_USERS` and save to the library. An acco
 | `LIBRARY_SWEEP_USERS` | *(empty: off)* | Telegram user ids that get `/sweep`, the reports and the pairs to judge. Empty turns the feature off, MCP tools included |
 | `LIBRARY_SWEEP_SCHEDULE` | `weekly:sun:04:00` | When a sweep starts on its own. `weekly:<day>:HH:MM` with a day from `mon` to `sun`, `daily:HH:MM`, or `off` to sweep only with `/sweep` or MCP. The time is the container's local time, so set `TZ`. A start missed while the bot was down runs when it comes back. A bad value stops the bot at start |
 | `LIBRARY_SWEEP_PAUSE_SECS` | `20` | Seconds between two songs that searched Soulseek, to keep the load on peers low |
-| `LIBRARY_SWEEP_KEEP_DAYS` | `7` | Days a replaced song stays in `<library>/.sweep-replaced/` before it is deleted. `0` deletes it at once |
+| `LIBRARY_SWEEP_KEEP_DAYS` | `7` | Days a song you replaced with Take new stays in `<library>/.sweep-replaced/` before it is deleted. `0` deletes it at once |
 
 The image ships `fpcalc` from Chromaprint for the same-recording check. A PyPI install without Chromaprint still
 sweeps, but judges by length and tags alone, and `/sweep status` says so. Without ffmpeg or the `analysis`
@@ -67,15 +67,15 @@ sits near 0.5.
 
 | Fingerprint | Result |
 |-------------|--------|
-| Same recording, length within 10 s, no new names in its tags | Replaced automatically |
+| Same recording, length within 10 s, no new names in its tags | Sent to you as a pair marked "Same recording, better copy" |
 | Same recording, but new performers in its tags or more than 10 s off | Sent to you as a pair |
-| Another recording, length within 10 s | Sent to you as a pair, never replaced automatically |
+| Another recording, length within 10 s | Sent to you as a pair |
 | Another recording, more than 10 s off | Thrown away |
 
 Without `fpcalc` the length decides. Within 1.5 s with no new names or version words is the same recording. Up
 to 10 s goes to you, and anything further is thrown away.
 
-## What a replacement does
+## What Take new does
 
 The copy takes your file's place under the same name with its own extension, so `Song.mp3` can become
 `Song.flac`. If a different file already holds that name, the sweep leaves both alone. It copies over the tags
@@ -88,16 +88,15 @@ Your file is not deleted. It moves to `<library>/.sweep-replaced/<name>.sweep` a
 `LIBRARY_SWEEP_KEEP_DAYS`. The `.sweep` ending keeps players and transcoders from taking it for a song. To undo
 a replacement, move the file back and drop the `.sweep`.
 
-The sweep never deletes any file of yours except the one it replaces, and that one only from `.sweep-replaced`
-after the wait. Everything else it deletes is a file it downloaded itself.
+The sweep never deletes any file of yours except the one you chose to replace, and that one only from
+`.sweep-replaced` after the wait. Everything else it deletes is a file it downloaded itself.
 
 ## In Telegram
 
 Every sweep ends with one message to each account in `LIBRARY_SWEEP_USERS`, whether it was the scheduled one,
 a `/sweep`, or one started over MCP. The message says how many songs were checked and gives a count per
-outcome: upgraded, for your ear, copies tried with none qualifying, no better copy, no confident match, already
-hi-res. It lists each automatic replacement with what the file was and what it became. You get it even when
-nothing changed. If the next scheduled start comes while a sweep is still running, you get a progress line
+outcome: for your ear, copies tried with none qualifying, no better copy, no confident match, already hi-res.
+You get it even when nothing changed. If the next scheduled start comes while a sweep is still running, you get a progress line
 instead.
 
 Then come the pairs waiting for your ear, up to 10 per message, each as two audio messages.
@@ -107,10 +106,8 @@ Then come the pairs waiting for your ear, up to 10 per message, each as two audi
    keep both. A reason reads like "another recording (fingerprint 0.61), length differs 4.2 s". The buttons sit
    under this one.
 
-    - **Keep mine** deletes the proposal. The sweep won't propose another recording of this song again, though
-      a better copy of your own recording still replaces it automatically.
-    - **Take new** replaces your file with the proposal, exactly like an automatic replacement. Your file goes
-      to `.sweep-replaced`.
+    - **Keep mine** deletes the proposal. The sweep won't propose any copy of this song again.
+    - **Take new** replaces your file with the proposal. Your file goes to `.sweep-replaced`.
     - **Keep both** adds the proposal as a song of its own and keeps yours. Its name comes from what sets it
       apart, which is the extra performers in its artist tag, a bracket in its title, or its album. For example
       `Elvis Presley - Always On My Mind (with the Royal Philharmonic Orchestra).flac`.
@@ -153,7 +150,7 @@ spectrum check runs in a worker thread. None of it runs in the bot's event loop.
 song checked writes one log line:
 
 ```text
-Sweep 812/2400 Nancy Sinatra - Bang Bang.flac (fake): Upgraded: FLAC 16/44.1, cutoff 15.9 kHz -> FLAC 16/44.1, cutoff 21.8 kHz (same recording (fingerprint 0.97), length within 0.4 s)
+Sweep 812/2400 Nancy Sinatra - Bang Bang.flac (fake): For your ear: Same recording, better copy: same recording (fingerprint 0.97), length within 0.4 s
 ```
 
 The library index behind the duplicate check leaves hidden folders out, so `.sweep-replaced` and
