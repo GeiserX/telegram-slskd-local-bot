@@ -7,8 +7,11 @@ WORKDIR /app
 # libsndfile1: the lossless check (soundfile reads FLAC, WAV, AIFF)
 # ffmpeg: audio trimming/conversion for Telegram previews
 # libchromaprint-tools (fpcalc): the library sweep's same-recording check
+# ca-certificates upgrade: the base image's 20250419 still trusts the compromised
+# eMudhra intermediates; trixie-security distrusts them
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends libsndfile1 ffmpeg libchromaprint-tools && \
+    apt-get install -y --only-upgrade ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching

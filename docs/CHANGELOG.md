@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.2] - 2026-10-21
+
+### Security
+
+- The image no longer trusts the eight eMudhra (emSign) intermediates whose private keys leaked in October 2026. The system `ca-certificates` goes to the trixie-security release that distrusts them, and `requirements.txt` holds certifi at 2026.10.19 or later. Before, anything in the container that reads the system store accepted a certificate minted with those keys for any site.
+
 ## [0.21.1] - 2026-10-19
 
 ### Added

@@ -12,3 +12,6 @@ soundfile>=0.12.1
 # urllib3 releases covered by GHSA-8988-9cw3-xx77, GHSA-vxq7-64xx-v4gw and
 # GHSA-gh4c-6fx4-qh6g.
 urllib3>=2.8.0
+# Not used directly; requests and httpx pull it in. 2026.10.19 is the first
+# release that distrusts the compromised eMudhra intermediates.
+certifi>=2026.10.19
