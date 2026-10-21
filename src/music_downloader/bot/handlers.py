@@ -89,7 +89,14 @@ from music_downloader.pipeline.search import (
     extract_latin_keywords,
     has_non_latin_script,
 )
-from music_downloader.pipeline.sweep import OUTCOME_LABELS, OUTCOME_UPGRADED, SAME_AND_BETTER, SweepError, SweepReport
+from music_downloader.pipeline.sweep import (
+    OUTCOME_LABELS,
+    OUTCOME_UPGRADED,
+    REPAIRS,
+    SAME_AND_BETTER,
+    SweepError,
+    SweepReport,
+)
 from music_downloader.pipeline.sweep_rules import split_stem
 from music_downloader.pipeline.wishlist import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.processor.lossless_analyzer import not_checked_display
@@ -3868,10 +3875,12 @@ class MusicBot:
         artist, title = split_stem(review.stem)
         current_ext = os.path.splitext(review.current_path)[1].lstrip(".") or "audio"
         head = f"\U0001f442 <b>{n}/{total}</b> {_esc(review.stem)}"
-        if review.reason.startswith(SAME_AND_BETTER):
-            # The same recording, better: said first, so the pair reads as an easy yes.
-            head += f"\n\u2705 <b>{_esc(SAME_AND_BETTER)}</b>{_esc(review.reason[len(SAME_AND_BETTER) :])}"
-            why = ""
+        # What the proposal is for, said first: a repair of a damaged file, or the same recording, better.
+        for label, mark in ((REPAIRS, "\U0001f527"), (SAME_AND_BETTER, "\u2705")):
+            if review.reason.startswith(label):
+                head += f"\n{mark} <b>{_esc(label)}</b>{_esc(review.reason[len(label) :])}"
+                why = ""
+                break
         else:
             why = f"Why it needs your ear: {_esc(review.reason)}\n"
         mine = f"{head}\n1. Yours: {_esc(review.current_desc)}, {_duration(review.current_len)}"

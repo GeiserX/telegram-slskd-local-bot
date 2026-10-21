@@ -7,7 +7,8 @@ mtime), and checked when due: fake, lossy, uncertain and damaged songs every
 sweep, CD-quality songs once a month, hi-res songs never unless forced. A due
 song is resolved (Spotify, MusicBrainz), searched, and up to three copies that
 could beat it are downloaded through the lossless gate and measured. A better
-copy, of the same recording (marked SAME_AND_BETTER) or maybe another one, is
+copy, of the same recording (marked SAME_AND_BETTER; REPAIRS when the song has
+decode errors) or maybe another one, is
 staged as <OUTPUT_DIR>/.sweep-review/<name>.sweep, its missing tags and cover
 carried over from the original, for the owner to judge (Keep mine, Take new,
 Keep both). Nothing replaces a song without that decision. Take new parks the
@@ -79,6 +80,9 @@ OUTCOME_LABELS = {
 
 # The reason of a pair whose proposal is the same recording and better: the owner still decides.
 SAME_AND_BETTER = "Same recording, better copy"
+# The reason of a pair whose library file has decode errors: the proposal is first of all a repair
+# (sweep_rules.better lets it through with a cutoff up to 0.5 kHz lower).
+REPAIRS = "Repairs the decode errors in yours"
 
 REPLACED_DIR = ".sweep-replaced"
 REVIEW_DIR = ".sweep-review"
@@ -624,7 +628,14 @@ class LibrarySweep:
                 return None, f"rejected: {why}"
             if self.repo.is_declined(stem):
                 return None, f"you kept your file over another proposal before ({why})"
-            if kind == rules.SAME:
+            if original.strict is False:
+                gain = (
+                    f"cutoff {cand.cutoff - original.cutoff:+.1f} kHz"
+                    if original.cutoff is not None and cand.cutoff is not None
+                    else "your cutoff unknown"
+                )
+                why = f"{REPAIRS}, {gain}: {why}"
+            elif kind == rules.SAME:
                 why = f"{SAME_AND_BETTER}: {why}"
             await self._stage(run, stem, path, original, cand_path, cand, why, similarity)
             return OUTCOME_REVIEW, why
