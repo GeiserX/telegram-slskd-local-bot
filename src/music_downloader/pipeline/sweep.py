@@ -629,8 +629,12 @@ class LibrarySweep:
             if self.repo.is_declined(stem):
                 return None, f"you kept your file over another proposal before ({why})"
             if original.strict is False:
-                gain = (cand.cutoff or 0.0) - (original.cutoff or 0.0)
-                why = f"{REPAIRS}, cutoff {gain:+.1f} kHz: {why}"
+                gain = (
+                    f"cutoff {cand.cutoff - original.cutoff:+.1f} kHz"
+                    if original.cutoff is not None and cand.cutoff is not None
+                    else "your cutoff unknown"
+                )
+                why = f"{REPAIRS}, {gain}: {why}"
             elif kind == rules.SAME:
                 why = f"{SAME_AND_BETTER}: {why}"
             await self._stage(run, stem, path, original, cand_path, cand, why, similarity)

@@ -133,6 +133,14 @@ class TestOneSong:
         assert reason.startswith(f"{sw.REPAIRS}, cutoff -0.3 kHz: same recording"), reason
         assert sw.SAME_AND_BETTER not in reason
 
+    async def test_a_repair_with_no_measured_cutoff_claims_no_gain(self, tmp_path):
+        damaged = _audit(cutoff=None)
+        damaged.strict, damaged.tier = False, rules.tier_of("flac", 16, 44100, False, None)
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=20.0, length=204.0), original=damaged)
+        await _run_once(sweep)
+        reason = sweep.repo.pending_review_for(STEM).reason
+        assert reason.startswith(f"{sw.REPAIRS}, your cutoff unknown: "), reason
+
     async def test_a_declined_song_gets_no_same_recording_pair(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
         await _run_once(sweep)
