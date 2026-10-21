@@ -72,6 +72,10 @@ sits near 0.5.
 | Another recording, length within 10 s | Sent to you as a pair |
 | Another recording, more than 10 s off | Thrown away |
 
+When your file has decode errors, a copy counts as better once it decodes cleanly, even with a cutoff up to
+0.5 kHz lower than yours. Such a pair opens with "🔧 Repairs the decode errors in yours" and the cutoff
+difference, so you can tell a repair from a quality upgrade.
+
 Without `fpcalc` the length decides. Within 1.5 s with no new names or version words is the same recording. Up
 to 10 s goes to you, and anything further is thrown away.
 

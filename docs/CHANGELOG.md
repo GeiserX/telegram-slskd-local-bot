@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.3] - 2026-10-21
+
+### Changed
+
+- A sweep pair for a song with decode errors opens with "🔧 Repairs the decode errors in yours" and the cutoff difference, instead of "✅ Same recording, better copy". Such a proposal only has to decode cleanly and may have a slightly lower cutoff, so calling it a better copy misled.
+
 ## [0.21.2] - 2026-10-21
 
 ### Security

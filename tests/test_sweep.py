@@ -123,6 +123,16 @@ class TestOneSong:
         assert Path(review.proposal_path).read_bytes() == b"candidate 0"
         assert review.reason.startswith(sw.SAME_AND_BETTER) and "same recording (fingerprint" in review.reason
 
+    async def test_a_damaged_song_gets_a_pair_labelled_as_a_repair(self, tmp_path):
+        damaged = _audit(cutoff=20.3)
+        damaged.strict, damaged.tier = False, rules.tier_of("flac", 16, 44100, False, 20.3)
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=20.0, length=204.0), original=damaged)
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_REVIEW: 1}
+        reason = sweep.repo.pending_review_for(STEM).reason
+        assert reason.startswith(f"{sw.REPAIRS}, cutoff -0.3 kHz: same recording"), reason
+        assert sw.SAME_AND_BETTER not in reason
+
     async def test_a_declined_song_gets_no_same_recording_pair(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
         await _run_once(sweep)
@@ -532,6 +542,18 @@ class TestTelegram:
         for caption in captions:
             assert caption.splitlines()[1] == f"\u2705 <b>{sw.SAME_AND_BETTER}</b>: {why}"
         assert "Why it needs your ear" not in captions[1]
+
+    async def test_a_repair_pair_says_so_first(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        rest = ", cutoff -0.3 kHz: same recording (fingerprint 0.91), length within 1.2 s"
+        review = _review(bot, config, tmp_path, reason=f"{sw.REPAIRS}{rest}")
+        tg = AsyncMock()
+        await bot._send_sweep_pairs(tg, CHAT, [review])
+        captions = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
+        for caption in captions:
+            assert caption.splitlines()[1] == f"\U0001f527 <b>{sw.REPAIRS}</b>{rest}"
+            assert "\u2705" not in caption
 
     async def test_a_file_over_the_cap_goes_as_opus(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
