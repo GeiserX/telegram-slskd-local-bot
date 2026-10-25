@@ -34,7 +34,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from music_downloader.formats import AUDIO_EXTENSIONS
+from music_downloader.formats import AUDIO_EXTENSIONS, LOSSY_EXTENSIONS
 from music_downloader.metadata.spotify import TrackInfo
 from music_downloader.persistence.sweep_repo import (
     DECISION_KEEP_BOTH,
@@ -329,6 +329,7 @@ class LibrarySweep:
         # Replaceable in tests: the measuring and the fingerprint are subprocesses.
         self.audit: Callable[[str], Audit] = rules.audit
         self.fingerprint: Callable[[str], list[int] | None] = rules.fingerprint
+        self.sound: Callable[[str], rules.Sound | None] = rules.sound
         self.sleep = asyncio.sleep
         self._task: asyncio.Task | None = None
         self._run: SweepRun | None = None
@@ -628,6 +629,11 @@ class LibrarySweep:
                 return None, f"rejected: {why}"
             if self.repo.is_declined(stem):
                 return None, f"you kept your file over another proposal before ({why})"
+            mine = await asyncio.to_thread(self.sound, path)
+            theirs = await asyncio.to_thread(self.sound, cand_path)
+            worse = rules.sounds_worse(mine, theirs, original_lossy=original.ext in LOSSY_EXTENSIONS)
+            if worse:
+                return None, f"sounds worse: {worse}"
             if original.strict is False:
                 gain = (
                     f"cutoff {cand.cutoff - original.cutoff:+.1f} kHz"
@@ -637,7 +643,7 @@ class LibrarySweep:
                 why = f"{REPAIRS}, {gain}: {why}"
             elif kind == rules.SAME:
                 why = f"{SAME_AND_BETTER}: {why}"
-            await self._stage(run, stem, path, original, cand_path, cand, why, similarity)
+            await self._stage(run, stem, path, original, cand_path, cand, why, similarity, mine, theirs)
             return OUTCOME_REVIEW, why
         finally:
             if os.path.exists(cand_path):
@@ -652,7 +658,9 @@ class LibrarySweep:
             return None
         return await asyncio.to_thread(rules.similarity, a, b)
 
-    async def _stage(self, run, stem, path, original: Audit, cand_path, cand: Audit, why, similarity):
+    async def _stage(
+        self, run, stem, path, original: Audit, cand_path, cand: Audit, why, similarity, mine=None, theirs=None
+    ):
         await asyncio.to_thread(carry_tags_and_cover, path, cand_path)
 
         def stage() -> str:
@@ -682,6 +690,8 @@ class LibrarySweep:
                 proposal_cutoff=cand.cutoff,
                 similarity=similarity,
                 run_id=run.id,
+                current_sound=rules.describe_sound(mine),
+                proposal_sound=rules.describe_sound(theirs, mine),
             )
         )
 

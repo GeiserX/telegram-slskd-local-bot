@@ -412,3 +412,83 @@ class TestToolFailures:
     def test_missing_tools(self, monkeypatch):
         monkeypatch.setattr(rules.shutil, "which", lambda name: None)
         assert rules.missing_tools()[0] == "ffmpeg"
+
+
+def _made(tmp_path, name, *filters):
+    path = tmp_path / name
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anoisesrc=d=30:c=white:a=0.3",
+            *filters,
+            "-ar",
+            "44100",
+            "-sample_fmt",
+            "s16",
+            "-c:a",
+            "flac",
+            str(path),
+        ],
+        check=True,
+    )
+    return str(path)
+
+
+@needs_analysis
+class TestSoundRealFiles:
+    def test_a_lowpassed_copy_reads_duller_and_is_refused(self, tmp_path):
+        pytest.importorskip("numpy")
+        mine = rules.sound(_made(tmp_path, "mine.flac"))
+        muffled = rules.sound(_made(tmp_path, "muffled.flac", "-af", "lowpass=f=4000"))
+        assert mine.treble - muffled.treble > rules.TREBLE_MAX_LOSS_DB
+        assert "duller than yours" in rules.sounds_worse(mine, muffled)
+        assert rules.sounds_worse(mine, mine) is None
+
+    def test_a_clipped_copy_shows_flat_tops_even_turned_down_afterwards(self, tmp_path):
+        pytest.importorskip("numpy")
+        mine = rules.sound(_made(tmp_path, "mine.flac"))
+        clipped = _made(tmp_path, "clipped.flac", "-af", "volume=12dB")
+        down = tmp_path / "down.flac"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", clipped, "-af", "volume=-6dB", str(down)], check=True)
+        assert mine.clips < rules.CLIP_MAX_PER_MIN / 4
+        for path in (clipped, str(down)):
+            s = rules.sound(path)
+            assert s.clips > rules.CLIP_MAX_PER_MIN, (path, s)
+            assert "clipped" in rules.sounds_worse(mine, s)
+
+    def test_a_file_that_cannot_be_decoded_measures_nothing(self, tmp_path):
+        bad = tmp_path / "bad.flac"
+        bad.write_bytes(b"not audio")
+        assert rules.sound(str(bad)) is None
+
+
+class TestSoundRules:
+    def test_nothing_is_judged_without_both_measures(self):
+        assert rules.sounds_worse(None, rules.Sound(-30.0, 900.0)) is None
+        assert rules.sounds_worse(rules.Sound(-17.0, 0.0), None) is None
+
+    def test_duller_by_more_than_the_limit_is_worse_and_by_less_is_not(self):
+        mine = rules.Sound(-17.0, 10.0)
+        assert rules.sounds_worse(mine, rules.Sound(-17.0 - rules.TREBLE_MAX_LOSS_DB - 0.1, 10.0))
+        assert rules.sounds_worse(mine, rules.Sound(-17.0 - rules.TREBLE_MAX_LOSS_DB + 0.1, 10.0)) is None
+
+    def test_clipping_counts_only_when_well_beyond_the_owners(self):
+        heavy = rules.Sound(-17.0, rules.CLIP_MAX_PER_MIN + 50)
+        assert rules.sounds_worse(rules.Sound(-17.0, 5.0), heavy)
+        assert rules.sounds_worse(rules.Sound(-17.0, heavy.clips), heavy) is None, "no worse than yours"
+        assert rules.sounds_worse(rules.Sound(-17.0, heavy.clips), heavy, original_lossy=True)
+
+    def test_the_caption_line_says_the_gap_and_the_clipping_in_words(self):
+        mine, theirs = rules.Sound(-17.1, 12.0), rules.Sound(-23.0, 0.0)
+        assert rules.describe_sound(mine) == "treble -17.1 dB, clipping none (12/min)"
+        assert rules.describe_sound(theirs, mine) == "treble -23.0 dB (5.9 dB duller than yours), clipping none (0/min)"
+        assert "brighter" in rules.describe_sound(mine, theirs)
+        assert "same as yours" in rules.describe_sound(mine, rules.Sound(-17.3, 0.0))
+        assert "heavy" in rules.describe_sound(rules.Sound(-17.0, 500.0))
+        assert rules.describe_sound(None) == ""
