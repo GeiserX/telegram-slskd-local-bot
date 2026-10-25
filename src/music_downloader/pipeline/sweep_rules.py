@@ -21,7 +21,7 @@ import os
 import re
 import shutil
 import subprocess
-import time
+import threading
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -518,6 +518,8 @@ CLIP_LEVEL = 2**30  # -6 dBFS in 32-bit samples
 CLIP_MAX_PER_MIN = 100
 CLIP_FACTOR = 4
 SOUND_TIMEOUT_SECS = 900
+# A decode that stops before this share of the file's length is not judged.
+SOUND_MIN_COVERAGE = 0.9
 
 
 @dataclass
@@ -529,11 +531,19 @@ class Sound:
 
 
 def sound(path: str) -> Sound | None:
-    """Measure the treble and the clipping of *path* in one streamed decode; None when it cannot be decoded."""
+    """Measure the treble and the clipping of *path* in one streamed decode.
+
+    None when it cannot be decoded, when the decode covers less than
+    SOUND_MIN_COVERAGE of the file's length (a partial measure could refuse a
+    good copy), or when it takes over SOUND_TIMEOUT_SECS: a timer kills ffmpeg
+    then, so a stalled decode cannot block the read.
+    """
+    import json
+
     import numpy as np
 
     try:
-        probe_out = (
+        info = json.loads(
             subprocess.run(
                 [
                     "ffprobe",
@@ -542,19 +552,20 @@ def sound(path: str) -> Sound | None:
                     "-select_streams",
                     "a:0",
                     "-show_entries",
-                    "stream=sample_rate,channels",
+                    "stream=sample_rate,channels:format=duration",
                     "-of",
-                    "csv=p=0",
+                    "json",
                     path,
                 ],
                 capture_output=True,
                 text=True,
                 timeout=60,
-            )
-            .stdout.strip()
-            .split(",")
+            ).stdout
+            or "{}"
         )
-        rate, channels = int(probe_out[0]), int(probe_out[1])
+        stream = (info.get("streams") or [{}])[0]
+        rate, channels = int(stream.get("sample_rate") or 0), int(stream.get("channels") or 0)
+        duration = float((info.get("format") or {}).get("duration") or 0)
         if rate <= 0 or channels <= 0:
             return None
         proc = subprocess.Popen(
@@ -562,17 +573,18 @@ def sound(path: str) -> Sound | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
-    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
         logger.warning("Could not measure the sound of %s", path, exc_info=True)
         return None
+    timer = threading.Timer(SOUND_TIMEOUT_SECS, proc.kill)
+    timer.start()
     window = np.hanning(rate)
     spectrum = np.zeros(rate // 2 + 1)
     flat_tops = 0
     samples = 0
-    deadline = time.monotonic() + SOUND_TIMEOUT_SECS
     frame = channels * 4
     try:
-        while time.monotonic() < deadline:
+        while True:
             chunk = proc.stdout.read(rate * frame)
             if len(chunk) < frame:
                 break
@@ -588,12 +600,17 @@ def sound(path: str) -> Sound | None:
             if len(x) == rate:
                 mono = x.astype(np.float64).mean(axis=1) / 2**31
                 spectrum += np.abs(np.fft.rfft(mono * window)) ** 2
-        else:
-            logger.warning("Measuring the sound of %s took over %d s", path, SOUND_TIMEOUT_SECS)
-            return None
     finally:
+        timed_out = not timer.is_alive()
+        timer.cancel()
         proc.kill()
         proc.wait()
+    if timed_out:
+        logger.warning("Measuring the sound of %s took over %d s", path, SOUND_TIMEOUT_SECS)
+        return None
+    if duration and samples / rate < SOUND_MIN_COVERAGE * duration:
+        logger.warning("Only %.0f of %.0f s of %s decoded; its sound is not judged", samples / rate, duration, path)
+        return None
     freqs = np.fft.rfftfreq(rate, 1 / rate)
     total = spectrum[(freqs > 20) & (freqs < TREBLE_BAND_HZ[1])].sum()
     treble = spectrum[(freqs >= TREBLE_BAND_HZ[0]) & (freqs < TREBLE_BAND_HZ[1])].sum()

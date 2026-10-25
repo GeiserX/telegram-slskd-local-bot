@@ -3,6 +3,8 @@
 import datetime
 import shutil
 import subprocess
+import time
+from pathlib import Path
 
 import pytest
 
@@ -492,3 +494,32 @@ class TestSoundRules:
         assert "same as yours" in rules.describe_sound(mine, rules.Sound(-17.3, 0.0))
         assert "heavy" in rules.describe_sound(rules.Sound(-17.0, 500.0))
         assert rules.describe_sound(None) == ""
+
+
+@needs_analysis
+class TestSoundIncomplete:
+    def test_a_file_cut_in_half_is_not_judged(self, tmp_path):
+        pytest.importorskip("numpy")
+        whole = _made(tmp_path, "whole.flac")
+        assert rules.sound(whole) is not None
+        cut = tmp_path / "cut.flac"
+        data = Path(whole).read_bytes()
+        cut.write_bytes(data[: len(data) // 2])
+        assert rules.sound(str(cut)) is None, "the header still claims the full length"
+
+    def test_a_stalled_decode_is_killed_at_the_deadline(self, tmp_path, monkeypatch):
+        pytest.importorskip("numpy")
+        whole = _made(tmp_path, "whole.flac")
+        real_popen = subprocess.Popen
+
+        def stalled(cmd, **kw):
+            if "ffmpeg" not in " ".join(cmd):
+                return real_popen(cmd, **kw)  # ffprobe runs for real
+            # A decode that writes nothing and never closes stdout until killed.
+            return real_popen(["sleep", "30"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+        monkeypatch.setattr(rules, "SOUND_TIMEOUT_SECS", 0.5)
+        monkeypatch.setattr(rules.subprocess, "Popen", stalled)
+        started = time.monotonic()
+        assert rules.sound(whole) is None
+        assert time.monotonic() - started < 10
