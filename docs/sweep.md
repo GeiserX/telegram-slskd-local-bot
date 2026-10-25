@@ -51,7 +51,7 @@ The worst tiers go first, one song at a time, one download at a time. For each s
 3. A downloaded copy is better when it decodes cleanly and its spectrum reaches further. A cd song needs genuine
    content above 24 kHz. A fake, uncertain or lossy song needs at least 19.5 kHz and 1 kHz more than its own.
    A damaged song takes any copy that is no worse.
-4. The sweep then compares the better copy with the song.
+4. The sweep then compares the better copy with the song: is it the same recording, and does it sound as good.
 
 ## Same recording or not
 
@@ -71,6 +71,24 @@ sits near 0.5.
 | Same recording, but new performers in its tags or more than 10 s off | Sent to you as a pair |
 | Another recording, length within 10 s | Sent to you as a pair |
 | Another recording, more than 10 s off | Thrown away |
+
+## How it sounds
+
+The cutoff only says how high a spectrum reaches, not how much treble is there. A 24/96 vinyl or tape transfer
+can reach 24 kHz and still sound duller than your CD. So before a pair goes to you, the sweep decodes both files
+once more and measures two things:
+
+- **Treble**: the share of the energy between 5 and 15 kHz, in dB. A copy more than 3 dB duller than yours is
+  thrown away. A rejected 24/96 proposal of The Zombies' "Time of the Season" read 5.9 dB below the CD and
+  sounded muffled.
+- **Clipping**: flat tops, runs of three or more equal samples above -6 dBFS, counted per minute. A clipped file
+  keeps them when it is turned down later. A clean CD shows a few dozen from loud bass, a copy clipped by 4 dB
+  thousands. A copy with more than 100 a minute and more than four times yours is thrown away. When your file is
+  lossy its count is not compared, because an MP3 decoder never keeps flat tops.
+
+Both captions of a pair show the measures, for example `Sound: treble -23.0 dB (5.9 dB duller than yours),
+clipping none (0/min)`, with clipping as none (under 25 a minute), slight (up to 100) or heavy. Distortion that is
+part of the source itself, like a worn record, is not caught by either measure; your ear still decides.
 
 When your file has decode errors, a copy counts as better once it decodes cleanly, even with a cutoff up to
 0.5 kHz lower than yours. Such a pair opens with "🔧 Repairs the decode errors in yours" and the cutoff
@@ -139,7 +157,7 @@ With the sweep on, the [MCP server](mcp.md) has four more tools behind the same 
 |------|--------------|
 | `library_sweep_run(force=false)` | Starts a sweep in the background and returns at once with the run id and the status |
 | `library_sweep_status()` | The current or last sweep with its position, counts and current file, songs per tier, pairs waiting, the schedule and the next start, and whether `fpcalc` is there |
-| `library_sweep_reviews()` | The pairs waiting, each with its stem, why, both files' path, quality, length and cutoff, the fingerprint similarity and the keep-both name |
+| `library_sweep_reviews()` | The pairs waiting, each with its stem, why, both files' path, quality, length, cutoff and sound, the fingerprint similarity and the keep-both name |
 | `library_sweep_decide(stem, decision)` | `keep_mine`, `take_new` or `keep_both` for the pair of that `Artist - Title` |
 
 A sweep started over HTTP MCP reports in Telegram like any other. The stdio server can run a sweep too, but it

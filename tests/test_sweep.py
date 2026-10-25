@@ -100,6 +100,7 @@ def _sweep(tmp_path, candidate: Audit, fp=SAME_FP, original: Audit | None = None
     original = original or _audit()
     sweep.audit = lambda p: original if os.path.dirname(p) == str(pipe.lib) else candidate
     sweep.fingerprint = lambda p: SAME_FP if os.path.dirname(p) == str(pipe.lib) else fp
+    sweep.sound = lambda p: None
     sweep.sleep = AsyncMock()
     return sweep, pipe
 
@@ -160,6 +161,27 @@ class TestOneSong:
         assert Path(review.proposal_path).read_bytes() == b"candidate 0"
         assert "another recording" in review.reason
         assert not list(pipe.dl.iterdir())
+
+    async def test_a_duller_copy_is_never_offered(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
+        sweep.sound = lambda p: (
+            rules.Sound(-17.0, 5.0) if os.path.dirname(p) == str(pipe.lib) else rules.Sound(-23.0, 0.0)
+        )
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_NONE_QUALIFIED: 1}
+        assert sweep.repo.pending_reviews() == []
+        assert "sounds worse: duller than yours" in sweep.repo.get_song(f"{STEM}.flac").detail
+        assert not list(pipe.dl.iterdir()), "the download is deleted"
+
+    async def test_a_staged_pair_carries_how_both_files_sound(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
+        sweep.sound = lambda p: (
+            rules.Sound(-17.0, 900.0) if os.path.dirname(p) == str(pipe.lib) else rules.Sound(-16.0, 0.0)
+        )
+        await _run_once(sweep)
+        review = sweep.repo.pending_review_for(STEM)
+        assert review.current_sound == "treble -17.0 dB, clipping heavy (900/min)"
+        assert review.proposal_sound == "treble -16.0 dB (1.0 dB brighter than yours), clipping none (0/min)"
 
     async def test_without_fpcalc_the_length_rule_decides(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
@@ -550,6 +572,33 @@ class TestTelegram:
         for caption in captions:
             assert caption.splitlines()[1] == f"\u2705 <b>{sw.SAME_AND_BETTER}</b>: {why}"
         assert "Why it needs your ear" not in captions[1]
+
+    async def test_both_captions_show_how_the_file_sounds(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        repo = bot.pipeline.sweep.repo
+        repo._conn.execute(
+            "UPDATE sweep_reviews SET current_sound = ?, proposal_sound = ? WHERE id = ?",
+            (
+                "treble -17.0 dB, clipping heavy (900/min)",
+                "treble -16.0 dB (1.0 dB brighter than yours), clipping none (0/min)",
+                review.id,
+            ),
+        )
+        tg = AsyncMock()
+        await bot._send_sweep_pairs(tg, CHAT, [repo.get_review(review.id)])
+        mine, theirs = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
+        assert "Sound: treble -17.0 dB, clipping heavy (900/min)" in mine
+        assert "Sound: treble -16.0 dB (1.0 dB brighter than yours), clipping none (0/min)" in theirs
+
+    async def test_a_pair_without_measures_shows_no_sound_line(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        tg = AsyncMock()
+        await bot._send_sweep_pairs(tg, CHAT, [review])
+        assert all("Sound:" not in c.kwargs["caption"] for c in tg.send_audio.await_args_list)
 
     async def test_a_repair_pair_says_so_first(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)

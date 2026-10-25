@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-10-25
+
+### Added
+
+- Both captions of a sweep pair show how each file sounds: its treble (the 5-15 kHz share, in dB, with the gap to yours) and its clipping (flat tops a minute, as none, slight or heavy). The cutoff alone hid copies that reach high but sound muffled.
+
+### Changed
+
+- The sweep no longer offers a copy more than 3 dB duller than yours, or one clearly more clipped than yours. A 24/96 transfer with a 24 kHz cutoff could come through 6 dB duller than the CD it was meant to replace.
+
 ## [0.21.3] - 2026-10-21
 
 ### Changed

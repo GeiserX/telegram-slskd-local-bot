@@ -72,6 +72,8 @@ class Review:
     proposal_cutoff: float | None = None
     similarity: float | None = None
     run_id: int | None = None
+    current_sound: str = ""
+    proposal_sound: str = ""
     id: int | None = None
     created_at: float = field(default_factory=time.time)
     offered_at: float | None = None
@@ -142,6 +144,8 @@ _REVIEW_COLUMNS = (
     "proposal_cutoff",
     "similarity",
     "run_id",
+    "current_sound",
+    "proposal_sound",
     "created_at",
     "offered_at",
     "decided_at",

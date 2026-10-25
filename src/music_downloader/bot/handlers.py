@@ -3884,9 +3884,12 @@ class MusicBot:
         else:
             why = f"Why it needs your ear: {_esc(review.reason)}\n"
         mine = f"{head}\n1. Yours: {_esc(review.current_desc)}, {_duration(review.current_len)}"
+        if review.current_sound:
+            mine += f"\nSound: {_esc(review.current_sound)}"
+        sound = f"Sound: {_esc(review.proposal_sound)}\n" if review.proposal_sound else ""
         theirs = (
             f"{head}\n2. Proposal: {_esc(review.proposal_desc)}, {_duration(review.proposal_len)}\n"
-            f"{why}Keep both saves it as <code>{_esc(review.both_name)}</code>"
+            f"{sound}{why}Keep both saves it as <code>{_esc(review.both_name)}</code>"
         )
         await self._send_sweep_audio(
             bot,
