@@ -386,6 +386,8 @@ class TestSoundRepairs:
         current = _audit(cutoff=17.0)
         assert rules.better(current, _audit(cutoff=16.6), repair=True), "half a kHz below a lower cutoff is fine"
         assert not rules.better(current, _audit(cutoff=16.4), repair=True)
+        assert not rules.better(_audit(cutoff=None), _audit(cutoff=15.0), repair=True), "unknown counts as a CD"
+        assert rules.better(_audit(cutoff=None), _audit(cutoff=19.5), repair=True)
 
     async def test_a_replacement_that_cannot_be_compared_waits_for_the_next_sweep(self, tmp_path):
         sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0))
