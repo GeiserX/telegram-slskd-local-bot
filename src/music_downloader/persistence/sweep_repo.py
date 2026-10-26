@@ -87,7 +87,12 @@ class Review:
 
 @dataclass
 class Replacement:
-    """A library file the sweep replaced: the original parked at *parked_path* until purged."""
+    """A library file the sweep replaced: the original parked at *parked_path* until purged.
+
+    *flaw* says how the new file sounds worse than the parked one ("" when it does not), measured once
+    at *flaw_checked_at*; the sweep then looks for a copy that repairs it until the owner decides a pair
+    of the song (*flaw_closed_at*).
+    """
 
     stem: str
     new_path: str
@@ -99,6 +104,9 @@ class Replacement:
     id: int | None = None
     replaced_at: float = field(default_factory=time.time)
     purged_at: float | None = None
+    flaw: str = ""
+    flaw_checked_at: float | None = None
+    flaw_closed_at: float | None = None
 
 
 def _song(row) -> SweepSong:
@@ -114,6 +122,10 @@ def _song(row) -> SweepSong:
         detail=row["detail"],
         declined_at=row["declined_at"],
     )
+
+
+def _replacement(row) -> Replacement:
+    return Replacement(**{k: row[k] for k in (*_REPLACEMENT_COLUMNS, "id")})
 
 
 def _run(row) -> SweepRun:
@@ -166,6 +178,9 @@ _REPLACEMENT_COLUMNS = (
     "run_id",
     "replaced_at",
     "purged_at",
+    "flaw",
+    "flaw_checked_at",
+    "flaw_closed_at",
 )
 
 
@@ -347,7 +362,43 @@ class SweepRepository:
         rows = self._conn.execute(
             "SELECT * FROM sweep_replacements WHERE purged_at IS NULL AND replaced_at <= ? ORDER BY id", (cutoff,)
         ).fetchall()
-        return [Replacement(**{k: r[k] for k in (*_REPLACEMENT_COLUMNS, "id")}) for r in rows]
+        return [_replacement(r) for r in rows]
+
+    def flaws_unchecked(self) -> list[Replacement]:
+        """Replacements whose sound was never compared with the parked original's (made before 0.24.0)."""
+        rows = self._conn.execute(
+            "SELECT * FROM sweep_replacements WHERE purged_at IS NULL AND flaw_checked_at IS NULL ORDER BY id"
+        ).fetchall()
+        return [_replacement(r) for r in rows]
+
+    def set_flaw(self, rep_id: int, flaw: str, at: float) -> None:
+        self._conn.execute(
+            "UPDATE sweep_replacements SET flaw = ?, flaw_checked_at = ? WHERE id = ?", (flaw, at, rep_id)
+        )
+        self._conn.commit()
+
+    def open_flaw(self, stem: str) -> Replacement | None:
+        """The latest replacement of *stem* that sounds worse than its parked original and waits for a repair."""
+        row = self._conn.execute(
+            "SELECT * FROM sweep_replacements WHERE stem = ? AND flaw != '' AND flaw_closed_at IS NULL "
+            "AND purged_at IS NULL ORDER BY id DESC LIMIT 1",
+            (stem,),
+        ).fetchone()
+        return _replacement(row) if row else None
+
+    def flawed_stems(self) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT stem FROM sweep_replacements WHERE flaw != '' AND flaw_closed_at IS NULL "
+            "AND purged_at IS NULL"
+        ).fetchall()
+        return {r["stem"] for r in rows}
+
+    def close_flaws(self, stem: str, at: float) -> None:
+        self._conn.execute(
+            "UPDATE sweep_replacements SET flaw_closed_at = ? WHERE stem = ? AND flaw != '' AND flaw_closed_at IS NULL",
+            (at, stem),
+        )
+        self._conn.commit()
 
     def mark_purged(self, rep_id: int, at: float) -> None:
         self._conn.execute("UPDATE sweep_replacements SET purged_at = ? WHERE id = ?", (at, rep_id))

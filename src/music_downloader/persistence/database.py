@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS album_jobs (
 -- row per sweep, counts is a JSON object of outcomes. sweep_reviews: pairs
 -- waiting for the owner's ear (decision NULL until Keep mine, Take new or Keep
 -- both). sweep_replacements: originals parked under .sweep-replaced until
--- purged. Times are Unix timestamps.
+-- purged; flaw = how the new file sounds worse than the parked one. Times are Unix timestamps.
 CREATE TABLE IF NOT EXISTS sweep_songs (
     file TEXT PRIMARY KEY,
     stem TEXT NOT NULL,
@@ -245,7 +245,10 @@ CREATE TABLE IF NOT EXISTS sweep_replacements (
     how TEXT NOT NULL,
     run_id INTEGER,
     replaced_at REAL NOT NULL,
-    purged_at REAL
+    purged_at REAL,
+    flaw TEXT NOT NULL DEFAULT '',
+    flaw_checked_at REAL,
+    flaw_closed_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sweep_reviews_pending ON sweep_reviews(decision, stem);
@@ -275,6 +278,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("sweep_reviews", "current_sound", "TEXT NOT NULL DEFAULT ''"),
     ("sweep_reviews", "proposal_sound", "TEXT NOT NULL DEFAULT ''"),
     ("sweep_reviews", "decline_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("sweep_replacements", "flaw", "TEXT NOT NULL DEFAULT ''"),
+    ("sweep_replacements", "flaw_checked_at", "REAL"),
+    ("sweep_replacements", "flaw_closed_at", "REAL"),
 )
 
 

@@ -448,9 +448,26 @@ class TestSoundRealFiles:
         pytest.importorskip("numpy")
         mine = rules.sound(_made(tmp_path, "mine.flac"))
         muffled = rules.sound(_made(tmp_path, "muffled.flac", "-af", "lowpass=f=4000"))
-        assert mine.treble - muffled.treble > rules.TREBLE_MAX_LOSS_DB
+        assert mine.highs - muffled.highs > rules.HIGHS_MAX_LOSS_DB
         assert "duller than yours" in rules.sounds_worse(mine, muffled)
         assert rules.sounds_worse(mine, mine) is None
+
+    def test_more_bass_or_more_volume_is_not_duller(self, tmp_path):
+        pytest.importorskip("numpy")
+        mine = rules.sound(_made(tmp_path, "mine.flac", "-af", "volume=-12dB"))
+        for name, af in (("bass.flac", "volume=-12dB,bass=g=12:f=150"), ("louder.flac", "volume=-6dB")):
+            other = rules.sound(_made(tmp_path, name, "-af", af))
+            assert abs(other.highs - mine.highs) < 1.0, (name, mine, other)
+            assert rules.sounds_worse(mine, other) is None, (name, mine, other)
+
+    def test_a_limited_copy_reads_squashed_and_is_refused(self, tmp_path):
+        pytest.importorskip("numpy")
+        # Noise with one loud burst a second: a peak well above the average, as music has.
+        burst = "volume=-20dB,volume='if(lt(mod(t,1),0.02),10,1)':eval=frame"
+        mine = rules.sound(_made(tmp_path, "mine.flac", "-af", burst))
+        squashed = rules.sound(_made(tmp_path, "squashed.flac", "-af", f"{burst},alimiter=limit=0.1:level=0"))
+        assert mine.crest - squashed.crest > rules.CREST_MAX_LOSS_DB, (mine, squashed)
+        assert "more squashed than yours" in rules.sounds_worse(mine, squashed)
 
     def test_a_clipped_copy_shows_flat_tops_even_turned_down_afterwards(self, tmp_path):
         pytest.importorskip("numpy")
@@ -472,27 +489,40 @@ class TestSoundRealFiles:
 
 class TestSoundRules:
     def test_nothing_is_judged_without_both_measures(self):
-        assert rules.sounds_worse(None, rules.Sound(-30.0, 900.0)) is None
-        assert rules.sounds_worse(rules.Sound(-17.0, 0.0), None) is None
+        assert rules.sounds_worse(None, rules.Sound(-30.0, 900.0, 2.0)) is None
+        assert rules.sounds_worse(rules.Sound(-17.0, 0.0, 12.0), None) is None
 
     def test_duller_by_more_than_the_limit_is_worse_and_by_less_is_not(self):
-        mine = rules.Sound(-17.0, 10.0)
-        assert rules.sounds_worse(mine, rules.Sound(-17.0 - rules.TREBLE_MAX_LOSS_DB - 0.1, 10.0))
-        assert rules.sounds_worse(mine, rules.Sound(-17.0 - rules.TREBLE_MAX_LOSS_DB + 0.1, 10.0)) is None
+        mine = rules.Sound(-17.0, 10.0, 12.0)
+        assert rules.sounds_worse(mine, rules.Sound(-17.0 - rules.HIGHS_MAX_LOSS_DB - 0.1, 10.0, 12.0))
+        assert rules.sounds_worse(mine, rules.Sound(-17.0 - rules.HIGHS_MAX_LOSS_DB + 0.1, 10.0, 12.0)) is None
 
     def test_clipping_counts_only_when_well_beyond_the_owners(self):
-        heavy = rules.Sound(-17.0, rules.CLIP_MAX_PER_MIN + 50)
-        assert rules.sounds_worse(rules.Sound(-17.0, 5.0), heavy)
-        assert rules.sounds_worse(rules.Sound(-17.0, heavy.clips), heavy) is None, "no worse than yours"
-        assert rules.sounds_worse(rules.Sound(-17.0, heavy.clips), heavy, original_lossy=True)
+        heavy = rules.Sound(-17.0, rules.CLIP_MAX_PER_MIN + 50, 12.0)
+        assert rules.sounds_worse(rules.Sound(-17.0, 5.0, 12.0), heavy)
+        assert rules.sounds_worse(rules.Sound(-17.0, heavy.clips, 12.0), heavy) is None, "no worse than yours"
+        assert rules.sounds_worse(rules.Sound(-17.0, heavy.clips, 12.0), heavy, original_lossy=True)
 
-    def test_the_caption_line_says_the_gap_and_the_clipping_in_words(self):
-        mine, theirs = rules.Sound(-17.1, 12.0), rules.Sound(-23.0, 0.0)
-        assert rules.describe_sound(mine) == "treble -17.1 dB, clipping none (12/min)"
-        assert rules.describe_sound(theirs, mine) == "treble -23.0 dB (5.9 dB duller than yours), clipping none (0/min)"
+    def test_squashed_by_more_than_the_limit_is_worse_and_by_less_is_not(self):
+        mine = rules.Sound(-17.0, 10.0, 14.0)
+        worse = rules.sounds_worse(mine, rules.Sound(-17.0, 10.0, 14.0 - rules.CREST_MAX_LOSS_DB - 0.1))
+        assert worse == "more squashed than yours (dynamics -3.1 dB)"
+        assert rules.sounds_worse(mine, rules.Sound(-17.0, 10.0, 14.0 - rules.CREST_MAX_LOSS_DB + 0.1)) is None
+        assert rules.sounds_worse(mine, rules.Sound(-17.0, 10.0, 20.0)) is None, "more dynamic is fine"
+
+    def test_the_reason_names_the_copy_it_compares_with(self):
+        old, new = rules.Sound(-9.0, 0.0, 14.0), rules.Sound(-15.7, 0.0, 14.0)
+        assert rules.sounds_worse(old, new, mine="your old copy") == "duller than your old copy (highs -6.7 dB)"
+
+    def test_the_caption_line_says_the_gaps_the_clipping_in_words_and_the_dynamics(self):
+        mine, theirs = rules.Sound(-17.1, 12.0, 14.0), rules.Sound(-23.0, 0.0, 9.5)
+        assert rules.describe_sound(mine) == "highs -17.1 dB, clipping none (12/min), dynamics 14.0 dB"
+        assert rules.describe_sound(theirs, mine) == (
+            "highs -23.0 dB (5.9 dB duller than yours), clipping none (0/min), dynamics 9.5 dB (4.5 dB less than yours)"
+        )
         assert "brighter" in rules.describe_sound(mine, theirs)
-        assert "same as yours" in rules.describe_sound(mine, rules.Sound(-17.3, 0.0))
-        assert "heavy" in rules.describe_sound(rules.Sound(-17.0, 500.0))
+        assert rules.describe_sound(mine, rules.Sound(-17.3, 0.0, 14.2)).count("same as yours") == 2
+        assert "heavy" in rules.describe_sound(rules.Sound(-17.0, 500.0, 6.0))
         assert rules.describe_sound(None) == ""
 
 
