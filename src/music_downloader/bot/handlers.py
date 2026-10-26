@@ -98,6 +98,7 @@ from music_downloader.pipeline.sweep import (
     REPAIRS,
     SAME_AND_BETTER,
     SOUND_REPAIR,
+    ListeningCopies,
     SweepError,
     SweepReport,
 )
@@ -157,6 +158,13 @@ class AlbumRun:
     cancel: asyncio.Event
     task: asyncio.Task | None = None
     line: str = ""
+
+
+def _turned_down_note(gain_db: float) -> str:
+    """The caption line of a copy sent turned down to the other file's loudness."""
+    return (
+        f"\n\U0001f509 Played {abs(gain_db):.1f} dB quieter here, at the other file's loudness; the file is unchanged"
+    )
 
 
 def _duration(secs: float | None) -> str:
@@ -3898,30 +3906,47 @@ class MusicBot:
             f"{head}\n2. Proposal: {_esc(review.proposal_desc)}, {_duration(review.proposal_len)}\n"
             f"{sound}{why}Keep both saves it as <code>{_esc(review.both_name)}</code>"
         )
-        await self._send_sweep_audio(
-            bot,
-            chat_id,
-            review.current_path,
-            f"{review.stem} (yours).{current_ext}",
-            title,
-            artist,
-            review.current_len,
-            mine,
-        )
-        await asyncio.sleep(SWEEP_SEND_PAUSE_SECS)
-        sent = await self._send_sweep_audio(
-            bot,
-            chat_id,
-            review.proposal_path,
-            f"{review.stem} (proposal).{review.proposal_ext}",
-            title,
-            artist,
-            review.proposal_len,
-            theirs,
-            build_sweep_review_keyboard(review.id),
-        )
-        await asyncio.sleep(SWEEP_SEND_PAUSE_SECS)
-        return sent
+        try:
+            copies = await self.pipeline.sweep.listening_copies(review)
+        except Exception:
+            logger.warning("Sweep pair %s: could not match the loudness; sent as they are", review.id, exc_info=True)
+            copies = ListeningCopies(review.current_path, review.proposal_path)
+        try:
+            if copies.current_gain:
+                current_ext = "flac"
+                mine += _turned_down_note(copies.current_gain)
+            proposal_ext = review.proposal_ext
+            if copies.proposal_gain:
+                proposal_ext = "flac"
+                theirs += _turned_down_note(copies.proposal_gain)
+            await self._send_sweep_audio(
+                bot,
+                chat_id,
+                copies.current,
+                f"{review.stem} (yours).{current_ext}",
+                title,
+                artist,
+                review.current_len,
+                mine,
+            )
+            await asyncio.sleep(SWEEP_SEND_PAUSE_SECS)
+            sent = await self._send_sweep_audio(
+                bot,
+                chat_id,
+                copies.proposal,
+                f"{review.stem} (proposal).{proposal_ext}",
+                title,
+                artist,
+                review.proposal_len,
+                theirs,
+                build_sweep_review_keyboard(review.id),
+            )
+            await asyncio.sleep(SWEEP_SEND_PAUSE_SECS)
+            return sent
+        finally:
+            for tmp in copies.temps:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
 
     async def _send_sweep_audio(
         self,

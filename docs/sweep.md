@@ -165,6 +165,12 @@ comes back with the next sweep's message, or right away with `/sweep reviews`. W
 to 2000 MB. With the cloud API a file over 50 MB arrives as Opus to listen to, and your decision still applies
 to the file itself.
 
+The two files reach you at the same loudness. The louder one always sounds better in a quick listen, even when it
+is the worse master, so when they differ by 1 dB or more (integrated loudness, EBU R128) the louder one is sent
+turned down to the quieter one's level, as a 24-bit FLAC. Its caption says so, for example "🔉 Played 9.6 dB
+quieter here, at the other file's loudness; the file is unchanged". Nothing is ever turned up, and the files
+themselves stay as they are: Take new puts the proposal in your library at its own level.
+
 | Command | What it does |
 |---------|--------------|
 | `/sweep` | Start a sweep now |

@@ -14,6 +14,7 @@ sit next to each constant.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import logging
@@ -700,6 +701,71 @@ def describe_sound(s: Sound | None, mine: Sound | None = None) -> str:
     line += f", clipping {clipping_words(s.clips)} ({s.clips:.0f}/min)"
     line += f", dynamics {s.crest:.1f} dB" + _gap(s.crest, mine and mine.crest, "more", "less")
     return line
+
+
+# ---------------------------------------------------------------------------
+# Listening: the two files of a pair at the same loudness
+# ---------------------------------------------------------------------------
+
+# The louder of two copies wins a quick listen even when it is the worse master. So the copy sent for listening
+# is turned down to the quieter one's integrated loudness (EBU R128) when they differ by at least this much.
+# Never up: that could clip. The library file and the staged proposal are never changed.
+LEVEL_MATCH_MIN_DB = 1.0
+_LUFS_RE = re.compile(r"I:\s*(-?\d+(?:\.\d+)?)\s*LUFS")
+
+
+def loudness(path: str) -> float | None:
+    """The integrated loudness of *path* in LUFS, or None when ffmpeg cannot measure it."""
+    try:
+        r = subprocess.run(
+            _nice(
+                ["ffmpeg", "-nostats", "-hide_banner", "-i", path, "-map", "0:a:0"]
+                + ["-af", "ebur128=framelog=quiet", "-f", "null", "-"]
+            ),
+            capture_output=True,
+            text=True,
+            timeout=SOUND_TIMEOUT_SECS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.warning("Could not measure the loudness of %s", path, exc_info=True)
+        return None
+    found = _LUFS_RE.findall(r.stderr or "")
+    if r.returncode != 0 or not found or float(found[-1]) <= -70:
+        return None
+    return float(found[-1])
+
+
+def turned_down(path: str, gain_db: float) -> str | None:
+    """A temporary FLAC of *path* with its volume changed by *gain_db* (negative), 24-bit so nothing is lost;
+    the caller deletes it. None when ffmpeg fails."""
+    import tempfile
+
+    fd, out = tempfile.mkstemp(suffix=".flac")
+    os.close(fd)
+    try:
+        subprocess.run(
+            _nice(
+                ["ffmpeg", "-v", "error", "-y", "-i", path, "-map", "0:a:0", "-af", f"volume={gain_db:.2f}dB"]
+                + ["-c:a", "flac", "-sample_fmt", "s32", "-bits_per_raw_sample", "24", out]
+            ),
+            capture_output=True,
+            timeout=SOUND_TIMEOUT_SECS,
+            check=True,
+        )
+        return out
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("Could not turn %s down", path, exc_info=True)
+        with contextlib.suppress(OSError):
+            os.remove(out)
+        return None
+
+
+def level_gains(a: float | None, b: float | None) -> tuple[float, float]:
+    """The gain in dB for each of two files measured at *a* and *b* LUFS: the louder one down to the quieter,
+    the quieter untouched; (0, 0) when either is unknown or they differ by less than LEVEL_MATCH_MIN_DB."""
+    if a is None or b is None or abs(a - b) < LEVEL_MATCH_MIN_DB:
+        return 0.0, 0.0
+    return (b - a, 0.0) if a > b else (0.0, a - b)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """The library sweep's judgement: tiers, better, sameness, the fingerprint, keep-both names, the schedule."""
 
 import datetime
+import os
 import shutil
 import subprocess
 import time
@@ -524,6 +525,47 @@ class TestSoundRules:
         assert rules.describe_sound(mine, rules.Sound(-17.3, 0.0, 14.2)).count("same as yours") == 2
         assert "heavy" in rules.describe_sound(rules.Sound(-17.0, 500.0, 6.0))
         assert rules.describe_sound(None) == ""
+
+
+class TestLevelMatch:
+    def test_the_louder_file_is_turned_down_to_the_quieter_never_up(self):
+        assert rules.level_gains(-8.0, -14.0) == (-6.0, 0.0)
+        assert rules.level_gains(-14.0, -8.0) == (0.0, -6.0)
+
+    def test_a_small_gap_or_an_unknown_loudness_changes_nothing(self):
+        assert rules.level_gains(-14.0, -14.0 + rules.LEVEL_MATCH_MIN_DB - 0.1) == (0.0, 0.0)
+        assert rules.level_gains(None, -14.0) == (0.0, 0.0)
+        assert rules.level_gains(-14.0, None) == (0.0, 0.0)
+
+
+@needs_analysis
+class TestLevelMatchRealFiles:
+    def test_a_turned_down_copy_measures_at_the_quieter_files_loudness(self, tmp_path):
+        loud = _made(tmp_path, "loud.flac", "-af", "volume=-3dB")
+        quiet = _made(tmp_path, "quiet.flac", "-af", "volume=-11dB")
+        a, b = rules.loudness(loud), rules.loudness(quiet)
+        assert a - b == pytest.approx(8.0, abs=0.3)
+        gain, untouched = rules.level_gains(a, b)
+        assert untouched == 0.0
+        out = rules.turned_down(loud, gain)
+        try:
+            assert out.endswith(".flac") and os.path.isfile(out)
+            assert rules.loudness(out) == pytest.approx(b, abs=0.3)
+            depth = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "stream=bits_per_raw_sample", "-of", "csv=p=0", out],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            assert depth == "24"
+        finally:
+            os.remove(out)
+        assert rules.loudness(loud) == pytest.approx(a, abs=0.01), "the source is untouched"
+
+    def test_a_file_that_cannot_be_decoded_has_no_loudness_and_no_copy(self, tmp_path):
+        bad = tmp_path / "bad.flac"
+        bad.write_bytes(b"not audio")
+        assert rules.loudness(str(bad)) is None
+        assert rules.turned_down(str(bad), -3.0) is None
 
 
 @needs_analysis
