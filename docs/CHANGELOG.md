@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-10-26
+
+### Added
+
+- The sweep measures a third thing about how a file sounds: its dynamics (the peak against the average level, in dB). A copy more than 3 dB more squashed than yours is no longer offered. Loudness-war remasters lose their dynamics without clipping: 8 of 229 copies taken before showed it, all louder than the copy they replaced.
+- Songs taken before the sound check are compared once with the original they parked. One that sounds worse (duller, clipped or squashed) is searched again every sweep, first and whatever its tier, for a copy that repairs it ("🔧 Repairs how yours sounds"); when none turns up, the old copy is offered back as a pair ("↩️ Your old copy back"). Any decision on that song ends it. On the live library 33 of 229 such songs sound worse than the copy they replaced.
+
+### Changed
+
+- "Duller" is now the 4-16 kHz highs against the 1-4 kHz mids, instead of the 5-15 kHz share of everything up to 15 kHz. A master with more bass no longer reads as duller: the old measure flagged 10 of 229 taken copies whose highs were intact. Captions read `highs ... dB` instead of `treble ... dB` and add the dynamics.
+
 ## [0.23.0] - 2026-10-26
 
 ### Added

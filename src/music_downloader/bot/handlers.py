@@ -92,10 +92,12 @@ from music_downloader.pipeline.search import (
     has_non_latin_script,
 )
 from music_downloader.pipeline.sweep import (
+    OLD_COPY_BACK,
     OUTCOME_LABELS,
     OUTCOME_UPGRADED,
     REPAIRS,
     SAME_AND_BETTER,
+    SOUND_REPAIR,
     SweepError,
     SweepReport,
 )
@@ -3878,8 +3880,10 @@ class MusicBot:
         artist, title = split_stem(review.stem)
         current_ext = os.path.splitext(review.current_path)[1].lstrip(".") or "audio"
         head = f"\U0001f442 <b>{n}/{total}</b> {_esc(review.stem)}"
-        # What the proposal is for, said first: a repair of a damaged file, or the same recording, better.
-        for label, mark in ((REPAIRS, "\U0001f527"), (SAME_AND_BETTER, "\u2705")):
+        # What the proposal is for, said first: a repair (of a damaged file, or of one that sounds worse than
+        # the copy it replaced), that copy back, or the same recording, better.
+        marks = ((REPAIRS, "\U0001f527"), (SOUND_REPAIR, "\U0001f527"), (OLD_COPY_BACK, "\u21a9\ufe0f"))
+        for label, mark in (*marks, (SAME_AND_BETTER, "\u2705")):
             if review.reason.startswith(label):
                 head += f"\n{mark} <b>{_esc(label)}</b>{_esc(review.reason[len(label) :])}"
                 why = ""

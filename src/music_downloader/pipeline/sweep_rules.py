@@ -204,9 +204,12 @@ def strict_decode_ok(path: str) -> bool | None:
     )
 
 
-def probe(path: str) -> Audit:
-    """Format, length, depth, rate, bitrate and the artist, title and album tags (no decode)."""
-    ext = os.path.splitext(path)[1].lstrip(".").lower()
+def probe(path: str, ext: str | None = None) -> Audit:
+    """Format, length, depth, rate, bitrate and the artist, title and album tags (no decode).
+
+    *ext* names the format of a file whose name does not end in it (a parked original).
+    """
+    ext = ext or os.path.splitext(path)[1].lstrip(".").lower()
     audit = Audit(ext=ext)
     try:
         import mutagen
@@ -227,9 +230,9 @@ def probe(path: str) -> Audit:
     return audit
 
 
-def audit(path: str) -> Audit:
+def audit(path: str, ext: str | None = None) -> Audit:
     """Measure *path*: probe, then for lossless files the strict decode and the spectral cutoff. Blocking."""
-    result = probe(path)
+    result = probe(path, ext)
     if result.ext not in LOSSY_EXTENSIONS:
         result.strict = strict_decode_ok(path)
         verdict = analyze_lossless(path) if result.ext in CHECKABLE_EXTENSIONS else None
@@ -257,33 +260,42 @@ def describe(a: Audit) -> str:
 # ---------------------------------------------------------------------------
 
 
-def wanted(tier: str, copy: SearchResult, original_length: float) -> bool:
+def wanted(tier: str, copy: SearchResult, original_length: float, repair: bool = False) -> bool:
     """Whether a Soulseek copy could beat a song of *tier*, judged from the search result alone.
 
     Only lossless formats the spectrum check reads are worth a download (the
     rest could never be proven better), of about the original's length. A CD
-    song only wants 24-bit copies above 48 kHz.
+    song only wants 24-bit copies above 48 kHz, unless it is to be *repaired*
+    (it sounds worse than the copy it replaced): then any such copy may do.
     """
     if copy.extension not in CHECKABLE_EXTENSIONS:
         return False
     if original_length and copy.length and abs(copy.length - original_length) > WANTED_MAX_DIFF_SECS:
         return False
+    if repair:
+        return True
     if tier == TIER_CD:
         return (copy.bit_depth or 0) >= 24 and (copy.sample_rate or 0) > 48000
     return tier != TIER_HIRES
 
 
-def better(original: Audit, candidate: Audit) -> bool:
+def better(original: Audit, candidate: Audit, repair: bool = False) -> bool:
     """Whether a downloaded copy is a real improvement on the original, judged by its cutoff.
 
-    It must decode cleanly and be lossless. A CD original needs genuine content
-    above HIRES_CUTOFF_KHZ; a damaged one needs a copy no worse; a fake,
+    It must decode cleanly and be lossless. A damaged original needs a copy no
+    worse; one to be *repaired* (it sounds worse than the copy it replaced) a
+    genuine CD cutoff, or one at most 0.5 kHz below its own when that is lower
+    (an unknown cutoff counts as a CD's);
+    a CD original genuine content above HIRES_CUTOFF_KHZ; a fake,
     uncertain or lossy one a cutoff of at least CD_CUTOFF_KHZ and MIN_GAIN_KHZ
     above its own.
     """
     if candidate.strict is not True or candidate.ext in LOSSY_EXTENSIONS or candidate.cutoff is None:
         return False
     c, oc = candidate.cutoff, original.cutoff or 0.0
+    if repair:
+        own = original.cutoff if original.cutoff is not None else CD_CUTOFF_KHZ + 0.5
+        return c >= min(own - 0.5, CD_CUTOFF_KHZ)
     if original.tier == TIER_HIRES:
         return False
     if original.tier == TIER_CD:
@@ -501,17 +513,21 @@ def similarity(a: list[int], b: list[int], max_lag_secs: float = FP_MAX_LAG_SECS
 
 
 # ---------------------------------------------------------------------------
-# How it sounds: treble and clipping, against the owner's own copy
+# How it sounds: highs, clipping and dynamics, against the owner's own copy
 # ---------------------------------------------------------------------------
 
 # The cutoff says how high a spectrum reaches, not how much treble is there: a
-# 24/96 transfer reaching 24 kHz can still sound duller than a CD. The treble is
-# the 5-15 kHz share of the energy up to 15 kHz, in dB, so it ignores the noise a
-# hi-res file carries above. The rejected Zombies proposal read 5.9 dB below the
-# owner's copy and sounded muffled to him.
-TREBLE_BAND_HZ = (5000, 15000)
-# A proposal this much duller than the owner's copy is never offered.
-TREBLE_MAX_LOSS_DB = 3.0
+# 24/96 transfer reaching 24 kHz can still sound duller than a CD. The highs are
+# the 4-16 kHz energy against the 1-4 kHz mids, in dB, so a copy that is only
+# louder, or a master with more bass, reads the same; only highs that were cut
+# read lower. The first measure (5-15 kHz against everything up to 15 kHz)
+# called a bass-heavier master duller: it flagged 10 of 229 accepted copies whose
+# highs were intact. Among those 229 the copies muffled to the ear sat 3.3 to
+# 7.6 dB below the copy they replaced.
+HIGHS_BAND_HZ = (4000, 16000)
+MIDS_BAND_HZ = (1000, 4000)
+# A proposal with highs this much lower than the owner's copy is never offered.
+HIGHS_MAX_LOSS_DB = 3.0
 # Clipping is counted as flat tops: runs of three or more equal samples above
 # -6 dBFS. A clipped file keeps its flat tops when it is turned down later.
 # A clean 16-bit CD shows a few dozen from loud bass (43 on the Zombies CD);
@@ -521,6 +537,14 @@ CLIP_LEVEL = 2**30  # -6 dBFS in 32-bit samples
 # times the owner's, is never offered.
 CLIP_MAX_PER_MIN = 100
 CLIP_FACTOR = 4
+# The dynamics are the crest: the peak against the average level of the parts
+# that are not silent (seconds above SILENT_DBFS), in dB. A loudness-war
+# remaster is limited until its crest shrinks, often with no flat top at all.
+# Of 229 accepted copies, 8 had lost 3.2 to 5.9 dB against the copy they
+# replaced, all of them louder remasters; 97 had gained over 3 dB.
+SILENT_DBFS = -60.0
+# A proposal whose crest is this much lower than the owner's copy is never offered.
+CREST_MAX_LOSS_DB = 3.0
 SOUND_TIMEOUT_SECS = 900
 # A decode that stops before this share of the file's length is not judged.
 SOUND_MIN_COVERAGE = 0.9
@@ -528,14 +552,15 @@ SOUND_MIN_COVERAGE = 0.9
 
 @dataclass
 class Sound:
-    """How a file sounds: *treble* in dB (see TREBLE_BAND_HZ), *clips* flat tops per minute."""
+    """How a file sounds: *highs* in dB (see HIGHS_BAND_HZ), *clips* flat tops per minute, *crest* in dB."""
 
-    treble: float
+    highs: float
     clips: float
+    crest: float
 
 
 def sound(path: str) -> Sound | None:
-    """Measure the treble and the clipping of *path* in one streamed decode.
+    """Measure the highs, the clipping and the dynamics of *path* in one streamed decode.
 
     None when it cannot be decoded, when the decode covers less than
     SOUND_MIN_COVERAGE of the file's length (a partial measure could refuse a
@@ -586,6 +611,8 @@ def sound(path: str) -> Sound | None:
     spectrum = np.zeros(rate // 2 + 1)
     flat_tops = 0
     samples = 0
+    peak = 0.0
+    seconds: list[float] = []  # mean square of each whole second
     frame = channels * 4
     try:
         while True:
@@ -601,9 +628,11 @@ def sound(path: str) -> Sound | None:
                 edges = np.diff(same)
                 lengths = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)
                 flat_tops += int((lengths >= 2).sum())
+            f = x.astype(np.float64) / 2**31
+            peak = max(peak, float(np.abs(f).max()))
             if len(x) == rate:
-                mono = x.astype(np.float64).mean(axis=1) / 2**31
-                spectrum += np.abs(np.fft.rfft(mono * window)) ** 2
+                seconds.append(float((f**2).mean()))
+                spectrum += np.abs(np.fft.rfft(f.mean(axis=1) * window)) ** 2
     finally:
         timed_out = not timer.is_alive()
         timer.cancel()
@@ -616,27 +645,36 @@ def sound(path: str) -> Sound | None:
         logger.warning("Only %.0f of %.0f s of %s decoded; its sound is not judged", samples / rate, duration, path)
         return None
     freqs = np.fft.rfftfreq(rate, 1 / rate)
-    total = spectrum[(freqs > 20) & (freqs < TREBLE_BAND_HZ[1])].sum()
-    treble = spectrum[(freqs >= TREBLE_BAND_HZ[0]) & (freqs < TREBLE_BAND_HZ[1])].sum()
-    if samples < rate or total <= 0 or treble <= 0:
+    mids = spectrum[(freqs >= MIDS_BAND_HZ[0]) & (freqs < MIDS_BAND_HZ[1])].sum()
+    highs = spectrum[(freqs >= HIGHS_BAND_HZ[0]) & (freqs < HIGHS_BAND_HZ[1])].sum()
+    heard = [m for m in seconds if m > 10 ** (SILENT_DBFS / 10)]
+    if samples < rate or mids <= 0 or highs <= 0 or not heard or peak <= 0:
         return None
+    level = 10 * float(np.log10(sum(heard) / len(heard)))
     return Sound(
-        treble=round(10 * float(np.log10(treble / total)), 1), clips=round(flat_tops / (samples / rate / 60), 1)
+        highs=round(10 * float(np.log10(highs / mids)), 1),
+        clips=round(flat_tops / (samples / rate / 60), 1),
+        crest=round(20 * float(np.log10(peak)) - level, 1),
     )
 
 
-def sounds_worse(original: Sound | None, candidate: Sound | None, original_lossy: bool = False) -> str | None:
-    """Why the candidate sounds worse than the owner's copy (duller or clipped), or None.
+def sounds_worse(
+    original: Sound | None, candidate: Sound | None, original_lossy: bool = False, mine: str = "yours"
+) -> str | None:
+    """Why the candidate sounds worse than *original*, the owner's copy (*mine* names it), or None.
 
-    Nothing is judged when either file could not be measured. A lossy
-    original's flat tops are not compared: its decoder never keeps them.
+    Worse is duller (highs cut), clipped, or squashed (dynamics lost). Nothing
+    is judged when either file could not be measured. A lossy original's flat
+    tops are not compared: its decoder never keeps them.
     """
     if original is None or candidate is None:
         return None
-    if original.treble - candidate.treble > TREBLE_MAX_LOSS_DB:
-        return f"duller than yours (treble {candidate.treble - original.treble:+.1f} dB)"
+    if original.highs - candidate.highs > HIGHS_MAX_LOSS_DB:
+        return f"duller than {mine} (highs {candidate.highs - original.highs:+.1f} dB)"
     if candidate.clips > CLIP_MAX_PER_MIN and (original_lossy or candidate.clips > CLIP_FACTOR * original.clips):
-        return f"clipped ({candidate.clips:.0f} flat tops a minute, yours {original.clips:.0f})"
+        return f"clipped ({candidate.clips:.0f} flat tops a minute, {mine} {original.clips:.0f})"
+    if original.crest - candidate.crest > CREST_MAX_LOSS_DB:
+        return f"more squashed than {mine} (dynamics {candidate.crest - original.crest:+.1f} dB)"
     return None
 
 
@@ -647,19 +685,20 @@ def clipping_words(clips: float) -> str:
     return "slight" if clips <= CLIP_MAX_PER_MIN else "heavy"
 
 
+def _gap(value: float, against: float | None, more: str, less: str) -> str:
+    if against is None:
+        return ""
+    gap = value - against
+    return f" ({abs(gap):.1f} dB {more if gap > 0 else less} than yours)" if abs(gap) >= 0.5 else " (same as yours)"
+
+
 def describe_sound(s: Sound | None, mine: Sound | None = None) -> str:
-    """One line for a caption: "treble -17.1 dB, clipping none", with the gap to *mine* when given."""
+    """One line for a caption: "highs -9.1 dB, clipping none (12/min), dynamics 14.0 dB", with the gaps to *mine*."""
     if s is None:
         return ""
-    line = f"treble {s.treble:.1f} dB"
-    if mine is not None:
-        gap = s.treble - mine.treble
-        line += (
-            f" ({abs(gap):.1f} dB {'brighter' if gap > 0 else 'duller'} than yours)"
-            if abs(gap) >= 0.5
-            else (" (same as yours)")
-        )
+    line = f"highs {s.highs:.1f} dB" + _gap(s.highs, mine and mine.highs, "brighter", "duller")
     line += f", clipping {clipping_words(s.clips)} ({s.clips:.0f}/min)"
+    line += f", dynamics {s.crest:.1f} dB" + _gap(s.crest, mine and mine.crest, "more", "less")
     return line
 
 

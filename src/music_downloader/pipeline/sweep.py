@@ -84,6 +84,11 @@ SAME_AND_BETTER = "Same recording, better copy"
 # The reason of a pair whose library file has decode errors: the proposal is first of all a repair
 # (sweep_rules.better lets it through with a cutoff up to 0.5 kHz lower).
 REPAIRS = "Repairs the decode errors in yours"
+# The reason of a pair whose library file sounds worse (duller, clipped, squashed) than the original it
+# replaced, from before the sound check: the proposal must sound no worse than either.
+SOUND_REPAIR = "Repairs how yours sounds"
+# The reason of a pair that offers that parked original back, when no copy on Soulseek repairs the song.
+OLD_COPY_BACK = "Your old copy back"
 
 REPLACED_DIR = ".sweep-replaced"
 REVIEW_DIR = ".sweep-review"
@@ -125,6 +130,16 @@ class _Held:
 
 
 @dataclass
+class _Fix:
+    """A song to repair: the replacement that sounds worse than the original it parked, and how that
+    original sounds (measured once, when the first copy is judged)."""
+
+    rep: Replacement
+    sound: object = None
+    measured: bool = False
+
+
+@dataclass
 class SweepReport:
     """What the owner is told: the run and every pair still waiting for the ear.
 
@@ -162,17 +177,28 @@ def library_files(root: str) -> list[str]:
     return sorted(names)
 
 
-def is_due(song: SweepSong, run: SweepRun, now: float) -> bool:
-    """Whether *song* is checked in *run*: not yet in this run, and its tier's recheck time has come."""
+def is_due(song: SweepSong, run: SweepRun, now: float, flawed: bool = False) -> bool:
+    """Whether *song* is checked in *run*: not yet in this run, and its tier's recheck time has come
+    (a *flawed* song, one waiting for a repair of how it sounds, every run)."""
     if song.last_checked_at is not None and song.last_checked_at >= run.started_at:
         return False
-    if run.force or song.last_checked_at is None:
+    if run.force or flawed or song.last_checked_at is None:
         return True
     if song.tier == rules.TIER_HIRES:
         return False
     if song.tier == rules.TIER_CD:
         return now - song.last_checked_at >= CD_RECHECK_SECS
     return True
+
+
+def parked_ext(parked: str) -> str:
+    """The format of a parked original from its name: "Song.flac.sweep" and "Song.flac.2.sweep" are "flac"."""
+    name = os.path.basename(parked)
+    name = name[: -len(PARKED_SUFFIX)] if name.endswith(PARKED_SUFFIX) else name
+    base, ext = os.path.splitext(name)
+    if ext[1:].isdigit():
+        ext = os.path.splitext(base)[1]
+    return ext.lstrip(".").lower()
 
 
 def free_path(path: str) -> str:
@@ -461,6 +487,7 @@ class LibrarySweep:
                 run.counts[OUTCOME_ERROR] = run.counts.get(OUTCOME_ERROR, 0) + 1
                 await self._finish(run)
                 return
+            await self._check_flaws()
             names = await asyncio.to_thread(library_files, self.root)
             if names:
                 await asyncio.to_thread(self.repo.forget_missing, set(names))
@@ -495,12 +522,15 @@ class LibrarySweep:
             keepalive.cancel()
 
     def _order(self, names: list[str]) -> list[str]:
-        """Worst tier first (files never audited first of all), then by name."""
+        """Songs waiting for a repair of how they sound first, then worst tier first (files never audited
+        first of all), then by name."""
         tiers = {s.file: s.tier for s in self.repo.songs()}
+        flawed = self.repo.flawed_stems()
 
         def key(name: str):
             tier = tiers.get(name)
-            return (rules.TIERS.index(tier) + 1 if tier in rules.TIERS else 0, name)
+            first = os.path.splitext(name)[0] not in flawed
+            return (first, rules.TIERS.index(tier) + 1 if tier in rules.TIERS else 0, name)
 
         return sorted(names, key=key)
 
@@ -525,6 +555,33 @@ class LibrarySweep:
             await self.on_report(report)
         except Exception:
             logger.exception("Sending the library sweep report failed")
+
+    async def _check_flaws(self) -> None:
+        """Compare once each song the owner took before the sound check with the original it parked.
+
+        One that sounds worse (rules.sounds_worse: duller, clipped, squashed) gets a flaw: the sweep
+        searches it again every run for a copy that repairs it, and offers the parked original back when
+        none turns up, until the owner decides a pair of it. Replacements made since are marked checked
+        when made: their proposal passed the same check.
+        """
+        for rep in self.repo.flaws_unchecked():
+            flaw = ""
+            try:
+                if os.path.isfile(rep.new_path) and os.path.isfile(rep.parked_path):
+                    new = await asyncio.to_thread(self.sound, rep.new_path)
+                    old = await asyncio.to_thread(self.sound, rep.parked_path)
+                    lossy = parked_ext(rep.parked_path) in LOSSY_EXTENSIONS
+                    flaw = rules.sounds_worse(old, new, original_lossy=lossy, mine="your old copy") or ""
+                self.repo.set_flaw(rep.id, flaw, time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Sweep: could not compare %s with its parked original; next sweep", rep.stem, exc_info=True
+                )
+                continue
+            if flaw:
+                logger.info("Sweep: %s sounds worse than the copy it replaced: %s", rep.stem, flaw)
 
     async def _keepalive(self, run: SweepRun) -> None:
         """Write the run row every HEARTBEAT_SECS for the sweep's whole life, so no other process takes it
@@ -590,17 +647,32 @@ class LibrarySweep:
                 declined_at=song.declined_at if song is not None else None,
             )
             self.repo.save_audit(song)
-        if not is_due(song, run, time.time()):
+        if not is_due(song, run, time.time(), self.repo.open_flaw(song.stem) is not None):
             return None
         return song, Audit.from_dict(song.audit)
 
     async def check_song(self, path: str, song: SweepSong, original: Audit, run: SweepRun) -> SongResult:
-        """Look for a better copy of one library song and act on what turns up."""
+        """Look for a better copy of one library song and act on what turns up.
+
+        A song that sounds worse than the original it replaced (an open flaw) is searched whatever its
+        tier, for a copy that repairs it; when none does, the parked original is offered back.
+        """
         stem = song.stem
         if self.repo.pending_review_for(stem) is not None:
             return SongResult(OUTCOME_WAITING, "a pair for this song waits for your ear")
-        if original.tier == rules.TIER_HIRES and not run.force:
+        rep = self.repo.open_flaw(stem)
+        fix = _Fix(rep) if rep is not None else None
+        if fix is None and original.tier == rules.TIER_HIRES and not run.force:
             return SongResult(OUTCOME_HIRES)
+        result = await self._look(path, stem, original, run, fix)
+        if fix is not None and result.outcome != OUTCOME_REVIEW:
+            why = await self._offer_old_copy(run, stem, path, original, fix)
+            if why:
+                return SongResult(OUTCOME_REVIEW, why, searched=result.searched)
+        return result
+
+    async def _look(self, path: str, stem: str, original: Audit, run: SweepRun, fix: _Fix | None) -> SongResult:
+        """Search Soulseek for the song, try up to CD_TRIES or OTHER_TRIES copies, stage the best one."""
         artist, title = rules.split_stem(stem)
         if not artist:
             return SongResult(OUTCOME_SKIPPED, "name is not Artist - Title")
@@ -613,12 +685,12 @@ class LibrarySweep:
         ranked = await self.pipeline.search(f"{track.artist} {clean}", track, "library")
         if not ranked:
             ranked = await self.pipeline.search(clean, track, "library")
-        copies = [r for r in ranked if rules.wanted(original.tier, r, original.length)]
+        copies = [r for r in ranked if rules.wanted(original.tier, r, original.length, repair=fix is not None)]
         if not copies:
             return SongResult(OUTCOME_NO_BETTER_COPY, searched=True)
 
         notes: list[str] = []
-        tries = CD_TRIES if original.tier == rules.TIER_CD else OTHER_TRIES
+        tries = CD_TRIES if original.tier == rules.TIER_CD and fix is None else OTHER_TRIES
         index = 0
         held: _Held | None = None
         try:
@@ -633,7 +705,7 @@ class LibrarySweep:
                     notes.append(f"{result.basename}: {outcome.error}")
                     continue
                 kept, detail, far = await self._consider(
-                    path, stem, original, outcome.path, result, outcome.transfer_id, track, run
+                    path, stem, original, outcome.path, result, outcome.transfer_id, track, run, fix
                 )
                 if kept is not None:
                     return SongResult(kept, detail, searched=True)
@@ -662,7 +734,7 @@ class LibrarySweep:
             self.pipeline.forget_transfer(held.result.username, held.transfer_id)
 
     async def _consider(
-        self, path, stem, original: Audit, cand_path, result, transfer_id, track, run
+        self, path, stem, original: Audit, cand_path, result, transfer_id, track, run, fix: _Fix | None = None
     ) -> tuple[str | None, str, _Held | None]:
         """Judge one downloaded copy; stage it for the owner's ear or discard it. Nothing is replaced without asking.
 
@@ -674,7 +746,7 @@ class LibrarySweep:
         held: _Held | None = None
         try:
             cand = await asyncio.to_thread(self.audit, cand_path)
-            if not rules.better(original, cand):
+            if not rules.better(original, cand, repair=fix is not None):
                 return None, f"not better ({rules.describe(cand)})", None
             similarity = await self._similarity(path, cand_path)
             kind, why = rules.judge(original, cand, stem, similarity)
@@ -685,6 +757,11 @@ class LibrarySweep:
             mine = await asyncio.to_thread(self.sound, path)
             theirs = await asyncio.to_thread(self.sound, cand_path)
             worse = rules.sounds_worse(mine, theirs, original_lossy=original.ext in LOSSY_EXTENSIONS)
+            if not worse and fix is not None:
+                if not fix.measured:
+                    fix.sound, fix.measured = await asyncio.to_thread(self.sound, fix.rep.parked_path), True
+                lossy = parked_ext(fix.rep.parked_path) in LOSSY_EXTENSIONS
+                worse = rules.sounds_worse(fix.sound, theirs, original_lossy=lossy, mine="your old copy")
             if worse:
                 return None, f"sounds worse: {worse}", None
             if original.strict is False:
@@ -694,6 +771,8 @@ class LibrarySweep:
                     else "your cutoff unknown"
                 )
                 why = f"{REPAIRS}, {gain}: {why}"
+            elif fix is not None:
+                why = f"{SOUND_REPAIR}: yours is {fix.rep.flaw}; {why}"
             elif kind == rules.SAME:
                 why = f"{SAME_AND_BETTER}: {why}"
             if similarity is not None and similarity < rules.FAR_SIMILARITY:
@@ -708,6 +787,20 @@ class LibrarySweep:
                 else:
                     self.pipeline.forget_transfer(result.username, transfer_id)
 
+    async def _offer_old_copy(self, run, stem: str, path: str, original: Audit, fix: _Fix) -> str | None:
+        """Stage the parked original *fix* replaced as a pair, when no copy repaired the song; its reason,
+        or None when that original is gone. The parked file stays where it is."""
+        parked = fix.rep.parked_path
+        if not os.path.isfile(parked):
+            return None
+        cand = await asyncio.to_thread(self.audit, parked, parked_ext(parked))
+        similarity = await self._similarity(path, parked)
+        mine = await asyncio.to_thread(self.sound, path)
+        theirs = fix.sound if fix.measured else await asyncio.to_thread(self.sound, parked)
+        why = f"{OLD_COPY_BACK}: the one you took is {fix.rep.flaw}, and no copy on Soulseek repairs it"
+        await self._stage(run, stem, path, original, parked, cand, why, similarity, mine, theirs, carry=False)
+        return why
+
     async def _similarity(self, original: str, candidate: str) -> float | None:
         a = await asyncio.to_thread(self.fingerprint, original)
         b = await asyncio.to_thread(self.fingerprint, candidate) if a else None
@@ -716,9 +809,23 @@ class LibrarySweep:
         return await asyncio.to_thread(rules.similarity, a, b)
 
     async def _stage(
-        self, run, stem, path, original: Audit, cand_path, cand: Audit, why, similarity, mine=None, theirs=None
+        self,
+        run,
+        stem,
+        path,
+        original: Audit,
+        cand_path,
+        cand: Audit,
+        why,
+        similarity,
+        mine=None,
+        theirs=None,
+        carry: bool = True,
     ):
-        await asyncio.to_thread(carry_tags_and_cover, path, cand_path)
+        """Copy *cand_path* into the review folder as a pair with *path*; *carry*: fill its missing tags and
+        cover from the library file first (a download; never a parked original, which is left untouched)."""
+        if carry:
+            await asyncio.to_thread(carry_tags_and_cover, path, cand_path)
 
         def stage() -> str:
             _make_library_dir(self.review_dir)
@@ -792,6 +899,7 @@ class LibrarySweep:
             review.decision, review.decided_at = decision, now
             if decision in (DECISION_KEEP_MINE, DECISION_KEEP_BOTH):
                 self.repo.mark_declined(review.stem, now)
+            self.repo.close_flaws(review.stem, now)
             logger.info("Sweep pair %s (%s): %s -> %s", review.id, review.stem, decision, path)
             return review, path
 
@@ -817,6 +925,7 @@ class LibrarySweep:
                         to_desc=review.proposal_desc,
                         how=DECISION_TAKE_NEW,
                         run_id=review.run_id,
+                        flaw_checked_at=time.time(),
                     )
                 )
             else:

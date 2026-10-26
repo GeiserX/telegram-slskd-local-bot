@@ -167,7 +167,7 @@ class TestOneSong:
     async def test_a_duller_copy_is_never_offered(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
         sweep.sound = lambda p: (
-            rules.Sound(-17.0, 5.0) if os.path.dirname(p) == str(pipe.lib) else rules.Sound(-23.0, 0.0)
+            rules.Sound(-17.0, 5.0, 12.0) if os.path.dirname(p) == str(pipe.lib) else rules.Sound(-23.0, 0.0, 12.0)
         )
         run = await _run_once(sweep)
         assert run.counts == {sw.OUTCOME_NONE_QUALIFIED: 1}
@@ -178,12 +178,14 @@ class TestOneSong:
     async def test_a_staged_pair_carries_how_both_files_sound(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
         sweep.sound = lambda p: (
-            rules.Sound(-17.0, 900.0) if os.path.dirname(p) == str(pipe.lib) else rules.Sound(-16.0, 0.0)
+            rules.Sound(-17.0, 900.0, 9.0) if os.path.dirname(p) == str(pipe.lib) else rules.Sound(-16.0, 0.0, 12.0)
         )
         await _run_once(sweep)
         review = sweep.repo.pending_review_for(STEM)
-        assert review.current_sound == "treble -17.0 dB, clipping heavy (900/min)"
-        assert review.proposal_sound == "treble -16.0 dB (1.0 dB brighter than yours), clipping none (0/min)"
+        assert review.current_sound == "highs -17.0 dB, clipping heavy (900/min), dynamics 9.0 dB"
+        assert review.proposal_sound == (
+            "highs -16.0 dB (1.0 dB brighter than yours), clipping none (0/min), dynamics 12.0 dB (3.0 dB more than yours)"
+        )
 
     async def test_another_performance_waits_while_a_closer_copy_is_tried(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=200.5), copies=2)
@@ -271,6 +273,138 @@ class TestOneSong:
         await _run_once(sweep)
         assert (pipe.lib / f"{STEM}.flac").read_bytes() == b"someone else's flac"
         assert (pipe.lib / f"{STEM}.mp3").read_bytes() == b"original"
+
+
+OLD = rules.Sound(-9.0, 3.0, 14.0)  # the parked original
+TOOK = rules.Sound(-9.2, 9000.0, 9.0)  # the copy the owner took: clipped and squashed
+GOOD = rules.Sound(-9.1, 2.0, 13.5)
+
+
+def _flawed(tmp_path, candidate: Audit, cand_sound=GOOD, **kw):
+    """A CD song the owner took before the sound check, whose parked MP3 original sounds better."""
+    original = _audit(cutoff=21.5)
+    sweep, pipe = _sweep(tmp_path, candidate, original=original, **kw)
+    parked_dir = pipe.lib / sw.REPLACED_DIR
+    parked_dir.mkdir()
+    parked = parked_dir / f"{STEM}.mp3.sweep"
+    parked.write_bytes(b"old copy")
+    rep = sweep.repo.add_replacement(
+        sw.Replacement(STEM, str(pipe.lib / f"{STEM}.flac"), str(parked), "MP3 320", "FLAC 16/44.1", "take_new")
+    )
+    old_audit = _audit(ext="mp3", cutoff=16.0)
+    audits = {str(pipe.lib / f"{STEM}.flac"): original, str(parked): old_audit}
+    sweep.audit = lambda p, ext=None: audits.get(p, candidate)
+    sweep.fingerprint = lambda p: SAME_FP
+    sounds = {str(pipe.lib / f"{STEM}.flac"): TOOK, str(parked): OLD}
+    sweep.sound = lambda p: sounds.get(p, cand_sound)
+    return sweep, pipe, rep, parked
+
+
+class TestSoundRepairs:
+    async def test_a_song_taken_before_the_sound_check_is_compared_with_its_parked_original_once(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0))
+        pipe.search.side_effect = lambda q, t, p: RankedResults([])
+        await _run_once(sweep)
+        flaw = sweep.repo.open_flaw(STEM)
+        assert flaw is not None and flaw.flaw.startswith("clipped (9000 flat tops a minute, your old copy 3)")
+        measured = []
+        sweep.sound = lambda p: measured.append(p) or TOOK
+        await sweep._check_flaws()
+        assert measured == [], "each replacement is measured once"
+
+    async def test_a_replacement_that_sounds_no_worse_gets_no_flaw(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0))
+        sweep.sound = lambda p: OLD
+        await sweep._check_flaws()
+        assert sweep.repo.open_flaw(STEM) is None
+        assert sweep.repo.flaws_unchecked() == []
+
+    async def test_a_flawed_cd_song_takes_a_cd_copy_that_repairs_it(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0, length=200.5))
+        assert not rules.wanted(rules.TIER_CD, pipe.copies[0], 200.0), "a CD song wants only hi-res, normally"
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_REVIEW: 1}
+        review = sweep.repo.pending_review_for(STEM)
+        assert review.reason.startswith(
+            f"{sw.SOUND_REPAIR}: yours is clipped (9000 flat tops a minute, your old copy 3)"
+        )
+        assert Path(review.proposal_path).read_bytes() == b"candidate 0"
+        assert parked.read_bytes() == b"old copy"
+
+    async def test_a_copy_no_worse_than_yours_but_worse_than_your_old_one_does_not_repair_it(self, tmp_path):
+        squashed = rules.Sound(-9.1, 2.0, 10.0)
+        assert rules.sounds_worse(TOOK, squashed) is None and rules.sounds_worse(OLD, squashed) is not None
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0, length=200.5), cand_sound=squashed)
+        await _run_once(sweep)
+        assert pipe.discarded == pipe.fetched, "the download is thrown away"
+        assert sweep.repo.pending_review_for(STEM).reason.startswith(sw.OLD_COPY_BACK)
+
+    async def test_with_no_repair_on_soulseek_the_old_copy_is_offered_back(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0))
+        pipe.search.side_effect = lambda q, t, p: RankedResults([])
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_REVIEW: 1}
+        review = sweep.repo.pending_review_for(STEM)
+        assert review.reason.startswith(f"{sw.OLD_COPY_BACK}: the one you took is clipped")
+        assert review.proposal_ext == "mp3" and review.proposal_path.endswith(f"{STEM}.mp3.sweep")
+        assert Path(review.proposal_path).read_bytes() == b"old copy"
+        assert parked.read_bytes() == b"old copy", "the parked original stays"
+        assert review.proposal_sound.startswith("highs -9.0 dB")
+
+        _, path = await sweep.decide(review.id, "take_new")
+        assert path == str(pipe.lib / f"{STEM}.mp3") and Path(path).read_bytes() == b"old copy"
+        assert not (pipe.lib / f"{STEM}.flac").exists()
+        assert sweep.repo.open_flaw(STEM) is None, "your decision closes the flaw"
+        sweep.sound = lambda p: OLD if sw.REPLACED_DIR in p else TOOK
+        await sweep._check_flaws()
+        assert sweep.repo.open_flaw(STEM) is None, "a replacement you chose by ear is never flagged"
+
+    async def test_keep_mine_closes_the_flaw_and_the_song_waits_its_turn_again(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0))
+        pipe.search.side_effect = lambda q, t, p: RankedResults([])
+        await _run_once(sweep)
+        await sweep.decide(sweep.repo.pending_review_for(STEM).id, "keep_mine")
+        assert sweep.repo.open_flaw(STEM) is None
+        assert parked.exists()
+        run = await _run_once(sweep)
+        assert run.counts == {}, "a CD song checked this month is not due"
+
+    async def test_a_flawed_hires_song_is_searched_too(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0, length=200.5))
+        hires = _audit(cutoff=30.0, depth=24, rate=96000)
+        audits = {str(pipe.lib / f"{STEM}.flac"): hires, str(parked): _audit(ext="mp3", cutoff=16.0)}
+        sweep.audit = lambda p, ext=None: audits.get(p, _audit(cutoff=21.0, length=200.5))
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_REVIEW: 1}
+        assert sweep.repo.pending_review_for(STEM).reason.startswith(sw.SOUND_REPAIR)
+
+    async def test_a_repair_needs_a_genuine_cd_cutoff(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=19.0, length=200.5))
+        await _run_once(sweep)
+        assert pipe.discarded == pipe.fetched, "the 19.0 kHz copy is thrown away"
+        assert sweep.repo.pending_review_for(STEM).reason.startswith(sw.OLD_COPY_BACK)
+        current = _audit(cutoff=17.0)
+        assert rules.better(current, _audit(cutoff=16.6), repair=True), "half a kHz below a lower cutoff is fine"
+        assert not rules.better(current, _audit(cutoff=16.4), repair=True)
+        assert not rules.better(_audit(cutoff=None), _audit(cutoff=15.0), repair=True), "unknown counts as a CD"
+        assert rules.better(_audit(cutoff=None), _audit(cutoff=19.5), repair=True)
+
+    async def test_a_replacement_that_cannot_be_compared_waits_for_the_next_sweep(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0))
+        pipe.search.side_effect = lambda q, t, p: RankedResults([])
+
+        def broken(p):
+            raise OSError("disk went away")
+
+        sweep.sound = broken
+        await sweep._check_flaws()
+        assert [r.id for r in sweep.repo.flaws_unchecked()] == [rep.id], "left unchecked"
+        run = await _run_once(sweep)
+        assert run.status == sw.RUN_DONE, "the sweep goes on"
+
+    def test_the_format_of_a_parked_original_comes_from_its_name(self):
+        assert sw.parked_ext("/m/.sweep-replaced/A - B.flac.sweep") == "flac"
+        assert sw.parked_ext("/m/.sweep-replaced/A - B.MP3.2.sweep") == "mp3"
 
 
 class TestDecisions:
@@ -617,6 +751,18 @@ class TestTelegram:
         assert "Upgraded: 2" in text and "Nothing changed" not in text
         quiet = bot._sweep_summary(sw.SweepReport(SweepRun(id=2, trigger="schedule", total=10, done=10)))
         assert "Nothing changed" in quiet
+
+    @pytest.mark.parametrize(("label", "mark"), [(sw.SOUND_REPAIR, "\U0001f527"), (sw.OLD_COPY_BACK, "\u21a9\ufe0f")])
+    async def test_a_sound_repair_and_an_old_copy_say_so_first(self, tmp_path, monkeypatch, label, mark):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        why = "yours is clipped (9000 flat tops a minute, your old copy 3)"
+        review = _review(bot, config, tmp_path, reason=f"{label}: {why}")
+        tg = AsyncMock()
+        await bot._send_sweep_pairs(tg, CHAT, [review])
+        for caption in [c.kwargs["caption"] for c in tg.send_audio.await_args_list]:
+            assert caption.splitlines()[1] == f"{mark} <b>{label}</b>: {why}"
+            assert "Why it needs your ear" not in caption
 
     async def test_a_same_recording_pair_says_so_first_in_both_messages(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)

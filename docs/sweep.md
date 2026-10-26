@@ -81,19 +81,37 @@ the one set aside is offered, with "the only copy found" at the end of its reaso
 
 The cutoff only says how high a spectrum reaches, not how much treble is there. A 24/96 vinyl or tape transfer
 can reach 24 kHz and still sound duller than your CD. So before a pair goes to you, the sweep decodes both files
-once more and measures two things:
+once more and measures three things:
 
-- **Treble**: the share of the energy between 5 and 15 kHz, in dB. A copy more than 3 dB duller than yours is
-  thrown away. A rejected 24/96 proposal of The Zombies' "Time of the Season" read 5.9 dB below the CD and
-  sounded muffled.
+- **Highs**: the energy between 4 and 16 kHz against the mids (1 to 4 kHz), in dB. A copy whose highs are more
+  than 3 dB below yours sounds muffled and is thrown away. Volume does not change this measure, and neither
+  does a mix with more bass: only highs that were cut. Among the copies you had taken, the muffled ones sat 3.3
+  to 7.6 dB below the copy they replaced.
 - **Clipping**: flat tops, runs of three or more equal samples above -6 dBFS, counted per minute. A clipped file
   keeps them when it is turned down later. A clean CD shows a few dozen from loud bass, a copy clipped by 4 dB
   thousands. A copy with more than 100 a minute and more than four times yours is thrown away. When your file is
   lossy its count is not compared, because an MP3 decoder never keeps flat tops.
+- **Dynamics**: the peak against the average level of the parts that are not silent, in dB. A loudness-war
+  remaster is limited until this shrinks, often without a single flat top. A copy more than 3 dB below yours
+  is thrown away. Louder is not better here: players level songs anyway, and the quieter master is usually the
+  less squashed one.
 
-Both captions of a pair show the measures, for example `Sound: treble -23.0 dB (5.9 dB duller than yours),
-clipping none (0/min)`, with clipping as none (under 25 a minute), slight (up to 100) or heavy. Distortion that is
-part of the source itself, like a worn record, is not caught by either measure; your ear still decides.
+Both captions of a pair show the measures, for example `Sound: highs -12.3 dB (5.9 dB duller than yours),
+clipping none (0/min), dynamics 9.5 dB (4.5 dB less than yours)`, with clipping as none (under 25 a minute),
+slight (up to 100) or heavy. Distortion that is part of the source itself, like a worn record, is not caught by
+these measures; your ear still decides.
+
+### Songs you took before these checks
+
+Copies you took before 0.22.0 never went through the sound check, and copies taken before 0.24.0 never had
+their dynamics measured. At the start of each sweep, every song you took that is not yet compared is measured
+against the original it parked, once. One that sounds worse (duller, clipped or squashed) is searched again in
+that sweep and every sweep after, first of all and whatever its tier, for a copy that repairs it. Such a copy
+only needs a clean decode and a genuine CD cutoff (19.5 kHz), or one at most 0.5 kHz below yours when yours is
+lower, and it must sound no worse than your file and no worse than your old copy. Its pair opens with "🔧 Repairs how yours sounds" and says what is wrong
+with yours. When no copy on Soulseek does, your old copy itself comes back as a pair, "↩️ Your old copy back",
+so your ear chooses between the two. The parked original stays where it is. Any decision on a pair of that
+song ends the search for a repair.
 
 When your file has decode errors, a copy counts as better once it decodes cleanly, even with a cutoff up to
 0.5 kHz lower than yours. Such a pair opens with "🔧 Repairs the decode errors in yours" and the cutoff
