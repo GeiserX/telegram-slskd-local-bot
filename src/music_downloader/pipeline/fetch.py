@@ -170,7 +170,8 @@ async def fetch(
     """
 
     def find() -> str | None:
-        return processor.find_downloaded_file(result.username, result.filename)
+        # Folder first: another copy of the same name may still sit in DOWNLOAD_DIR (a sweep holds one).
+        return locate(processor, result.username, result.filename)
 
     def find_own() -> str | None:
         # Only in the folder named like the remote one: a bare name match may be another download's file.

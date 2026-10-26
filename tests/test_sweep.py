@@ -722,6 +722,23 @@ class TestTelegram:
         assert bot.pipeline.sweep.repo.get_review(review.id).decline_reason == "muffled"
         kwargs = update.callback_query.edit_message_caption.await_args.kwargs
         assert "Noted: muffled." in kwargs["caption"] and kwargs["reply_markup"] is None
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:d")
+        assert bot.pipeline.sweep.repo.get_review(review.id).decline_reason == "muffled", "the first answer stays"
+
+    async def test_a_reason_on_a_text_only_pair_keeps_its_text(self, tmp_path):
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        update.callback_query.message.caption_html = None
+        update.callback_query.message.text_html = "2. Proposal (too big to send)"
+        update.callback_query.edit_message_caption.side_effect = RuntimeError("no caption")
+        await bot._handle_sweep_decision(update, MagicMock(), CHAT, f"swp:{review.id}:m")
+        update.callback_query.message.text_html = update.callback_query.edit_message_text.await_args.args[0]
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:v")
+        text = update.callback_query.edit_message_text.await_args.args[0]
+        assert "too big to send" in text and "Kept yours" in text and "Noted: other version." in text
 
     async def test_a_reason_is_refused_on_a_pair_not_kept(self, tmp_path):
         bot, config = _bot(tmp_path)

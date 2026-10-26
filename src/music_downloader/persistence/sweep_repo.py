@@ -315,11 +315,11 @@ class SweepRepository:
         return cursor.rowcount > 0
 
     def set_decline_reason(self, review_id: int, reason: str) -> bool:
-        """Record why the owner kept their own file; False unless the pair was decided Keep mine."""
+        """Record why the owner kept their own file; False unless the pair was decided Keep mine with no reason yet."""
         if reason not in DECLINE_REASONS:
             raise ValueError(f"reason must be one of {', '.join(DECLINE_REASONS)}, not {reason!r}")
         cursor = self._conn.execute(
-            "UPDATE sweep_reviews SET decline_reason = ? WHERE id = ? AND decision = ?",
+            "UPDATE sweep_reviews SET decline_reason = ? WHERE id = ? AND decision = ? AND decline_reason = ''",
             (reason, review_id, DECISION_KEEP_MINE),
         )
         self._conn.commit()

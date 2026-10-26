@@ -4014,7 +4014,8 @@ class MusicBot:
 
     async def _edit_sweep_message(self, query, note: str, markup) -> None:
         """Append *note* to a pair's message and set its buttons (a caption, or the text of a text-only pair)."""
-        caption = getattr(query.message, "caption_html", None) or ""
+        # A text-only pair (file gone or too big) has no caption: its text is what gets the note.
+        caption = getattr(query.message, "caption_html", None) or getattr(query.message, "text_html", None) or ""
         caption = f"{caption}\n\n{note}" if caption else note
         try:
             await query.edit_message_caption(
