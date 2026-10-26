@@ -378,6 +378,28 @@ class TestSoundRepairs:
         assert run.counts == {sw.OUTCOME_REVIEW: 1}
         assert sweep.repo.pending_review_for(STEM).reason.startswith(sw.SOUND_REPAIR)
 
+    async def test_a_repair_needs_a_genuine_cd_cutoff(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=19.0, length=200.5))
+        await _run_once(sweep)
+        assert pipe.discarded == pipe.fetched, "the 19.0 kHz copy is thrown away"
+        assert sweep.repo.pending_review_for(STEM).reason.startswith(sw.OLD_COPY_BACK)
+        current = _audit(cutoff=17.0)
+        assert rules.better(current, _audit(cutoff=16.6), repair=True), "half a kHz below a lower cutoff is fine"
+        assert not rules.better(current, _audit(cutoff=16.4), repair=True)
+
+    async def test_a_replacement_that_cannot_be_compared_waits_for_the_next_sweep(self, tmp_path):
+        sweep, pipe, rep, parked = _flawed(tmp_path, _audit(cutoff=21.0))
+        pipe.search.side_effect = lambda q, t, p: RankedResults([])
+
+        def broken(p):
+            raise OSError("disk went away")
+
+        sweep.sound = broken
+        await sweep._check_flaws()
+        assert [r.id for r in sweep.repo.flaws_unchecked()] == [rep.id], "left unchecked"
+        run = await _run_once(sweep)
+        assert run.status == sw.RUN_DONE, "the sweep goes on"
+
     def test_the_format_of_a_parked_original_comes_from_its_name(self):
         assert sw.parked_ext("/m/.sweep-replaced/A - B.flac.sweep") == "flac"
         assert sw.parked_ext("/m/.sweep-replaced/A - B.MP3.2.sweep") == "mp3"

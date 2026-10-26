@@ -566,12 +566,20 @@ class LibrarySweep:
         """
         for rep in self.repo.flaws_unchecked():
             flaw = ""
-            if os.path.isfile(rep.new_path) and os.path.isfile(rep.parked_path):
-                new = await asyncio.to_thread(self.sound, rep.new_path)
-                old = await asyncio.to_thread(self.sound, rep.parked_path)
-                lossy = parked_ext(rep.parked_path) in LOSSY_EXTENSIONS
-                flaw = rules.sounds_worse(old, new, original_lossy=lossy, mine="your old copy") or ""
-            self.repo.set_flaw(rep.id, flaw, time.time())
+            try:
+                if os.path.isfile(rep.new_path) and os.path.isfile(rep.parked_path):
+                    new = await asyncio.to_thread(self.sound, rep.new_path)
+                    old = await asyncio.to_thread(self.sound, rep.parked_path)
+                    lossy = parked_ext(rep.parked_path) in LOSSY_EXTENSIONS
+                    flaw = rules.sounds_worse(old, new, original_lossy=lossy, mine="your old copy") or ""
+                self.repo.set_flaw(rep.id, flaw, time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Sweep: could not compare %s with its parked original; next sweep", rep.stem, exc_info=True
+                )
+                continue
             if flaw:
                 logger.info("Sweep: %s sounds worse than the copy it replaced: %s", rep.stem, flaw)
 

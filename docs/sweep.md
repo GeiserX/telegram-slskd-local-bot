@@ -107,7 +107,8 @@ Copies you took before 0.22.0 never went through the sound check, and copies tak
 their dynamics measured. At the start of each sweep, every song you took that is not yet compared is measured
 against the original it parked, once. One that sounds worse (duller, clipped or squashed) is searched again in
 that sweep and every sweep after, first of all and whatever its tier, for a copy that repairs it. Such a copy
-only needs a clean decode and a cutoff no more than 0.5 kHz below yours, and it must sound no worse than your
+only needs a clean decode and a genuine CD cutoff (19.5 kHz), or one at most 0.5 kHz below yours when yours is
+lower, and it must sound no worse than your
 file and no worse than your old copy. Its pair opens with "🔧 Repairs how yours sounds" and says what is wrong
 with yours. When no copy on Soulseek does, your old copy itself comes back as a pair, "↩️ Your old copy back",
 so your ear chooses between the two. The parked original stays where it is. Any decision on a pair of that

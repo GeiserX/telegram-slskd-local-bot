@@ -282,9 +282,10 @@ def wanted(tier: str, copy: SearchResult, original_length: float, repair: bool =
 def better(original: Audit, candidate: Audit, repair: bool = False) -> bool:
     """Whether a downloaded copy is a real improvement on the original, judged by its cutoff.
 
-    It must decode cleanly and be lossless. A damaged original, or one to be
-    *repaired* (it sounds worse than the copy it replaced), needs a copy no
-    worse; a CD original genuine content above HIRES_CUTOFF_KHZ; a fake,
+    It must decode cleanly and be lossless. A damaged original needs a copy no
+    worse; one to be *repaired* (it sounds worse than the copy it replaced) a
+    genuine CD cutoff, or one at most 0.5 kHz below its own when that is lower;
+    a CD original genuine content above HIRES_CUTOFF_KHZ; a fake,
     uncertain or lossy one a cutoff of at least CD_CUTOFF_KHZ and MIN_GAIN_KHZ
     above its own.
     """
@@ -292,7 +293,7 @@ def better(original: Audit, candidate: Audit, repair: bool = False) -> bool:
         return False
     c, oc = candidate.cutoff, original.cutoff or 0.0
     if repair:
-        return c >= min(oc, CD_CUTOFF_KHZ) - 0.5
+        return c >= min(oc - 0.5, CD_CUTOFF_KHZ)
     if original.tier == TIER_HIRES:
         return False
     if original.tier == TIER_CD:
