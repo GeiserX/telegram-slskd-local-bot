@@ -44,6 +44,23 @@ Fix: let slskd write files its group can change, and put the bot in that group.
 Recreate both containers (`docker compose up -d`). The next save deletes its download, and the next sweep
 stops logging `Permission denied`.
 
+## Library files belong to the root group
+
+Cause: with `user: "1000:0"` every file the bot writes gets group root. The bot gives new library files mode
+664 (folders 775) and the library folder's group, but it can only hand a file to a group it belongs to.
+
+Fix: add the library's group to the bot as a second group, keeping the root group for the downloads. With the
+library folder owned by group 100 (`users`):
+
+```yaml
+    user: "1000:0"
+    group_add:
+      - "100"
+```
+
+Recreate the container. Files saved from then on get group `users`; older ones keep root until you change
+them, for example with `sudo chgrp -R users /path/to/library`.
+
 ## Telegram says the bot is logged in elsewhere
 
 Cause: the bot was switched to a [local Bot API server](getting-started.md#send-files-over-50-mb-a-local-bot-api-server)

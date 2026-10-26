@@ -312,6 +312,23 @@ class TestFilesAndPurge:
         p.write_bytes(b"1")
         assert sw.free_path(str(p)) == str(tmp_path / "x.flac.2.sweep")
 
+    def test_sweep_folders_and_a_keep_both_file_get_the_library_mode(self, tmp_path):
+        lib = tmp_path / "music"
+        lib.mkdir()
+        sw._make_library_dir(str(lib / sw.REVIEW_DIR))
+        assert os.stat(lib / sw.REVIEW_DIR).st_mode & 0o777 == 0o775
+        src = tmp_path / "proposal.flac.sweep"
+        src.write_bytes(b"p")
+        os.chmod(src, 0o600)
+        target = sw.place(str(src), str(lib / "Song (alternate).flac"), None, move=True)
+        assert os.stat(target).st_mode & 0o777 == 0o664
+        like = lib / "Mine.flac"
+        like.write_bytes(b"m")
+        os.chmod(like, 0o640)
+        src.write_bytes(b"p")
+        target = sw.place(str(src), str(lib / "Mine2.flac"), str(like), move=True)
+        assert os.stat(target).st_mode & 0o777 == 0o640, "an original's own mode still wins"
+
     def test_purge_after_keep_days_and_only_parked_files(self, tmp_path):
         pipe = FakePipeline(tmp_path, keep_days=7)
         sweep = sw.LibrarySweep(pipe)

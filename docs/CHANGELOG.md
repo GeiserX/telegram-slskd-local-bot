@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1] - 2026-10-26
+
+### Fixed
+
+- Files and folders the bot creates in the library get mode 664 (folders 775) and the library folder's group, instead of the download's mode and the root group. A sweep proposal still copies the mode and group of the song it replaces. The group change needs the container in that group: with `user: "1000:0"`, add the library's group with `group_add` ([troubleshooting](troubleshooting.md#library-files-belong-to-the-root-group)).
+
 ## [0.22.0] - 2026-10-25
 
 ### Added

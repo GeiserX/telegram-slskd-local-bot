@@ -14,6 +14,29 @@ import mutagen.flac
 
 logger = logging.getLogger(__name__)
 
+# What a file or folder the bot creates in the library gets: these modes and the
+# library folder's group. Downloads arrive with slskd's mode and the bot's own
+# group (root, which it needs to delete them), which neither the owner's users
+# group nor the rest of the library has.
+LIBRARY_FILE_MODE = 0o664
+LIBRARY_DIR_MODE = 0o775
+
+
+def own_like_library(path: str, library: str) -> None:
+    """Give *path* (new in *library*) LIBRARY_FILE_MODE or LIBRARY_DIR_MODE and the library folder's group.
+
+    The group change needs the process to be in that group (compose
+    `group_add`); without it the mode is still set. A symlink is left alone:
+    chmod and chown would change whatever it points to. Best effort.
+    """
+    if os.path.islink(path):
+        logger.warning("Not changing the owner of %s: it is a symlink", path)
+        return
+    with contextlib.suppress(OSError):
+        os.chmod(path, LIBRARY_DIR_MODE if os.path.isdir(path) else LIBRARY_FILE_MODE)
+    with contextlib.suppress(OSError):
+        os.chown(path, -1, os.stat(library).st_gid)
+
 
 class FileProcessor:
     """Handles file renaming, moving, and cleanup."""
@@ -141,6 +164,7 @@ class FileProcessor:
             try:
                 shutil.copy2(source_path, tmp_path)
                 self._dedup_flac_tags(tmp_path)
+                own_like_library(tmp_path, self.output_dir)
                 os.replace(tmp_path, target_path)
             except BaseException:
                 with contextlib.suppress(OSError):
