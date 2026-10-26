@@ -247,3 +247,13 @@ class TestLibraryOwnership:
         d.mkdir(mode=0o700)
         fh.own_like_library(str(d), str(tmp_path))
         assert os.stat(d).st_mode & 0o777 == fh.LIBRARY_DIR_MODE
+
+    def test_a_symlinked_folder_is_left_alone(self, tmp_path):
+        from music_downloader.processor import file_handler as fh
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        link = tmp_path / ".sweep-review"
+        link.symlink_to(elsewhere)
+        fh.own_like_library(str(link), str(tmp_path))
+        assert os.stat(elsewhere).st_mode & 0o777 == 0o700

@@ -59,7 +59,7 @@ library folder owned by group 100 (`users`):
 ```
 
 Recreate the container. Files saved from then on get group `users`; older ones keep root until you change
-them, for example with `chgrp users /path/to/library/*`.
+them, for example with `sudo chgrp -R users /path/to/library`.
 
 ## Telegram says the bot is logged in elsewhere
 

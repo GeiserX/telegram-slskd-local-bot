@@ -26,8 +26,12 @@ def own_like_library(path: str, library: str) -> None:
     """Give *path* (new in *library*) LIBRARY_FILE_MODE or LIBRARY_DIR_MODE and the library folder's group.
 
     The group change needs the process to be in that group (compose
-    `group_add`); without it the mode is still set. Best effort.
+    `group_add`); without it the mode is still set. A symlink is left alone:
+    chmod and chown would change whatever it points to. Best effort.
     """
+    if os.path.islink(path):
+        logger.warning("Not changing the owner of %s: it is a symlink", path)
+        return
     with contextlib.suppress(OSError):
         os.chmod(path, LIBRARY_DIR_MODE if os.path.isdir(path) else LIBRARY_FILE_MODE)
     with contextlib.suppress(OSError):
