@@ -204,3 +204,46 @@ def _create_test_flac(path: str, tags: dict[str, list[str]]) -> None:
     for key, values in tags.items():
         audio[key] = values
     audio.save()
+
+
+class TestLibraryOwnership:
+    """New library files get the library's mode and group, whatever the download had."""
+
+    def test_an_imported_file_gets_664_and_the_library_group(self, tmp_path, monkeypatch):
+        from music_downloader.processor import file_handler as fh
+
+        out = tmp_path / "output"
+        (tmp_path / "downloads").mkdir()
+        out.mkdir()
+        source = tmp_path / "downloads" / "song.flac"
+        source.write_text("x")
+        os.chmod(source, 0o600)
+        calls = []
+        real_chown = os.chown
+        monkeypatch.setattr(fh.os, "chown", lambda p, u, g: calls.append((os.path.basename(p), u, g)))
+        result = FileProcessor(str(tmp_path / "downloads"), str(out)).process_file(str(source), "A", "B")
+        monkeypatch.setattr(fh.os, "chown", real_chown)
+        assert oct(os.stat(result).st_mode & 0o777) == oct(fh.LIBRARY_FILE_MODE)
+        assert calls == [("A - B.flac.importing", -1, os.stat(out).st_gid)]
+
+    def test_a_group_the_process_lacks_still_sets_the_mode(self, tmp_path, monkeypatch):
+        from music_downloader.processor import file_handler as fh
+
+        f = tmp_path / "f.flac"
+        f.write_text("x")
+        os.chmod(f, 0o600)
+
+        def denied(*_a):
+            raise PermissionError("not in that group")
+
+        monkeypatch.setattr(fh.os, "chown", denied)
+        fh.own_like_library(str(f), str(tmp_path))
+        assert os.stat(f).st_mode & 0o777 == fh.LIBRARY_FILE_MODE
+
+    def test_a_folder_gets_775(self, tmp_path):
+        from music_downloader.processor import file_handler as fh
+
+        d = tmp_path / "sub"
+        d.mkdir(mode=0o700)
+        fh.own_like_library(str(d), str(tmp_path))
+        assert os.stat(d).st_mode & 0o777 == fh.LIBRARY_DIR_MODE

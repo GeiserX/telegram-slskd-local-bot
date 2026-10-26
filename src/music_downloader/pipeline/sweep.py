@@ -52,6 +52,7 @@ from music_downloader.persistence.sweep_repo import (
 from music_downloader.pipeline import sweep_rules as rules
 from music_downloader.pipeline.search import clean_search_title
 from music_downloader.pipeline.sweep_rules import Audit
+from music_downloader.processor.file_handler import own_like_library
 
 logger = logging.getLogger(__name__)
 
@@ -172,9 +173,14 @@ def free_path(path: str) -> str:
     return f"{base}.{n}{suffix}"
 
 
-def match_owner(path: str, like: str | None) -> None:
-    """Give *path* the mode, owner and group of the file *like* (owner and group only when allowed)."""
+def match_owner(path: str, like: str | None, library: str | None = None) -> None:
+    """Give *path* the mode, owner and group of the file *like* (owner and group only when allowed).
+
+    Without a *like* file, a *library* path gives it the library's own mode and group (own_like_library).
+    """
     if not like or not os.path.isfile(like):
+        if library:
+            own_like_library(path, library)
         return
     try:
         st = os.stat(like)
@@ -184,6 +190,12 @@ def match_owner(path: str, like: str | None) -> None:
         os.chmod(path, stat.S_IMODE(st.st_mode))
     with contextlib.suppress(OSError):
         os.chown(path, st.st_uid, st.st_gid)
+
+
+def _make_library_dir(path: str) -> None:
+    """Create a sweep folder inside the library with the library's own mode and group (also when it exists)."""
+    os.makedirs(path, exist_ok=True)
+    own_like_library(path, os.path.dirname(os.path.normpath(path)))
 
 
 def place(source: str, target: str, like: str | None, move: bool = False) -> str:
@@ -200,7 +212,7 @@ def place(source: str, target: str, like: str | None, move: bool = False) -> str
             os.replace(source, tmp)
         else:
             shutil.copyfile(source, tmp)
-        match_owner(tmp, like)
+        match_owner(tmp, like, os.path.dirname(target))
         os.replace(tmp, target)
     except BaseException:
         if move and os.path.exists(tmp) and not os.path.exists(source):
@@ -233,7 +245,7 @@ def replace_in_library(original: str, source: str, ext: str, replaced_dir: str, 
         else:
             shutil.copyfile(source, tmp)
         match_owner(tmp, original)
-        os.makedirs(replaced_dir, exist_ok=True)
+        _make_library_dir(replaced_dir)
         parked = free_path(os.path.join(replaced_dir, os.path.basename(original) + PARKED_SUFFIX))
         os.replace(original, parked)
         try:
@@ -664,7 +676,7 @@ class LibrarySweep:
         await asyncio.to_thread(carry_tags_and_cover, path, cand_path)
 
         def stage() -> str:
-            os.makedirs(self.review_dir, exist_ok=True)
+            _make_library_dir(self.review_dir)
             staged = free_path(os.path.join(self.review_dir, f"{stem}.{cand.ext}{PARKED_SUFFIX}"))
             shutil.copyfile(cand_path, staged)
             match_owner(staged, path)
