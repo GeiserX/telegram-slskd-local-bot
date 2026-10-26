@@ -16,7 +16,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from telegram.error import BadRequest
 
-from music_downloader.bot.keyboards import build_sweep_review_keyboard
+from music_downloader.bot.keyboards import build_sweep_reason_keyboard, build_sweep_review_keyboard
 from music_downloader.mcp.tools import McpTools
 from music_downloader.metadata.musicbrainz import MusicBrainzClient
 from music_downloader.metadata.spotify import TrackInfo
@@ -35,6 +35,8 @@ STEM = "Elvis Presley - Always On My Mind"
 TRACK = TrackInfo("Elvis Presley", "Always On My Mind", "Separate Ways", 200_000, "u", "1972")
 SAME_FP = [i * 2654435761 % 2**32 for i in range(1200)]
 OTHER_FP = [i * 40503 % 2**32 for i in range(1200)]
+# Ten bits of 32 flipped: similarity about 0.69, another master rather than another performance.
+MID_FP = [x ^ 0x3FF for x in SAME_FP]
 
 
 @pytest.fixture(autouse=True)
@@ -182,6 +184,45 @@ class TestOneSong:
         review = sweep.repo.pending_review_for(STEM)
         assert review.current_sound == "treble -17.0 dB, clipping heavy (900/min)"
         assert review.proposal_sound == "treble -16.0 dB (1.0 dB brighter than yours), clipping none (0/min)"
+
+    async def test_another_performance_waits_while_a_closer_copy_is_tried(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=200.5), copies=2)
+        fps = {f"{STEM} 0.flac": OTHER_FP, f"{STEM} 1.flac": MID_FP}
+        sweep.fingerprint = lambda p: SAME_FP if os.path.dirname(p) == str(pipe.lib) else fps[os.path.basename(p)]
+        assert rules.similarity(SAME_FP, OTHER_FP) < rules.FAR_SIMILARITY <= rules.similarity(SAME_FP, MID_FP)
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_REVIEW: 1}
+        review = sweep.repo.pending_review_for(STEM)
+        assert Path(review.proposal_path).read_bytes() == b"candidate 1", "the closer copy is offered"
+        assert "only copy found" not in review.reason
+        assert len(pipe.fetched) == 2 and not list(pipe.dl.iterdir()), "both downloads are deleted"
+
+    async def test_another_performance_is_offered_when_nothing_closer_qualifies(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=200.5), fp=OTHER_FP, copies=5)
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_REVIEW: 1}
+        review = sweep.repo.pending_review_for(STEM)
+        assert review.reason.endswith("the only copy found"), review.reason
+        assert Path(review.proposal_path).read_bytes() == b"candidate 0"
+        assert len(pipe.fetched) == sw.OTHER_TRIES, "every try is spent looking for a closer copy"
+        assert not list(pipe.dl.iterdir()), "every download is deleted"
+
+    async def test_a_held_copy_is_deleted_when_the_search_breaks(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=200.5), fp=OTHER_FP, copies=2)
+        real = pipe.fetch_for_library
+        calls = []
+
+        async def second_fails(results, index, track, progress_for):
+            calls.append(index)
+            if len(calls) == 2:
+                raise RuntimeError("slskd went away")
+            return await real(results, index, track, progress_for)
+
+        pipe.fetch_for_library = second_fails
+        run = await _run_once(sweep)
+        assert run.counts == {sw.OUTCOME_ERROR: 1}
+        assert sweep.repo.pending_reviews() == []
+        assert not list(pipe.dl.iterdir()), "the held download is deleted"
 
     async def test_without_fpcalc_the_length_rule_decides(self, tmp_path):
         sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5, length=204.0))
@@ -664,9 +705,54 @@ class TestTelegram:
             assert f.read() == mine
         assert os.path.exists(review.proposal_path) == proposal_left
         kwargs = update.callback_query.edit_message_caption.await_args.kwargs
-        assert note in kwargs["caption"] and kwargs["reply_markup"] is None
+        reasons = build_sweep_reason_keyboard(review.id) if choice == "m" else None
+        assert note in kwargs["caption"] and kwargs["reply_markup"] == reasons
         if choice == "b":
             assert os.path.exists(os.path.join(config.output_dir, f"{STEM} (alternate).flac"))
+
+    async def test_a_reason_after_keep_mine_is_stored_and_the_buttons_go(self, tmp_path):
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        update.callback_query.message.caption_html = "2. Proposal"
+        await bot._handle_sweep_decision(update, MagicMock(), CHAT, f"swp:{review.id}:m")
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:m")
+        assert bot.pipeline.sweep.repo.get_review(review.id).decline_reason == "muffled"
+        kwargs = update.callback_query.edit_message_caption.await_args.kwargs
+        assert "Noted: muffled." in kwargs["caption"] and kwargs["reply_markup"] is None
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:d")
+        assert bot.pipeline.sweep.repo.get_review(review.id).decline_reason == "muffled", "the first answer stays"
+
+    async def test_a_reason_on_a_text_only_pair_keeps_its_text(self, tmp_path):
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        update.callback_query.message.caption_html = None
+        update.callback_query.message.text_html = "2. Proposal (too big to send)"
+        update.callback_query.edit_message_caption.side_effect = RuntimeError("no caption")
+        await bot._handle_sweep_decision(update, MagicMock(), CHAT, f"swp:{review.id}:m")
+        update.callback_query.message.text_html = update.callback_query.edit_message_text.await_args.args[0]
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:v")
+        text = update.callback_query.edit_message_text.await_args.args[0]
+        assert "too big to send" in text and "Kept yours" in text and "Noted: other version." in text
+
+    async def test_a_reason_is_refused_on_a_pair_not_kept(self, tmp_path):
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        update = MagicMock()
+        update.callback_query = AsyncMock()
+        update.callback_query.from_user.id = CHAT
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:d")
+        assert bot.pipeline.sweep.repo.get_review(review.id).decline_reason == ""
+        update.callback_query.edit_message_caption.assert_not_awaited()
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:zz")
+        update.callback_query.from_user.id = 99999
+        await bot._handle_sweep_reason(update, MagicMock(), CHAT, f"swr:{review.id}:d")
+        assert bot.pipeline.sweep.repo.get_review(review.id).decline_reason == ""
 
     async def test_a_flood_refusal_waits_the_seconds_asked_before_the_second_try(self, tmp_path, monkeypatch):
         """Through the local Bot API server flood control is a plain 400, not RetryAfter."""
@@ -820,10 +906,26 @@ class TestMcp:
             await tools.library_sweep_decide("Nobody - Nothing", "keep_mine")
         with pytest.raises(ToolError, match="decision must be"):
             await tools.library_sweep_decide(STEM, "maybe")
+        with pytest.raises(ToolError, match="keep_mine only"):
+            await tools.library_sweep_decide(STEM, "take_new", "muffled")
+        with pytest.raises(ToolError, match="keep_mine only"):
+            await tools.library_sweep_decide(STEM, "keep_mine", "loud")
+        assert sweep.repo.pending_reviews(), "a refused reason decides nothing"
         out = await tools.library_sweep_decide(STEM, "take_new")
-        assert out == {"stem": STEM, "decision": "take_new", "path": str(pipe.lib / f"{STEM}.flac")}
+        assert out == {"stem": STEM, "decision": "take_new", "path": str(pipe.lib / f"{STEM}.flac"), "reason": None}
         status = await tools.library_sweep_status()
         assert status["reviews_waiting"] == 0 and status["run"]["counts"] == {"review": 1}
+
+    async def test_keep_mine_with_a_reason(self, tmp_path):
+        sweep, pipe = _sweep(tmp_path, _audit(cutoff=21.5), fp=OTHER_FP)
+        pipe.sweep = sweep
+        tools = McpTools(pipe)
+        await tools.library_sweep_run()
+        await sweep._task
+        review = sweep.repo.pending_review_for(STEM)
+        out = await tools.library_sweep_decide(STEM, "keep_mine", "distorted")
+        assert out["reason"] == "distorted"
+        assert sweep.repo.get_review(review.id).decline_reason == "distorted"
 
 
 class TestConfig:

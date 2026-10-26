@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-10-26
+
+### Added
+
+- After Keep mine, the pair's message asks what was wrong with the proposal: Distorted, Muffled, Other version or Other. The answer is optional and stored with the pair (`decline_reason`); `library_sweep_decide` takes it as `reason`. A distortion check needs these labels to learn from: measured against decided pairs, the differences between two masters looked just like distortion.
+
+### Changed
+
+- A copy with a fingerprint below 0.6 (another performance of the song) is set aside while the song's other copies are tried. A closer copy that qualifies is offered instead; otherwise the one set aside is, marked "the only copy found". Such copies made up 12 of the first 24 Keep mine.
+
 ## [0.22.1] - 2026-10-26
 
 ### Fixed

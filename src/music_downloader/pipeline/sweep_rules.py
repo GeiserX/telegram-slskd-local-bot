@@ -66,6 +66,10 @@ FP_MIN_OVERLAP_SECS = 20
 # Bit similarity of the same recording: one recording under another master scored 0.92,
 # another performance of the song 0.60, unrelated audio sits near 0.5.
 SAME_RECORDING_SIMILARITY = 0.85
+# Below this a copy is another performance of the song, not another master: the owner kept their own file
+# over 12 of 14 such copies and over 12 of 227 closer ones. The sweep tries the other copies first and
+# offers one of these only when nothing closer qualifies.
+FAR_SIMILARITY = 0.6
 
 STRICT_DECODE_TIMEOUT_SECS = 900
 FPCALC_TIMEOUT_SECS = 120

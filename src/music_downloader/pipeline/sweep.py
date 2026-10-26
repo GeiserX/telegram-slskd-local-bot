@@ -110,6 +110,21 @@ class SongResult:
 
 
 @dataclass
+class _Held:
+    """A downloaded copy of another performance (fingerprint under FAR_SIMILARITY), set aside while closer
+    copies are tried; offered only when none qualifies."""
+
+    cand_path: str
+    result: object
+    transfer_id: str
+    cand: Audit
+    why: str
+    similarity: float
+    mine: object
+    theirs: object
+
+
+@dataclass
 class SweepReport:
     """What the owner is told: the run and every pair still waiting for the ear.
 
@@ -605,47 +620,73 @@ class LibrarySweep:
         notes: list[str] = []
         tries = CD_TRIES if original.tier == rules.TIER_CD else OTHER_TRIES
         index = 0
-        while index < len(copies) and tries > 0:
-            tries -= 1
+        held: _Held | None = None
+        try:
+            while index < len(copies) and tries > 0:
+                tries -= 1
 
-            gated = await self.pipeline.fetch_for_library(copies, index, track, lambda _r, _i: _no_progress)
-            index = gated.index + 1
-            outcome, result = gated.outcome, gated.result
-            notes.extend(f"{r.result.basename}: {r.reason}" for r in gated.rejected)
-            if not outcome.ok or not outcome.path:
-                notes.append(f"{result.basename}: {outcome.error}")
-                continue
-            kept, detail = await self._consider(
-                path, stem, original, outcome.path, result, outcome.transfer_id, track, run
-            )
-            if kept is not None:
-                return SongResult(kept, detail, searched=True)
-            notes.append(f"{result.basename}: {detail}")
+                gated = await self.pipeline.fetch_for_library(copies, index, track, lambda _r, _i: _no_progress)
+                index = gated.index + 1
+                outcome, result = gated.outcome, gated.result
+                notes.extend(f"{r.result.basename}: {r.reason}" for r in gated.rejected)
+                if not outcome.ok or not outcome.path:
+                    notes.append(f"{result.basename}: {outcome.error}")
+                    continue
+                kept, detail, far = await self._consider(
+                    path, stem, original, outcome.path, result, outcome.transfer_id, track, run
+                )
+                if kept is not None:
+                    return SongResult(kept, detail, searched=True)
+                if far is not None:
+                    if held is None or far.similarity > held.similarity:
+                        held, far = far, held
+                    if far is not None:
+                        await self._drop(far)
+                notes.append(f"{result.basename}: {detail}")
+            if held is not None:
+                why = f"{held.why}, the only copy found"
+                await self._stage(
+                    run, stem, path, original, held.cand_path, held.cand, why, held.similarity, held.mine, held.theirs
+                )
+                return SongResult(OUTCOME_REVIEW, why, searched=True)
+        finally:
+            if held is not None:
+                await self._drop(held)
         return SongResult(OUTCOME_NONE_QUALIFIED, "; ".join(notes)[:500], searched=True)
+
+    async def _drop(self, held: _Held) -> None:
+        """Delete a held copy's download."""
+        if os.path.exists(held.cand_path):
+            await self.pipeline.discard(held.cand_path, held.result.username, held.transfer_id)
+        else:
+            self.pipeline.forget_transfer(held.result.username, held.transfer_id)
 
     async def _consider(
         self, path, stem, original: Audit, cand_path, result, transfer_id, track, run
-    ) -> tuple[str | None, str]:
+    ) -> tuple[str | None, str, _Held | None]:
         """Judge one downloaded copy; stage it for the owner's ear or discard it. Nothing is replaced without asking.
 
-        Returns (OUTCOME_REVIEW, detail), or (None, why it was discarded).
-        The download is deleted from DOWNLOAD_DIR whatever happens.
+        Returns (OUTCOME_REVIEW, detail, None), (None, why it was discarded, None), or for a copy that
+        qualifies but is another performance (fingerprint under FAR_SIMILARITY) (None, detail, the copy
+        set aside): its download is kept for check_song to offer when no closer copy turns up. Otherwise
+        the download is deleted from DOWNLOAD_DIR whatever happens.
         """
+        held: _Held | None = None
         try:
             cand = await asyncio.to_thread(self.audit, cand_path)
             if not rules.better(original, cand):
-                return None, f"not better ({rules.describe(cand)})"
+                return None, f"not better ({rules.describe(cand)})", None
             similarity = await self._similarity(path, cand_path)
             kind, why = rules.judge(original, cand, stem, similarity)
             if kind == rules.REJECT:
-                return None, f"rejected: {why}"
+                return None, f"rejected: {why}", None
             if self.repo.is_declined(stem):
-                return None, f"you kept your file over another proposal before ({why})"
+                return None, f"you kept your file over another proposal before ({why})", None
             mine = await asyncio.to_thread(self.sound, path)
             theirs = await asyncio.to_thread(self.sound, cand_path)
             worse = rules.sounds_worse(mine, theirs, original_lossy=original.ext in LOSSY_EXTENSIONS)
             if worse:
-                return None, f"sounds worse: {worse}"
+                return None, f"sounds worse: {worse}", None
             if original.strict is False:
                 gain = (
                     f"cutoff {cand.cutoff - original.cutoff:+.1f} kHz"
@@ -655,13 +696,17 @@ class LibrarySweep:
                 why = f"{REPAIRS}, {gain}: {why}"
             elif kind == rules.SAME:
                 why = f"{SAME_AND_BETTER}: {why}"
+            if similarity is not None and similarity < rules.FAR_SIMILARITY:
+                held = _Held(cand_path, result, transfer_id, cand, why, similarity, mine, theirs)
+                return None, f"another performance (fingerprint {similarity:.2f}), set aside for a closer copy", held
             await self._stage(run, stem, path, original, cand_path, cand, why, similarity, mine, theirs)
-            return OUTCOME_REVIEW, why
+            return OUTCOME_REVIEW, why, None
         finally:
-            if os.path.exists(cand_path):
-                await self.pipeline.discard(cand_path, result.username, transfer_id)
-            else:
-                self.pipeline.forget_transfer(result.username, transfer_id)
+            if held is None:  # a held copy's download stays for check_song
+                if os.path.exists(cand_path):
+                    await self.pipeline.discard(cand_path, result.username, transfer_id)
+                else:
+                    self.pipeline.forget_transfer(result.username, transfer_id)
 
     async def _similarity(self, original: str, candidate: str) -> float | None:
         a = await asyncio.to_thread(self.fingerprint, original)

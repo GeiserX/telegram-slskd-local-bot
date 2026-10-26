@@ -127,12 +127,15 @@ def build_server(tools: McpTools) -> MCPServer:
 
     @server.tool()
     async def library_sweep_decide(
-        stem: str, decision: Literal["keep_mine", "take_new", "keep_both"]
+        stem: str,
+        decision: Literal["keep_mine", "take_new", "keep_both"],
+        reason: Literal["distorted", "muffled", "other_version", "other"] | None = None,
     ) -> dict[str, Any]:
         """Decide a pair by its stem ("Artist - Title"): keep_mine deletes the proposal, take_new replaces the
         song with it (the original is parked for LIBRARY_SWEEP_KEEP_DAYS), keep_both adds it as a song of its
-        own named after what sets it apart."""
-        return await tools.library_sweep_decide(stem, decision)
+        own named after what sets it apart. *reason*, with keep_mine only, records what was wrong with the
+        proposal."""
+        return await tools.library_sweep_decide(stem, decision, reason)
 
     @server.tool()
     async def status() -> dict[str, Any]:

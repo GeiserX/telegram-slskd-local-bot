@@ -17,6 +17,9 @@ DECISION_TAKE_NEW = "take_new"
 DECISION_KEEP_BOTH = "keep_both"
 DECISIONS = (DECISION_KEEP_MINE, DECISION_TAKE_NEW, DECISION_KEEP_BOTH)
 
+# Why the owner kept their own file (optional, asked after Keep mine): what a later sound check can learn from.
+DECLINE_REASONS = ("distorted", "muffled", "other_version", "other")
+
 
 @dataclass
 class SweepSong:
@@ -74,6 +77,7 @@ class Review:
     run_id: int | None = None
     current_sound: str = ""
     proposal_sound: str = ""
+    decline_reason: str = ""
     id: int | None = None
     created_at: float = field(default_factory=time.time)
     offered_at: float | None = None
@@ -146,6 +150,7 @@ _REVIEW_COLUMNS = (
     "run_id",
     "current_sound",
     "proposal_sound",
+    "decline_reason",
     "created_at",
     "offered_at",
     "decided_at",
@@ -305,6 +310,17 @@ class SweepRepository:
         cursor = self._conn.execute(
             "UPDATE sweep_reviews SET decision = ?, decided_at = ? WHERE id = ? AND decision IS NULL",
             (decision, at, review_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def set_decline_reason(self, review_id: int, reason: str) -> bool:
+        """Record why the owner kept their own file; False unless the pair was decided Keep mine with no reason yet."""
+        if reason not in DECLINE_REASONS:
+            raise ValueError(f"reason must be one of {', '.join(DECLINE_REASONS)}, not {reason!r}")
+        cursor = self._conn.execute(
+            "UPDATE sweep_reviews SET decline_reason = ? WHERE id = ? AND decision = ? AND decline_reason = ''",
+            (reason, review_id, DECISION_KEEP_MINE),
         )
         self._conn.commit()
         return cursor.rowcount > 0
