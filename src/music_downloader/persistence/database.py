@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS sweep_reviews (
     run_id INTEGER,
     current_sound TEXT NOT NULL DEFAULT '',
     proposal_sound TEXT NOT NULL DEFAULT '',
+    decline_reason TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     offered_at REAL,
     decided_at REAL,
@@ -273,6 +274,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("pending_downloads", "delivered", "INTEGER NOT NULL DEFAULT 0"),
     ("sweep_reviews", "current_sound", "TEXT NOT NULL DEFAULT ''"),
     ("sweep_reviews", "proposal_sound", "TEXT NOT NULL DEFAULT ''"),
+    ("sweep_reviews", "decline_reason", "TEXT NOT NULL DEFAULT ''"),
 )
 
 

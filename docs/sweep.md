@@ -72,6 +72,11 @@ sits near 0.5.
 | Another recording, length within 10 s | Sent to you as a pair |
 | Another recording, more than 10 s off | Thrown away |
 
+A copy with a fingerprint below 0.6 is another performance of the song (live, re-recorded) rather than
+another master of it. You kept your file over 12 of the first 14 such copies. So the sweep sets one aside
+and tries the song's other copies first. A closer copy that qualifies is offered instead. When none does,
+the one set aside is offered, with "the only copy found" at the end of its reason.
+
 ## How it sounds
 
 The cutoff only says how high a spectrum reaches, not how much treble is there. A 24/96 vinyl or tape transfer
@@ -128,7 +133,9 @@ Then come the pairs waiting for your ear, up to 10 per message, each as two audi
    keep both. A reason reads like "another recording (fingerprint 0.61), length differs 4.2 s". The buttons sit
    under this one.
 
-    - **Keep mine** deletes the proposal. The sweep won't propose any copy of this song again.
+    - **Keep mine** deletes the proposal. The sweep won't propose any copy of this song again. The message
+      then asks what was wrong with it: Distorted, Muffled, Other version or Other. Answering is optional; the
+      answer is stored with the pair, so a later sound check can learn from what you reject.
     - **Take new** replaces your file with the proposal. Your file goes to `.sweep-replaced`.
     - **Keep both** adds the proposal as a song of its own and keeps yours. Its name comes from what sets it
       apart, which is the extra performers in its artist tag, a bracket in its title, or its album. For example
@@ -158,7 +165,7 @@ With the sweep on, the [MCP server](mcp.md) has four more tools behind the same 
 | `library_sweep_run(force=false)` | Starts a sweep in the background and returns at once with the run id and the status |
 | `library_sweep_status()` | The current or last sweep with its position, counts and current file, songs per tier, pairs waiting, the schedule and the next start, and whether `fpcalc` is there |
 | `library_sweep_reviews()` | The pairs waiting, each with its stem, why, both files' path, quality, length, cutoff and sound, the fingerprint similarity and the keep-both name |
-| `library_sweep_decide(stem, decision)` | `keep_mine`, `take_new` or `keep_both` for the pair of that `Artist - Title` |
+| `library_sweep_decide(stem, decision, reason)` | `keep_mine`, `take_new` or `keep_both` for the pair of that `Artist - Title`; `reason` (`distorted`, `muffled`, `other_version`, `other`) only with `keep_mine` |
 
 A sweep started over HTTP MCP reports in Telegram like any other. The stdio server can run a sweep too, but it
 tells nobody when it ends, so read `library_sweep_status`. Two processes never sweep the same library at once.

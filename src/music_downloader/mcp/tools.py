@@ -18,7 +18,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from music_downloader import __version__
 from music_downloader.config import BYTES_PER_MB
 from music_downloader.metadata.spotify import TrackInfo
-from music_downloader.persistence.sweep_repo import DECISIONS, Review
+from music_downloader.persistence.sweep_repo import DECISION_KEEP_MINE, DECISIONS, DECLINE_REASONS, Review
 from music_downloader.persistence.wishlist_repo import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.pipeline.album import FolderListing
 from music_downloader.pipeline.fetch import ALL_REJECTED, DOWNLOAD_FAILED, FILE_NOT_FOUND, GatedFetch
@@ -457,11 +457,13 @@ class McpTools:
         reviews = await asyncio.to_thread(sweep.repo.pending_reviews)
         return {"reviews": [_review_dict(r) for r in reviews]}
 
-    async def library_sweep_decide(self, stem: str, decision: str) -> dict:
-        """Decide a pair waiting for the ear: keep_mine, take_new or keep_both."""
+    async def library_sweep_decide(self, stem: str, decision: str, reason: str | None = None) -> dict:
+        """Decide a pair waiting for the ear: keep_mine, take_new or keep_both; *reason* only with keep_mine."""
         sweep = self._sweep()
         if decision not in DECISIONS:
             raise ToolError(f"decision must be one of {', '.join(DECISIONS)}, not {decision!r}.")
+        if reason is not None and (decision != DECISION_KEEP_MINE or reason not in DECLINE_REASONS):
+            raise ToolError(f"reason goes with keep_mine only, one of {', '.join(DECLINE_REASONS)}.")
         review = await asyncio.to_thread(sweep.find_pending, stem.strip())
         if review is None:
             raise ToolError(f"No pair waits for {stem!r}: library_sweep_reviews lists the ones that do.")
@@ -469,7 +471,9 @@ class McpTools:
             review, path = await sweep.decide(review.id, decision)
         except SweepError as exc:
             raise ToolError(str(exc)) from exc
-        return {"stem": review.stem, "decision": decision, "path": path}
+        if reason is not None:
+            await asyncio.to_thread(sweep.repo.set_decline_reason, review.id, reason)
+        return {"stem": review.stem, "decision": decision, "path": path, "reason": reason}
 
     async def status(self) -> dict:
         slskd_up = await asyncio.to_thread(self.pipeline.slskd.is_up)

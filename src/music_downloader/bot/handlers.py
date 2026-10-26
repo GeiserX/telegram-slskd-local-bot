@@ -30,6 +30,7 @@ from telegram.ext import (
 
 from music_downloader.bot.keyboards import (
     SWEEP_CHOICES,
+    SWEEP_REASONS,
     build_album_confirm_keyboard,
     build_album_offer_keyboard,
     build_album_retry_keyboard,
@@ -48,6 +49,7 @@ from music_downloader.bot.keyboards import (
     build_retry_next_keyboard,
     build_send_format_keyboard,
     build_spotify_keyboard,
+    build_sweep_reason_keyboard,
     build_sweep_review_keyboard,
     build_wait_better_button,
     build_wishlist_keyboard,
@@ -1128,6 +1130,7 @@ class MusicBot:
             "albgo": self._handle_album_confirm,
             "albno": self._handle_album_drop,
             "swp": self._handle_sweep_decision,
+            "swr": self._handle_sweep_reason,
         }.get(prefix)
 
         if handler:
@@ -3995,7 +3998,7 @@ class MusicBot:
         else:
             decided = True
             note = {
-                DECISION_KEEP_MINE: "✅ Kept yours. The proposal is deleted.",
+                DECISION_KEEP_MINE: "✅ Kept yours. The proposal is deleted. What was wrong with it? (optional)",
                 DECISION_TAKE_NEW: "✅ Took the new one. Yours is kept in .sweep-replaced"
                 + (
                     "."
@@ -4004,17 +4007,37 @@ class MusicBot:
                 ),
                 DECISION_KEEP_BOTH: f"✅ Kept both. The proposal is now <code>{_esc(os.path.basename(path))}</code>.",
             }[decision]
+        markup = build_sweep_reason_keyboard(review_id) if decided and decision == DECISION_KEEP_MINE else None
+        await self._edit_sweep_message(query, note, markup)
+        if decided:
+            await self._offer_next_sweep_batch(context.bot, chat_id)
+
+    async def _edit_sweep_message(self, query, note: str, markup) -> None:
+        """Append *note* to a pair's message and set its buttons (a caption, or the text of a text-only pair)."""
         caption = getattr(query.message, "caption_html", None) or ""
         caption = f"{caption}\n\n{note}" if caption else note
         try:
             await query.edit_message_caption(
-                caption=caption[:CAPTION_MAX], parse_mode=ParseMode.HTML, reply_markup=None
+                caption=caption[:CAPTION_MAX], parse_mode=ParseMode.HTML, reply_markup=markup
             )
         except Exception:
             # The pair came as a text message (file gone or too big): edit the text instead.
-            await _safe_query_edit(query, caption[:4000], reply_markup=None)
-        if decided:
-            await self._offer_next_sweep_batch(context.bot, chat_id)
+            await _safe_query_edit(query, caption[:4000], reply_markup=markup)
+
+    async def _handle_sweep_reason(self, update: Update, context, chat_id: int, data: str) -> None:
+        """swr:<review id>:<code>: why the owner kept their own file, stored for a later sound check to learn from."""
+        query = update.callback_query
+        if query.from_user.id not in self._sweep_users():
+            return
+        try:
+            _, review_id, code = data.split(":")
+            reason, label = SWEEP_REASONS[code]
+            review_id = int(review_id)
+        except (ValueError, KeyError):
+            return
+        if not await asyncio.to_thread(self.pipeline.sweep.repo.set_decline_reason, review_id, reason):
+            return
+        await self._edit_sweep_message(query, f"Noted: {_esc(label.lower())}.", None)
 
     async def _offer_next_sweep_batch(self, bot, chat_id: int, quiet_when_empty: bool = False) -> None:
         """Once every offered pair is decided, the next batch follows by itself (or "none left")."""

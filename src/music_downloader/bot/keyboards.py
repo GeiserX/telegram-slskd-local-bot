@@ -294,6 +294,27 @@ def build_album_retry_keyboard(dl_id: str) -> InlineKeyboardMarkup:
 SWEEP_CHOICES = {"m": "keep_mine", "n": "take_new", "b": "keep_both"}
 
 
+# Why Keep mine (optional): swr:<review id>:<code>.
+SWEEP_REASONS = {
+    "d": ("distorted", "Distorted"),
+    "m": ("muffled", "Muffled"),
+    "v": ("other_version", "Other version"),
+    "o": ("other", "Other"),
+}
+
+
+def build_sweep_reason_keyboard(review_id: int) -> InlineKeyboardMarkup:
+    """After Keep mine: why the proposal lost, one tap, optional."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(label, callback_data=f"swr:{review_id}:{code}")
+                for code, (_, label) in SWEEP_REASONS.items()
+            ]
+        ]
+    )
+
+
 def build_sweep_review_keyboard(review_id: int) -> InlineKeyboardMarkup:
     """Under the proposal of a library sweep pair: keep the library's file, take the proposal, or keep both."""
     return InlineKeyboardMarkup(
