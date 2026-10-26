@@ -151,6 +151,18 @@ class SweepReport:
     in_progress: bool = False
 
 
+@dataclass
+class ListeningCopies:
+    """The two files of a pair as sent for listening: *current* and *proposal* are the pair's own files, or a
+    temporary copy turned down by *_gain* dB (listed in *temps*, which the caller deletes)."""
+
+    current: str
+    proposal: str
+    current_gain: float = 0.0
+    proposal_gain: float = 0.0
+    temps: list[str] = field(default_factory=list)
+
+
 ReportHook = Callable[[SweepReport], Awaitable[None]]
 
 
@@ -383,6 +395,8 @@ class LibrarySweep:
         self.audit: Callable[[str], Audit] = rules.audit
         self.fingerprint: Callable[[str], list[int] | None] = rules.fingerprint
         self.sound: Callable[[str], rules.Sound | None] = rules.sound
+        self.loudness: Callable[[str], float | None] = rules.loudness
+        self.turn_down: Callable[[str, float], str | None] = rules.turned_down
         self.sleep = asyncio.sleep
         self._task: asyncio.Task | None = None
         self._run: SweepRun | None = None
@@ -902,6 +916,24 @@ class LibrarySweep:
             self.repo.close_flaws(review.stem, now)
             logger.info("Sweep pair %s (%s): %s -> %s", review.id, review.stem, decision, path)
             return review, path
+
+    async def listening_copies(self, review: Review) -> ListeningCopies:
+        """The two files of *review* to send for listening, the louder turned down to the quieter's loudness
+        (rules.level_gains), so loudness does not decide the listen. Neither file of the pair is changed; on
+        any failure the files go as they are."""
+        copies = ListeningCopies(review.current_path, review.proposal_path)
+        if not (os.path.isfile(review.current_path) and os.path.isfile(review.proposal_path)):
+            return copies
+        mine = await asyncio.to_thread(self.loudness, review.current_path)
+        theirs = await asyncio.to_thread(self.loudness, review.proposal_path)
+        for which, gain in zip(("current", "proposal"), rules.level_gains(mine, theirs), strict=True):
+            if gain:
+                quieter = await asyncio.to_thread(self.turn_down, getattr(copies, which), gain)
+                if quieter:
+                    setattr(copies, which, quieter)
+                    setattr(copies, f"{which}_gain", gain)
+                    copies.temps.append(quieter)
+        return copies
 
     def find_pending(self, stem: str) -> Review | None:
         return self.repo.pending_review_for(stem)

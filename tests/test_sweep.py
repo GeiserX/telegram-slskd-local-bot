@@ -796,6 +796,50 @@ class TestTelegram:
         assert "Sound: treble -17.0 dB, clipping heavy (900/min)" in mine
         assert "Sound: treble -16.0 dB (1.0 dB brighter than yours), clipping none (0/min)" in theirs
 
+    async def test_the_louder_file_goes_turned_down_and_the_copy_is_deleted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        sweep = bot.pipeline.sweep
+        sweep.loudness = lambda p: -8.0 if p == review.proposal_path else -14.2
+        made = []
+
+        def turn_down(path, gain):
+            out = tmp_path / f"quieter{len(made)}.flac"
+            out.write_bytes(b"quieter " + Path(path).read_bytes())
+            made.append((path, gain, str(out)))
+            return str(out)
+
+        sweep.turn_down = turn_down
+        sent = {}
+        tg = AsyncMock()
+
+        async def send_audio(**kw):
+            sent[kw["filename"]] = kw["audio"].read()
+
+        tg.send_audio.side_effect = send_audio
+        await bot._send_sweep_pairs(tg, CHAT, [review])
+        assert [(p, round(g, 1)) for p, g, _ in made] == [(review.proposal_path, -6.2)], "only the louder, down"
+        assert sent == {f"{STEM} (yours).flac": b"mine", f"{STEM} (proposal).flac": b"quieter theirs"}
+        mine, theirs = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
+        assert "Played 6.2 dB quieter here" in theirs and "quieter" not in mine
+        assert not os.path.exists(made[0][2]), "the turned-down copy is deleted"
+        assert Path(review.proposal_path).read_bytes() == b"theirs", "the proposal itself is unchanged"
+
+    async def test_a_failed_loudness_match_sends_the_files_as_they_are(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+
+        def broken(path):
+            raise RuntimeError("ffmpeg vanished")
+
+        bot.pipeline.sweep.loudness = broken
+        tg = AsyncMock()
+        await bot._send_sweep_pairs(tg, CHAT, [review])
+        captions = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
+        assert len(captions) == 2 and all("quieter" not in c for c in captions)
+
     async def test_a_pair_without_measures_shows_no_sound_line(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
         bot, config = _bot(tmp_path)

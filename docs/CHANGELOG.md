@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-10-26
+
+### Added
+
+- The two files of a sweep pair are sent at the same loudness: when they differ by 1 dB or more (EBU R128 integrated loudness), the louder one is sent turned down to the quieter one's level, and its caption says by how much. A louder copy wins a quick listen even when it is the worse master: one copy taken before was 9.6 dB louder than the file it replaced. The files themselves are never changed.
+
 ## [0.24.0] - 2026-10-26
 
 ### Added
