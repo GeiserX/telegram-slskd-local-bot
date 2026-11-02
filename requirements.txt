@@ -17,4 +17,4 @@ urllib3>=2.8.0
 certifi>=2026.10.23
 # Not used directly; mcp pulls it in. 1.45.1 bounds tracestate parsing
 # (GHSA-xcq7-p3pf-p88h).
-opentelemetry-api>=1.45.1
+opentelemetry-api>=1.45.2
