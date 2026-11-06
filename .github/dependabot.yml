@@ -27,13 +27,13 @@ updates:
         update-types:
           - version-update:semver-major
   # The docs toolchain is a separate install: docs.yml pip-installs
-  # docs/requirements-docs.txt to run MkDocs, and the pip entry for / does
-  # not see a file under /docs.
+  # docs/requirements-docs.txt to run Zensical, and the pip entry for / does
+  # not see a file under /docs. Monthly: the strict build and site-check in
+  # the Docs workflow prove each bump.
   - package-ecosystem: pip
     directory: /docs
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     commit-message:
       prefix: docs
     labels:
