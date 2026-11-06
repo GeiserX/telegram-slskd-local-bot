@@ -121,5 +121,14 @@ The image installs the packages of the `analysis` extra (they are in `requiremen
 
 ## Docs
 
-The site is built by MkDocs from `docs/`. `pip install -r docs/requirements-docs.txt && mkdocs build --strict`
-builds it locally; the same strict build runs on every pull request and a push to `main` deploys it.
+The site is built by [Zensical](https://zensical.org/) from `docs/` and `zensical.toml`. To build it locally:
+
+```bash
+pip install -r docs/requirements-docs.txt
+python -m zensical build --clean --strict
+python -I .github/scripts/site-check.py site
+```
+
+The `Docs` workflow runs the same two steps on every pull request, and a push to `main` deploys the site. The strict
+build fails on a broken link or anchor; `site-check.py` fails on what the build lets through: a page left out of the
+nav, a nav entry for a missing file, a missing image, a link rooted at `/`.

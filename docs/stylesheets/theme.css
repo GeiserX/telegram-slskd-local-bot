@@ -3,8 +3,8 @@
  * banner.svg draws the name in #f0f4fa on a #0d1117 to #131a2b gradient and
  * ends in a waveform coloured from Telegram blue #2aabee through teal #26b8c9
  * to Spotify green #1db954. The header and the dark page use the banner
- * background; the accent is the waveform's teal. mkdocs.yml sets
- * `primary: custom` and `accent: custom`, so Material paints nothing until
+ * background; the accent is the waveform's teal. zensical.toml sets
+ * `primary: custom` and `accent: custom`, so the theme paints nothing until
  * these variables exist.
  */
 :root {
@@ -45,9 +45,21 @@
  * .md-header__topic and the page title in a second one, and swaps them on
  * scroll. Styling both would change every page title too. */
 .md-header__topic:first-child .md-ellipsis {
-  color: #f0f4fa;
   font-weight: 700;
   letter-spacing: -0.01em;
+}
+
+/* The wordmark colour only on the dark scheme: Zensical's modern header takes
+   the page background, so on the light scheme it is white and #f0f4fa would vanish.
+   There the name keeps the default text colour. */
+[data-md-color-scheme="slate"] .md-header__topic:first-child .md-ellipsis {
+  color: #f0f4fa;
+}
+
+/* logo.svg is the white note from the banner. On the light scheme the header
+   and the mobile drawer are white, so the note is drawn black there. */
+[data-md-color-scheme="default"] .md-logo img {
+  filter: brightness(0);
 }
 
 /* Keep the mark and the name close, so they read as one unit. */
