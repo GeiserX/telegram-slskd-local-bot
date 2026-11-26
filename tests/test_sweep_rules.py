@@ -595,3 +595,24 @@ class TestSoundIncomplete:
         started = time.monotonic()
         assert rules.sound(whole) is None
         assert time.monotonic() - started < 10
+
+
+class TestReadDescribed:
+    def test_reads_back_what_describe_and_describe_sound_write(self):
+        mine = rules.Sound(highs=-10.2, clips=0.0, crest=18.1)
+        theirs = rules.Sound(highs=-3.3, clips=2015.0, crest=11.9)
+        a = rules.Audit(ext="flac", depth=16, rate=44100, strict=False, cutoff=19.7)
+        got = rules.read_described(rules.describe(a), rules.describe_sound(theirs, mine))
+        assert got == rules.Described("FLAC", "16/44.1", 19.7, True, -3.3, "heavy", 11.9)
+
+    def test_a_lossy_file_has_no_decode_state(self):
+        got = rules.read_described(rules.describe(rules.Audit(ext="mp3", kbps=320)))
+        assert (got.fmt, got.quality, got.cutoff, got.damaged, got.highs) == ("MP3", "320k", None, None, None)
+
+    def test_an_old_treble_line_without_dynamics_still_reads(self):
+        got = rules.read_described("FLAC 24/96, cutoff 22.0 kHz", "treble -17.0 dB, clipping heavy (900/min)")
+        assert (got.quality, got.highs, got.clipping, got.crest, got.damaged) == ("24/96", -17.0, "heavy", None, False)
+
+    def test_an_unknown_line_keeps_its_first_part_and_nothing_else(self):
+        got = rules.read_described("Something new, odd", "no measures")
+        assert got == rules.Described(fmt="Something new")
