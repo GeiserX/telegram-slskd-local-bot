@@ -703,6 +703,50 @@ def describe_sound(s: Sound | None, mine: Sound | None = None) -> str:
     return line
 
 
+# Reading the stored lines back, for the pair's comparison table. Pairs keep these lines as text, so the pairs
+# already waiting get the table too. A line written before 0.22 says "treble" and may lack the dynamics.
+_DESC_RE = re.compile(
+    r"^(?P<fmt>[A-Z0-9]+)(?: (?P<quality>\d+/[\d.]+))?(?: (?P<kbps>\d+) kbps)?"
+    r"(?:, cutoff (?P<cutoff>[\d.]+) kHz)?(?P<damaged>, decode errors)?$"
+)
+_SOUND_RE = re.compile(
+    r"(?:highs|treble) (?P<highs>-?[\d.]+) dB.*?clipping (?P<clipping>none|slight|heavy)"
+    r"(?:.*?dynamics (?P<crest>-?[\d.]+) dB)?"
+)
+
+
+@dataclasses.dataclass
+class Described:
+    """A describe() and describe_sound() pair read back; a field is None when the lines did not say it."""
+
+    fmt: str = ""
+    quality: str = ""
+    cutoff: float | None = None
+    damaged: bool | None = None
+    highs: float | None = None
+    clipping: str | None = None
+    crest: float | None = None
+
+
+def read_described(desc: str, sound_line: str = "") -> Described:
+    """The fields of a describe() line and a describe_sound() line; what does not parse stays empty."""
+    out = Described()
+    m = _DESC_RE.match(desc.strip())
+    if m:
+        out.fmt = m["fmt"]
+        out.quality = m["quality"] or (f"{m['kbps']}k" if m["kbps"] else "")
+        out.cutoff = float(m["cutoff"]) if m["cutoff"] else None
+        out.damaged = bool(m["damaged"]) if m["fmt"].lower() not in LOSSY_EXTENSIONS else None
+    else:
+        out.fmt = desc.split(",")[0].strip()
+    s = _SOUND_RE.search(sound_line or "")
+    if s:
+        out.highs = float(s["highs"])
+        out.clipping = s["clipping"]
+        out.crest = float(s["crest"]) if s["crest"] else None
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Listening: the two files of a pair at the same loudness
 # ---------------------------------------------------------------------------

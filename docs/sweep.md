@@ -96,9 +96,22 @@ once more and measures three things:
   is thrown away. Louder is not better here: players level songs anyway, and the quieter master is usually the
   less squashed one.
 
-Both captions of a pair show the measures, for example `Sound: highs -12.3 dB (5.9 dB duller than yours),
-clipping none (0/min), dynamics 9.5 dB (4.5 dB less than yours)`, with clipping as none (under 25 a minute),
-slight (up to 100) or heavy. Distortion that is part of the source itself, like a worn record, is not caught by
+The proposal's caption, the one with the buttons, puts both files side by side in one table and names the
+better side of each measure:
+
+```text
+          Yours   New     Better
+Format    FLAC    FLAC
+Quality   16/44.1 16/44.1
+Length    3:39    3:41
+Cutoff    19.7k   18.3k   yours
+Highs     -10.2   -3.3    new
+Clipping  none    heavy   yours
+Dynamics  18.1    11.9    yours
+```
+
+Clipping reads none (under 25 a minute), slight (up to 100) or heavy. Gaps under 0.5 dB, or 0.3 kHz for the
+cutoff, are a tie. The first message, your file, carries only its name. Distortion that is part of the source itself, like a worn record, is not caught by
 these measures; your ear still decides.
 
 ### Songs you took before these checks
@@ -167,8 +180,8 @@ to the file itself.
 
 The two files reach you at the same loudness. The louder one always sounds better in a quick listen, even when it
 is the worse master, so when they differ by 1 dB or more (integrated loudness, EBU R128) the louder one is sent
-turned down to the quieter one's level, as a 24-bit FLAC. Its caption says so, for example "🔉 Played 9.6 dB
-quieter here, at the other file's loudness; the file is unchanged". Nothing is ever turned up, and the files
+turned down to the quieter one's level, as a 24-bit FLAC. Its caption says so, for example "🔉 Turned down 9.6 dB
+to match the other's loudness; the file is unchanged". Nothing is ever turned up, and the files
 themselves stay as they are: Take new puts the proposal in your library at its own level.
 
 | Command | What it does |

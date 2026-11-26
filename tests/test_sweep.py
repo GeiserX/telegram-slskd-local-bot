@@ -760,11 +760,15 @@ class TestTelegram:
         review = _review(bot, config, tmp_path, reason=f"{label}: {why}")
         tg = AsyncMock()
         await bot._send_sweep_pairs(tg, CHAT, [review])
-        for caption in [c.kwargs["caption"] for c in tg.send_audio.await_args_list]:
-            assert caption.splitlines()[1] == f"{mark} <b>{label}</b>: {why}"
-            assert "Why it needs your ear" not in caption
+        mine, theirs = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
+        assert theirs.splitlines()[2:4] == [
+            f"{mark} <b>{label}</b>",
+            "Yours is clipped (9000 flat tops a minute, your old copy 3)",
+        ]
+        assert label not in mine, "the reason sits once, on the message with the buttons"
+        assert "Why it needs your ear" not in theirs
 
-    async def test_a_same_recording_pair_says_so_first_in_both_messages(self, tmp_path, monkeypatch):
+    async def test_a_same_recording_pair_says_so_first(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
         bot, config = _bot(tmp_path)
         why = "same recording (fingerprint 0.91), length within 1.1 s"
@@ -773,8 +777,12 @@ class TestTelegram:
         await bot._send_sweep_pairs(tg, CHAT, [review])
         captions = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
         assert len(captions) == 2
-        for caption in captions:
-            assert caption.splitlines()[1] == f"\u2705 <b>{sw.SAME_AND_BETTER}</b>: {why}"
+        assert captions[0].splitlines()[1] == "1\ufe0f\u20e3 <b>Yours</b>, in your library now"
+        assert captions[1].splitlines()[1:4] == [
+            "2\ufe0f\u20e3 <b>New</b>",
+            f"\u2705 <b>{sw.SAME_AND_BETTER}</b>",
+            "Same recording (fingerprint 0.91), length within 1.1 s",
+        ]
         assert "Why it needs your ear" not in captions[1]
 
     async def test_both_captions_show_how_the_file_sounds(self, tmp_path, monkeypatch):
@@ -793,8 +801,11 @@ class TestTelegram:
         tg = AsyncMock()
         await bot._send_sweep_pairs(tg, CHAT, [repo.get_review(review.id)])
         mine, theirs = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
-        assert "Sound: treble -17.0 dB, clipping heavy (900/min)" in mine
-        assert "Sound: treble -16.0 dB (1.0 dB brighter than yours), clipping none (0/min)" in theirs
+        # A line stored before 0.22 says "treble" and has no dynamics: the table still reads it.
+        assert "Highs     -17.0   -16.0   new" in theirs
+        assert "Clipping  heavy   none    new" in theirs
+        assert "Cutoff    15.0k   21.5k   new" in theirs
+        assert "Dynamics" not in theirs and "Highs" not in mine
 
     async def test_the_louder_file_goes_turned_down_and_the_copy_is_deleted(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
@@ -822,7 +833,7 @@ class TestTelegram:
         assert [(p, round(g, 1)) for p, g, _ in made] == [(review.proposal_path, -6.2)], "only the louder, down"
         assert sent == {f"{STEM} (yours).flac": b"mine", f"{STEM} (proposal).flac": b"quieter theirs"}
         mine, theirs = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
-        assert "Played 6.2 dB quieter here" in theirs and "quieter" not in mine
+        assert "Turned down 6.2 dB" in theirs and "Turned down" not in mine
         assert not os.path.exists(made[0][2]), "the turned-down copy is deleted"
         assert Path(review.proposal_path).read_bytes() == b"theirs", "the proposal itself is unchanged"
 
@@ -838,7 +849,7 @@ class TestTelegram:
         tg = AsyncMock()
         await bot._send_sweep_pairs(tg, CHAT, [review])
         captions = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
-        assert len(captions) == 2 and all("quieter" not in c for c in captions)
+        assert len(captions) == 2 and all("Turned down" not in c for c in captions)
 
     async def test_a_pair_without_measures_shows_no_sound_line(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
@@ -846,7 +857,7 @@ class TestTelegram:
         review = _review(bot, config, tmp_path)
         tg = AsyncMock()
         await bot._send_sweep_pairs(tg, CHAT, [review])
-        assert all("Sound:" not in c.kwargs["caption"] for c in tg.send_audio.await_args_list)
+        assert all("Highs" not in c.kwargs["caption"] for c in tg.send_audio.await_args_list)
 
     async def test_a_repair_pair_says_so_first(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
@@ -856,9 +867,11 @@ class TestTelegram:
         tg = AsyncMock()
         await bot._send_sweep_pairs(tg, CHAT, [review])
         captions = [c.kwargs["caption"] for c in tg.send_audio.await_args_list]
-        for caption in captions:
-            assert caption.splitlines()[1] == f"\U0001f527 <b>{sw.REPAIRS}</b>{rest}"
-            assert "\u2705" not in caption
+        assert captions[1].splitlines()[2:4] == [
+            f"\U0001f527 <b>{sw.REPAIRS}</b>",
+            "Cutoff -0.3 kHz: same recording (fingerprint 0.91), length within 1.2 s",
+        ]
+        assert all("\u2705" not in c for c in captions)
 
     async def test_a_file_over_the_cap_goes_as_opus(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
@@ -1209,3 +1222,56 @@ async def test_the_run_row_stays_fresh_while_a_song_is_measured(tmp_path, monkey
     await _run_once(sweep)
     # The keepalive wrote the row while the song was being audited (current not yet set).
     assert writes.count("") >= 5
+
+
+class TestSweepTable:
+    def _review(self, **kw):
+        base = dict(
+            stem="A - B",
+            current_path="",
+            proposal_path="",
+            proposal_ext="flac",
+            both_name="",
+            reason="",
+            current_desc="FLAC 16/44.1, cutoff 19.7 kHz",
+            proposal_desc="FLAC 16/44.1, cutoff 18.3 kHz",
+            current_len=219.0,
+            proposal_len=221.0,
+        )
+        return sw.Review(**{**base, **kw})
+
+    def test_each_measure_names_the_better_side(self):
+        from music_downloader.bot.handlers import _sweep_table
+
+        table = _sweep_table(
+            self._review(
+                current_sound="highs -10.2 dB, clipping none (0/min), dynamics 18.1 dB",
+                proposal_sound="highs -3.3 dB (6.9 dB brighter than yours), clipping heavy (2015/min), dynamics 11.9 dB",
+            )
+        )
+        assert table.splitlines() == [
+            "          Yours   New     Better",
+            "Format    FLAC    FLAC",
+            "Quality   16/44.1 16/44.1",
+            "Length    3:39    3:41",
+            "Cutoff    19.7k   18.3k   yours",
+            "Highs     -10.2   -3.3    new",
+            "Clipping  none    heavy   yours",
+            "Dynamics  18.1    11.9    yours",
+        ]
+        assert max(len(line) for line in table.splitlines()) <= 32, "fits a phone's caption"
+
+    def test_close_values_are_a_tie_and_a_lossy_file_has_no_decode_verdict(self):
+        from music_downloader.bot.handlers import _sweep_table
+
+        table = _sweep_table(
+            self._review(
+                current_desc="FLAC 16/44.1, cutoff 20.0 kHz, decode errors",
+                proposal_desc="MP3 320 kbps",
+                current_sound="highs -9.0 dB, clipping none (0/min)",
+                proposal_sound="highs -9.3 dB, clipping none (0/min)",
+            )
+        )
+        assert "Decoding  errors  -\n" in table + "\n"
+        assert "Highs     -9.0    -9.3\n" in table + "\n"
+        assert "Cutoff    20.0k   ?\n" in table + "\n"

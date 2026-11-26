@@ -102,7 +102,7 @@ from music_downloader.pipeline.sweep import (
     SweepError,
     SweepReport,
 )
-from music_downloader.pipeline.sweep_rules import split_stem
+from music_downloader.pipeline.sweep_rules import read_described, split_stem
 from music_downloader.pipeline.wishlist import WANTED_ANY, WANTED_BETTER, Wish
 from music_downloader.processor.lossless_analyzer import not_checked_display
 from music_downloader.search.scorer import PROFILE_CHAT, PROFILE_LIBRARY, TIER_LABELS, TIER_LOSSLESS_24, quality_tier
@@ -162,9 +162,79 @@ class AlbumRun:
 
 def _turned_down_note(gain_db: float) -> str:
     """The caption line of a copy sent turned down to the other file's loudness."""
-    return (
-        f"\n\U0001f509 Played {abs(gain_db):.1f} dB quieter here, at the other file's loudness; the file is unchanged"
+    return f"\n\U0001f509 Turned down {abs(gain_db):.1f} dB to match the other's loudness; the file is unchanged"
+
+
+# The pair's comparison table: label, yours, new, and which of the two is better on that row.
+_TABLE_COLS = (10, 8, 8)
+# Gaps smaller than these are a tie: no side is called better.
+_TABLE_TIE_DB = 0.5
+_TABLE_TIE_KHZ = 0.3
+_CLIPPING_ORDER = {"none": 0, "slight": 1, "heavy": 2}
+
+
+def _better(a: float | None, b: float | None, tie: float) -> str:
+    """ "yours" or "new" for the higher of two values (a = yours); "" for a tie or a missing value."""
+    if a is None or b is None or abs(a - b) < tie:
+        return ""
+    return "yours" if a > b else "new"
+
+
+def _sweep_table(review: Review) -> str:
+    """Both files of a pair side by side, one measure a row, with the better side named at the end."""
+    a = read_described(review.current_desc, review.current_sound)
+    b = read_described(review.proposal_desc, review.proposal_sound)
+    a_cut = a.cutoff if a.cutoff is not None else review.current_cutoff
+    b_cut = b.cutoff if b.cutoff is not None else review.proposal_cutoff
+    rows = [("", "Yours", "New", "Better"), ("Format", a.fmt, b.fmt, ""), ("Quality", a.quality, b.quality, "")]
+    rows.append(("Length", _duration(review.current_len), _duration(review.proposal_len), ""))
+    if a_cut is not None or b_cut is not None:
+        rows.append(("Cutoff", _khz(a_cut), _khz(b_cut), _better(a_cut, b_cut, _TABLE_TIE_KHZ)))
+    if a.damaged or b.damaged:
+        # A lossy file is never decoded strictly (damaged is None): "-", and no side is called better.
+        known = a.damaged is not None and b.damaged is not None and a.damaged != b.damaged
+        better = ("new" if a.damaged else "yours") if known else ""
+        rows.append(("Decoding", _decoding(a.damaged), _decoding(b.damaged), better))
+    if a.highs is not None or b.highs is not None:
+        rows.append(("Highs", _db(a.highs), _db(b.highs), _better(a.highs, b.highs, _TABLE_TIE_DB)))
+    if a.clipping or b.clipping:
+        # Less clipping is better, so the higher of the negated ranks wins.
+        ca, cb = (-_CLIPPING_ORDER[c] if c in _CLIPPING_ORDER else None for c in (a.clipping, b.clipping))
+        rows.append(("Clipping", a.clipping or "?", b.clipping or "?", _better(ca, cb, 1)))
+    if a.crest is not None or b.crest is not None:
+        rows.append(("Dynamics", _db(a.crest), _db(b.crest), _better(a.crest, b.crest, _TABLE_TIE_DB)))
+    widths = _TABLE_COLS
+    lines = ["".join(cell[: w - 1].ljust(w) for cell, w in zip(row[:3], widths, strict=True)) + row[3] for row in rows]
+    return "\n".join(line.rstrip() for line in lines)
+
+
+def _decoding(damaged: bool | None) -> str:
+    return "-" if damaged is None else ("errors" if damaged else "clean")
+
+
+def _khz(value: float | None) -> str:
+    return "?" if value is None else f"{value:.1f}k"
+
+
+def _db(value: float | None) -> str:
+    return "?" if value is None else f"{value:.1f}"
+
+
+def _sweep_why(reason: str) -> str:
+    """What a pair is for, as a bold label line and the details under it."""
+    marks = (
+        (REPAIRS, "\U0001f527"),
+        (SOUND_REPAIR, "\U0001f527"),
+        (OLD_COPY_BACK, "\u21a9\ufe0f"),
+        (SAME_AND_BETTER, "\u2705"),
     )
+    for label, mark in marks:
+        if reason.startswith(label):
+            head, rest = f"{mark} <b>{_esc(label)}</b>", reason[len(label) :].lstrip(":, ")
+            break
+    else:
+        head, rest = "\u2753 <b>Why it needs your ear</b>", reason
+    return f"{head}\n{_esc(rest[:1].upper() + rest[1:])}" if rest else head
 
 
 def _duration(secs: float | None) -> str:
@@ -3888,23 +3958,13 @@ class MusicBot:
         artist, title = split_stem(review.stem)
         current_ext = os.path.splitext(review.current_path)[1].lstrip(".") or "audio"
         head = f"\U0001f442 <b>{n}/{total}</b> {_esc(review.stem)}"
-        # What the proposal is for, said first: a repair (of a damaged file, or of one that sounds worse than
-        # the copy it replaced), that copy back, or the same recording, better.
-        marks = ((REPAIRS, "\U0001f527"), (SOUND_REPAIR, "\U0001f527"), (OLD_COPY_BACK, "\u21a9\ufe0f"))
-        for label, mark in (*marks, (SAME_AND_BETTER, "\u2705")):
-            if review.reason.startswith(label):
-                head += f"\n{mark} <b>{_esc(label)}</b>{_esc(review.reason[len(label) :])}"
-                why = ""
-                break
-        else:
-            why = f"Why it needs your ear: {_esc(review.reason)}\n"
-        mine = f"{head}\n1. Yours: {_esc(review.current_desc)}, {_duration(review.current_len)}"
-        if review.current_sound:
-            mine += f"\nSound: {_esc(review.current_sound)}"
-        sound = f"Sound: {_esc(review.proposal_sound)}\n" if review.proposal_sound else ""
+        # The library file goes first with only its name; the proposal carries the buttons, so everything
+        # needed to decide sits there: why it is offered, then both files side by side.
+        mine = f"{head}\n1\ufe0f\u20e3 <b>Yours</b>, in your library now"
         theirs = (
-            f"{head}\n2. Proposal: {_esc(review.proposal_desc)}, {_duration(review.proposal_len)}\n"
-            f"{sound}{why}Keep both saves it as <code>{_esc(review.both_name)}</code>"
+            f"{head}\n2\ufe0f\u20e3 <b>New</b>\n{_sweep_why(review.reason)}\n"
+            f"<pre>{_esc(_sweep_table(review))}</pre>\n"
+            f"Keep both adds it as <code>{_esc(review.both_name)}</code>"
         )
         try:
             copies = await self.pipeline.sweep.listening_copies(review)
