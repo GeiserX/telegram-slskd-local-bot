@@ -909,7 +909,7 @@ class TestTelegram:
         bot.pipeline.convert_to_opus = to_opus
         tg = AsyncMock()
         await bot._send_sweep_pair(tg, CHAT, review, 1, 1)
-        assert asked == [5], "the bitrate is chosen for the listening cap"
+        assert asked == [5, 5], "the bitrates are chosen for the listening cap"
         assert [(p, k) for p, k, _ in made] == [(review.current_path, 160), (review.proposal_path, 160)]
         names = [c.kwargs["filename"] for c in tg.send_audio.await_args_list]
         assert names == [f"{STEM} (yours).ogg", f"{STEM} (proposal).ogg"]
@@ -934,6 +934,29 @@ class TestTelegram:
         with pytest.raises(asyncio.CancelledError):
             await bot._sweep_listen_as_opus([review.current_path, review.proposal_path], 200)
         assert not first.exists()
+
+    @pytest.mark.parametrize(("cap_mb", "proposal_len"), [(1, 200.4), (50, 0.0)])
+    async def test_a_tiny_cap_or_an_unknown_length_still_tries_every_bitrate(self, tmp_path, cap_mb, proposal_len):
+        # 1 MB: the real estimate keeps 1 MB of headroom and allows nothing. An unknown length (stored as 0):
+        # the estimate cannot tell, so every bitrate is tried. Either way the real size decides.
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        Path(review.current_path).write_bytes(b"m" * (cap_mb * 10**6 + 1))
+        review.proposal_len = proposal_len
+        config.library_sweep_listen_max_bytes = cap_mb * 10**6
+        tried = []
+
+        async def to_opus(path, kbps):
+            tried.append(kbps)
+            out = tmp_path / f"o{len(tried)}.ogg"
+            out.write_bytes(b"o" * (cap_mb * 10**6 + 1 if kbps > 96 else 10))
+            return str(out)
+
+        bot.pipeline.convert_to_opus = to_opus
+        tg = AsyncMock()
+        await bot._send_sweep_pair(tg, CHAT, review, 1, 1)
+        assert tried[-2:] == [96, 96], "the lowest bitrate was reached and used for both"
+        assert all("Opus 96 kbps" in c.kwargs["caption"] for c in tg.send_audio.await_args_list)
 
     async def test_files_under_the_listening_cap_go_as_they_are(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
