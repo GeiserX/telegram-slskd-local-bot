@@ -946,3 +946,48 @@ class TestConvertBitrate:
         with patch("music_downloader.pipeline.fetch.convert_to_ogg", return_value="/tmp/x.ogg") as mock_conv:
             assert await pipeline_fetch.convert_to_opus("/fake.flac", 160) == "/tmp/x.ogg"
         mock_conv.assert_called_once_with("/fake.flac", 160)
+
+
+async def test_a_cancelled_conversion_deletes_the_file_it_makes_later(tmp_path, monkeypatch):
+    # asyncio.to_thread keeps running after a cancel: the Opus file it writes then must not be left behind.
+    import threading
+
+    from music_downloader.pipeline import fetch
+
+    started, release, written = threading.Event(), threading.Event(), threading.Event()
+    out = tmp_path / "late.ogg"
+
+    def slow_convert(path, kbps):
+        started.set()
+        release.wait(5)
+        out.write_bytes(b"o")
+        written.set()
+        return str(out)
+
+    monkeypatch.setattr(fetch, "convert_to_ogg", slow_convert)
+    task = asyncio.ensure_future(fetch.convert_to_opus("in.flac", 160))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    assert await asyncio.to_thread(written.wait, 5), "the thread went on and wrote its file"
+    for _ in range(100):
+        if not out.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert not out.exists()
+
+
+async def test_a_finished_conversion_keeps_its_file(tmp_path, monkeypatch):
+    from music_downloader.pipeline import fetch
+
+    out = tmp_path / "done.ogg"
+
+    def convert(path, kbps):
+        out.write_bytes(b"o")
+        return str(out)
+
+    monkeypatch.setattr(fetch, "convert_to_ogg", convert)
+    assert await fetch.convert_to_opus("in.flac", 160) == str(out)
+    assert out.exists()
