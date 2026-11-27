@@ -4028,19 +4028,25 @@ class MusicBot:
         if not any(os.path.isfile(p) and os.path.getsize(p) > cap for p in paths):
             return None
         for kbps in self.pipeline.opus_bitrates_that_fit(int(duration), cap):
-            send, temps = [], []
-            for p in paths:
-                out = await self.pipeline.convert_to_opus(p, kbps) if os.path.isfile(p) else p
-                if out and out != p:
-                    temps.append(out)
-                if not out or (out != p and os.path.getsize(out) > cap):
-                    break
-                send.append(out)
-            else:
-                return kbps, send, temps
-            for t in temps:
-                with contextlib.suppress(OSError):
-                    os.unlink(t)
+            send: list[str] = []
+            temps: list[str] = []
+            done = False
+            try:  # until the return hands them over, the copies made so far are ours to delete, even on a cancel
+                for p in paths:
+                    out = await self.pipeline.convert_to_opus(p, kbps) if os.path.isfile(p) else p
+                    if out and out != p:
+                        temps.append(out)
+                    if not out or (out != p and os.path.getsize(out) > cap):
+                        break
+                    send.append(out)
+                else:
+                    done = True
+                    return kbps, send, temps
+            finally:
+                if not done:
+                    for t in temps:
+                        with contextlib.suppress(OSError):
+                            os.unlink(t)
         logger.warning("Sweep pair %s: no Opus bitrate fits %d bytes; sent as they are", paths, cap)
         return None
 

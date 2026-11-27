@@ -101,7 +101,8 @@ What changes:
 - The bot sends the original file as it is, both the preview before Save and chat delivery: a 120 MB hi-res
   FLAC arrives as that FLAC, with no Opus conversion. `/format` still converts when you ask for MP3 or Opus.
 - Chat ranking only pushes copies over 2000 MB to the end; the size cost still grows from 5 MB to 50 MB.
-- Telegram clients play audio of any size, so the big file plays in the chat like a small one.
+- A big file arrives as it is, but a client may not play it: Telegram Web would not play a 517 MB 24/192 FLAC.
+  The sweep sends pair files over `LIBRARY_SWEEP_LISTEN_MAX_MB` as Opus for that reason.
 - Requests to Telegram get 600 s read and write timeouts, enough for a 2 GB upload on a LAN
   (`TELEGRAM_UPLOAD_TIMEOUT_SECS` changes it).
 - The bot reads the whole file into memory to upload it, so a 1.5 GB FLAC needs 1.5 GB of free RAM while it

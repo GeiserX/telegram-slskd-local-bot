@@ -917,6 +917,24 @@ class TestTelegram:
         assert not any(os.path.exists(out) for _, _, out in made), "the Opus copies are deleted"
         assert Path(review.proposal_path).read_bytes() == b"theirs"
 
+    async def test_a_cancel_between_the_two_conversions_deletes_the_first_copy(self, tmp_path):
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        config.library_sweep_listen_max_bytes = 5
+        bot.pipeline.opus_bitrates_that_fit = lambda secs, limit=None: [160]
+        first = tmp_path / "first.ogg"
+
+        async def to_opus(path, kbps):
+            if path == review.current_path:
+                first.write_bytes(b"o")
+                return str(first)
+            raise asyncio.CancelledError
+
+        bot.pipeline.convert_to_opus = to_opus
+        with pytest.raises(asyncio.CancelledError):
+            await bot._sweep_listen_as_opus([review.current_path, review.proposal_path], 200)
+        assert not first.exists()
+
     async def test_files_under_the_listening_cap_go_as_they_are(self, tmp_path, monkeypatch):
         monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
         bot, config = _bot(tmp_path)

@@ -19,7 +19,7 @@ The account must be in `TELEGRAM_ALLOWED_USERS` and save to the library. An acco
 | `LIBRARY_SWEEP_SCHEDULE` | `weekly:sun:04:00` | When a sweep starts on its own. `weekly:<day>:HH:MM` with a day from `mon` to `sun`, `daily:HH:MM`, or `off` to sweep only with `/sweep` or MCP. The time is the container's local time, so set `TZ`. A start missed while the bot was down runs when it comes back. A bad value stops the bot at start |
 | `LIBRARY_SWEEP_PAUSE_SECS` | `20` | Seconds between two songs that searched Soulseek, to keep the load on peers low |
 | `LIBRARY_SWEEP_KEEP_DAYS` | `7` | Days a song you replaced with Take new stays in `<library>/.sweep-replaced/` before it is deleted. `0` deletes it at once, `never` never deletes it |
-| `LIBRARY_SWEEP_LISTEN_MAX_MB` | `50` | When a file of a pair is bigger than this, both files are sent as Opus at one bitrate, so every Telegram client plays them. Your decision still applies to the files themselves |
+| `LIBRARY_SWEEP_LISTEN_MAX_MB` | `50` | When a file of a pair is bigger than this, both files are sent as Opus at one bitrate, so every Telegram client plays them. Your decision still applies to the files themselves. When no bitrate fits (96 kbps fits 50 MB for about 65 minutes), the files go as they are and a big one may not play in Telegram Web |
 
 The image ships `fpcalc` from Chromaprint for the same-recording check. A PyPI install without Chromaprint still
 sweeps, but judges by length and tags alone, and `/sweep status` says so. Without ffmpeg or the `analysis`
@@ -32,7 +32,9 @@ once, and again whenever the file changes. It decodes the whole file strictly wi
 `ffmpeg -xerror -err_detect crccheck+explode`, and reads the spectral cutoff, bit depth and sample rate. That
 puts the song in a tier. A decode that ends before 90% of the file's length counts as decode errors, even when
 ffmpeg reports none: a FLAC with 16 MiB of zeros before its first frame decodes to nothing in ffmpeg, so
-Jellyfin cannot play it, while the cutoff check still reads it.
+Jellyfin cannot play it, while the cutoff check still reads it. A file keeps its audit until its size or
+modification time changes, so this rule reaches files audited from 0.25.2 on; `/sweep force` makes songs due
+but does not audit them again. `touch` a file to have the next sweep audit it again.
 
 | Tier | Meaning | Searched again |
 |------|---------|----------------|
@@ -181,6 +183,7 @@ a pair over `LIBRARY_SWEEP_LISTEN_MAX_MB` (50 MB by default) sends both files as
 every client plays them and neither wins by its format. This holds with a
 [local Bot API server](getting-started.md#send-files-over-50-mb-a-local-bot-api-server) too: Telegram Web would
 not play a 517 MB 24/192 FLAC that the server let through. Your decision still applies to the files themselves.
+When no Opus bitrate keeps both under the cap, the files go as they are, so a big one may still not play there.
 
 The two files reach you at the same loudness. The louder one always sounds better in a quick listen, even when it
 is the worse master, so when they differ by 1 dB or more (integrated loudness, EBU R128) the louder one is sent
