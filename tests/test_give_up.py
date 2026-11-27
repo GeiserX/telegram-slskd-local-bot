@@ -109,19 +109,35 @@ class TestFetchGivesUp:
         slskd.cancel_downloads.assert_called_once_with("peer", REMOTE)
         assert not os.path.exists(landed[0])
 
-    async def test_a_file_whose_mtime_trails_the_start_by_a_little_is_still_deleted(self, tmp_path):
+    async def test_a_file_whose_mtime_trails_the_start_by_a_little_is_still_deleted(self, tmp_path, monkeypatch):
+        # The clock is frozen, so the file sits exactly 50 ms before the fetch's start: the kernel's lag.
+        start = time.time()
+        monkeypatch.setattr(pipeline_fetch.time, "time", lambda: start)
         landed = []
 
         async def wait(**kw):
             path = _landed(tmp_path)
-            behind = time.time() - 0.01  # the kernel's clock lagged the fetch's start
-            os.utime(path, (behind, behind))
+            os.utime(path, (start - 0.05, start - 0.05))
             landed.append(path)
             return None
 
         outcome = await pipeline_fetch.fetch(_slskd(wait), _processor(tmp_path), _result(), 60, AsyncMock(), None)
         assert outcome.state == "Timeout"
         assert not os.path.exists(landed[0])
+
+    async def test_a_copy_modified_well_before_the_start_is_kept(self, tmp_path, monkeypatch):
+        start = time.time()
+        monkeypatch.setattr(pipeline_fetch.time, "time", lambda: start)
+        landed = []
+
+        async def wait(**kw):
+            path = _landed(tmp_path)
+            os.utime(path, (start - 0.5, start - 0.5))
+            landed.append(path)
+            return None
+
+        await pipeline_fetch.fetch(_slskd(wait), _processor(tmp_path), _result(), 60, AsyncMock(), None)
+        assert os.path.exists(landed[0]), "outside the slack it is another download's file"
 
     async def test_an_older_copy_of_the_same_file_is_left_alone(self, tmp_path):
         # Still waiting on a Save button from an earlier download: not this transfer's file.

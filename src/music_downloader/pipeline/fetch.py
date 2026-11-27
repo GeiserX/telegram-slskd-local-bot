@@ -80,18 +80,19 @@ async def locate_landed(find: Callable[[], str | None], *, sleep=asyncio.sleep) 
         waited += LOCATE_RETRY_STEP_SECS
 
 
-# A file's mtime comes from the kernel's coarse clock, which can trail time.time() by a few milliseconds, so a
-# file that lands right after *since* can read as older (a CI run of the timeout test saw it). An older copy of
-# the same file waiting on a button is minutes or hours old, far outside this.
-MTIME_SLACK_SECS = 1.0
+# A file's mtime comes from the kernel's coarse clock, which trails time.time() by up to one tick (about 10 ms),
+# so a file that lands right after *since* can read as older (a CI run of the timeout test saw it). Kept small:
+# an older copy modified inside this window before the fetch began would be deleted with it.
+MTIME_SLACK_SECS = 0.1
 
 
 def abandon(slskd: SlskdClient, find: Callable[[], str | None], username: str, filename: str, since: float) -> None:
     """Give up on a transfer: cancel it in slskd and delete what of it already landed.
 
     *find* is the disk lookup for the file; only a file written at or after
-    *since* (when the fetch began) is deleted, so an older copy of the same
-    remote file, still waiting on a button, is left alone. Never raises.
+    *since* (when the fetch began), less MTIME_SLACK_SECS for the kernel clock's
+    lag, is deleted, so an older copy of the same remote file, still waiting on
+    a button, is left alone. Never raises.
     """
     try:
         slskd.cancel_downloads(username, filename)
