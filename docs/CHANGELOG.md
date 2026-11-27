@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.2] - 2026-11-27
+
+### Fixed
+
+- A file ffmpeg decodes to nothing now counts as having decode errors, so the sweep never offers it. A 24/192 FLAC with 16 MiB of zeros before its first frame decoded to no audio in ffmpeg 7.1, 8.1 (Jellyfin's) and 9.0, with exit code 0 and no message. The strict decode called it clean, the cutoff check (libsndfile) still read it, and it reached a pair with no sound measures and no fingerprint. Jellyfin could not have played it after Take new. A decode that ends before 90% of the file's length is now damage.
+- Big pair files play in every client. A file over `LIBRARY_SWEEP_LISTEN_MAX_MB` (50 by default) sends both files of the pair as Opus at the same bitrate. Before, the local Bot API server let a 517 MB FLAC through and Telegram Web would not play it.
+
 ## [0.25.1] - 2026-11-26
 
 ### Changed

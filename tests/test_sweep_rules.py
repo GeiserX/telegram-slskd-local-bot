@@ -386,6 +386,25 @@ class TestAuditRealFiles:
         assert rules.strict_decode_ok(str(noise)) is False
         assert rules.audit(str(noise)).tier == rules.TIER_DAMAGED
 
+    def test_a_flac_ffmpeg_decodes_to_nothing_is_damaged(self, tmp_path):
+        # The real case: 16 MiB of zeros between the last metadata block and the first frame. ffmpeg exits 0
+        # with no message and no audio; players built on it (Jellyfin) cannot play the file.
+        noise = self._noise(tmp_path)
+        data = noise.read_bytes()
+        i = 4
+        while True:
+            last, size = data[i] & 0x80, int.from_bytes(data[i + 1 : i + 4], "big")
+            i += 4 + size
+            if last:
+                break
+        broken = tmp_path / "zeros.flac"
+        broken.write_bytes(data[:i] + bytes(16 * 1024 * 1024) + data[i:])
+        length = rules.probe(str(broken)).length
+        assert length > 30, "the tags still give its length"
+        assert rules.strict_decode_ok(str(noise), length) is True, "the same audio without the zeros is clean"
+        assert rules.strict_decode_ok(str(broken), length) is False
+        assert rules.audit(str(broken)).tier == rules.TIER_DAMAGED
+
 
 def test_a_long_album_is_cut_at_a_word():
     cand = _cand(album="The Complete Recordings " + "Volume " * 30)
