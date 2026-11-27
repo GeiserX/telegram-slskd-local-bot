@@ -80,6 +80,12 @@ async def locate_landed(find: Callable[[], str | None], *, sleep=asyncio.sleep) 
         waited += LOCATE_RETRY_STEP_SECS
 
 
+# A file's mtime comes from the kernel's coarse clock, which can trail time.time() by a few milliseconds, so a
+# file that lands right after *since* can read as older (a CI run of the timeout test saw it). An older copy of
+# the same file waiting on a button is minutes or hours old, far outside this.
+MTIME_SLACK_SECS = 1.0
+
+
 def abandon(slskd: SlskdClient, find: Callable[[], str | None], username: str, filename: str, since: float) -> None:
     """Give up on a transfer: cancel it in slskd and delete what of it already landed.
 
@@ -90,7 +96,7 @@ def abandon(slskd: SlskdClient, find: Callable[[], str | None], username: str, f
     try:
         slskd.cancel_downloads(username, filename)
         path = find()
-        if path and os.path.getmtime(path) >= since:
+        if path and os.path.getmtime(path) >= since - MTIME_SLACK_SECS:
             os.remove(path)
             logger.info("Deleted %s: its transfer was given up", path)
     except Exception:

@@ -109,6 +109,20 @@ class TestFetchGivesUp:
         slskd.cancel_downloads.assert_called_once_with("peer", REMOTE)
         assert not os.path.exists(landed[0])
 
+    async def test_a_file_whose_mtime_trails_the_start_by_a_little_is_still_deleted(self, tmp_path):
+        landed = []
+
+        async def wait(**kw):
+            path = _landed(tmp_path)
+            behind = time.time() - 0.01  # the kernel's clock lagged the fetch's start
+            os.utime(path, (behind, behind))
+            landed.append(path)
+            return None
+
+        outcome = await pipeline_fetch.fetch(_slskd(wait), _processor(tmp_path), _result(), 60, AsyncMock(), None)
+        assert outcome.state == "Timeout"
+        assert not os.path.exists(landed[0])
+
     async def test_an_older_copy_of_the_same_file_is_left_alone(self, tmp_path):
         # Still waiting on a Save button from an earlier download: not this transfer's file.
         older = _landed(tmp_path, age_secs=3600)
