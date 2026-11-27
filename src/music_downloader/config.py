@@ -158,6 +158,11 @@ class Config:
         # "never": the originals Take new parks are never deleted (None).
         keep = (os.getenv("LIBRARY_SWEEP_KEEP_DAYS") or "7").strip().lower()
         self.library_sweep_keep_days = None if keep == "never" else max(0, int(keep))
+        # A pair file over this is sent as Opus, both files at one bitrate: Telegram Web would not play a 517 MB
+        # 24/192 FLAC that the local Bot API server let through. 50 MB is the cloud API's cap, which every client plays.
+        self.library_sweep_listen_max_bytes = (
+            max(1, int(os.getenv("LIBRARY_SWEEP_LISTEN_MAX_MB") or "50")) * BYTES_PER_MB
+        )
 
         # Keywords in file paths that indicate unwanted versions
         exclude_kw = os.getenv(

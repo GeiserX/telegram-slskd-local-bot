@@ -263,8 +263,8 @@ class Pipeline:
                 logger.exception("Library index rebuild failed")
             await asyncio.sleep(LIBRARY_RESCAN_SECS)
 
-    def opus_bitrates_that_fit(self, duration_secs: int) -> list[int]:
-        return _fetch.opus_bitrates_that_fit(duration_secs, self.upload_limit_bytes)
+    def opus_bitrates_that_fit(self, duration_secs: int, limit_bytes: int | None = None) -> list[int]:
+        return _fetch.opus_bitrates_that_fit(duration_secs, limit_bytes or self.upload_limit_bytes)
 
     def target_filename(self, track: TrackInfo, extension: str, title: str | None = None) -> str:
         """The library file name for *track* in *extension*, also used when sending into a chat.

@@ -181,18 +181,25 @@ def _nice(cmd: list[str]) -> list[str]:
     return [nice, "-n", "19", *cmd] if nice else cmd
 
 
-def strict_decode_ok(path: str) -> bool | None:
+# A decode that ends before this share of the file's length is damage, even when ffmpeg names no error. A FLAC
+# with 16 MiB of zeros between its tags and its first frame decoded to nothing in ffmpeg 7.1 and Jellyfin's 8.1,
+# with exit code 0 and no message, while libsndfile skipped ahead and measured its cutoff.
+DECODE_MIN_COVERAGE = 0.9
+_OUT_TIME_RE = re.compile(r"^out_time_us=(\d+)$", re.MULTILINE)
+
+
+def strict_decode_ok(path: str, length: float = 0.0) -> bool | None:
     """True when ffmpeg decodes the whole file with CRC checks and stops at no error, False when it reports one.
 
-    None when the decode could not run or did not finish (no ffmpeg, a
-    timeout): a tool failure is not proof of damage. tier_of() then goes by the
+    False too when the decode covers less than DECODE_MIN_COVERAGE of *length* (seconds, 0 = unknown): a file
+    the players cannot decode is damaged whatever ffmpeg says. None when the decode could not run or did not
+    finish (no ffmpeg, a timeout): a tool failure is not proof of damage. tier_of() then goes by the
     cutoff, and better() never accepts a copy that was not decoded.
     """
+    cmd = ["ffmpeg", "-v", "error", "-xerror", "-err_detect", "crccheck+explode", "-i", path, "-map", "0:a:0"]
     try:
         r = subprocess.run(
-            _nice(
-                ["ffmpeg", "-v", "error", "-xerror", "-err_detect", "crccheck+explode", "-i", path, "-f", "null", "-"]
-            ),
+            _nice([*cmd, "-progress", "pipe:1", "-nostats", "-f", "null", "-"]),
             capture_output=True,
             timeout=STRICT_DECODE_TIMEOUT_SECS,
         )
@@ -200,9 +207,15 @@ def strict_decode_ok(path: str) -> bool | None:
         logger.warning("Strict decode of %s did not finish", path, exc_info=True)
         return None
     stderr = r.stderr.decode(errors="ignore").lower()
-    return r.returncode == 0 and not any(
-        h in stderr for h in ("decode_frame() failed", "invalid", "error while decoding")
-    )
+    if r.returncode != 0 or any(h in stderr for h in ("decode_frame() failed", "invalid", "error while decoding")):
+        return False
+    if length > 0:
+        times = _OUT_TIME_RE.findall(r.stdout.decode(errors="ignore"))
+        decoded = int(times[-1]) / 1e6 if times else 0.0
+        if decoded < DECODE_MIN_COVERAGE * length:
+            logger.warning("Only %.0f of %.0f s of %s decoded; counted as damaged", decoded, length, path)
+            return False
+    return True
 
 
 def probe(path: str, ext: str | None = None) -> Audit:
@@ -235,7 +248,7 @@ def audit(path: str, ext: str | None = None) -> Audit:
     """Measure *path*: probe, then for lossless files the strict decode and the spectral cutoff. Blocking."""
     result = probe(path, ext)
     if result.ext not in LOSSY_EXTENSIONS:
-        result.strict = strict_decode_ok(path)
+        result.strict = strict_decode_ok(path, result.length)
         verdict = analyze_lossless(path) if result.ext in CHECKABLE_EXTENSIONS else None
         result.cutoff = verdict.cutoff_khz if verdict else None
         if verdict:

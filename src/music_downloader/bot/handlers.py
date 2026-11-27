@@ -3971,6 +3971,7 @@ class MusicBot:
         except Exception:
             logger.warning("Sweep pair %s: could not match the loudness; sent as they are", review.id, exc_info=True)
             copies = ListeningCopies(review.current_path, review.proposal_path)
+        opus: list[str] = []
         try:
             if copies.current_gain:
                 current_ext = "flac"
@@ -3979,10 +3980,19 @@ class MusicBot:
             if copies.proposal_gain:
                 proposal_ext = "flac"
                 theirs += _turned_down_note(copies.proposal_gain)
+            current, proposal = copies.current, copies.proposal
+            # An unknown length (0) leaves the estimate nothing to go on: no duration, so every bitrate is tried.
+            lengths = (review.current_len or 0, review.proposal_len or 0)
+            listen = await self._sweep_listen_as_opus([current, proposal], max(lengths) if all(lengths) else 0)
+            if listen:
+                kbps, (current, proposal), opus = listen
+                current_ext = proposal_ext = "ogg"
+                note = f"\n\U0001f3a7 Both sent as Opus {kbps} kbps to play everywhere; the files are unchanged"
+                mine, theirs = mine + note, theirs + note
             await self._send_sweep_audio(
                 bot,
                 chat_id,
-                copies.current,
+                current,
                 f"{review.stem} (yours).{current_ext}",
                 title,
                 artist,
@@ -3993,7 +4003,7 @@ class MusicBot:
             sent = await self._send_sweep_audio(
                 bot,
                 chat_id,
-                copies.proposal,
+                proposal,
                 f"{review.stem} (proposal).{proposal_ext}",
                 title,
                 artist,
@@ -4004,9 +4014,45 @@ class MusicBot:
             await asyncio.sleep(SWEEP_SEND_PAUSE_SECS)
             return sent
         finally:
-            for tmp in copies.temps:
+            for tmp in [*copies.temps, *opus]:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp)
+
+    async def _sweep_listen_as_opus(self, paths: list[str], duration: float) -> tuple[int, list[str], list[str]] | None:
+        """(kbps, what to send for each of *paths*, temp files) when a file of the pair is over the listening cap.
+
+        Both go at the same bitrate, so neither wins the listen by its format; a missing file stays as it is
+        (the sender says so). None when nothing is over the cap, or when no bitrate fits (sent as they are).
+        """
+        cap = min(self.pipeline.upload_limit_bytes, self.config.library_sweep_listen_max_bytes)
+        if not any(os.path.isfile(p) and os.path.getsize(p) > cap for p in paths):
+            return None
+        # The estimate only says where to start: every lower bitrate is tried too, by the real size, so a length
+        # read wrong or a cap smaller than the estimate's 1 MB headroom still gets a copy that fits.
+        ladder = self.pipeline.opus_bitrates_that_fit(0, cap)
+        fits = self.pipeline.opus_bitrates_that_fit(int(duration), cap)
+        for kbps in [k for k in ladder if not fits or k <= fits[0]]:
+            send: list[str] = []
+            temps: list[str] = []
+            done = False
+            try:  # until the return hands them over, the copies made so far are ours to delete, even on a cancel
+                for p in paths:
+                    out = await self.pipeline.convert_to_opus(p, kbps) if os.path.isfile(p) else p
+                    if out and out != p:
+                        temps.append(out)
+                    if not out or (out != p and os.path.getsize(out) > cap):
+                        break
+                    send.append(out)
+                else:
+                    done = True
+                    return kbps, send, temps
+            finally:
+                if not done:
+                    for t in temps:
+                        with contextlib.suppress(OSError):
+                            os.unlink(t)
+        logger.warning("Sweep pair %s: no Opus bitrate fits %d bytes; sent as they are", paths, cap)
+        return None
 
     async def _send_sweep_audio(
         self,

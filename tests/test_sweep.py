@@ -689,6 +689,7 @@ def _bot(tmp_path, chat_users=None):
     config.library_sweep_users = {CHAT, 12345}
     config.library_sweep_schedule = ""
     config.library_sweep_keep_days = 7
+    config.library_sweep_listen_max_bytes = 50_000_000
     config.library_sweep_pause_secs = 0
     bot = _make_bot(config)
     os.makedirs(config.output_dir, exist_ok=True)
@@ -878,7 +879,7 @@ class TestTelegram:
         bot, config = _bot(tmp_path)
         review = _review(bot, config, tmp_path)
         bot.pipeline.upload_limit_bytes = 3
-        bot.pipeline.opus_bitrates_that_fit = lambda secs: [96]  # the real estimate never fits 3 bytes
+        bot.pipeline.opus_bitrates_that_fit = lambda secs, limit=None: [96]  # the real estimate never fits 3 bytes
         ogg = tmp_path / "small.ogg"
         ogg.write_bytes(b"o")
         bot.pipeline.convert_to_opus = AsyncMock(side_effect=lambda p, k: shutil.copy(ogg, tmp_path / f"{k}.ogg"))
@@ -887,6 +888,86 @@ class TestTelegram:
         names = [c.kwargs["filename"] for c in tg.send_audio.await_args_list]
         assert names == [f"{STEM} (yours).ogg", f"{STEM} (proposal).ogg"]
         assert "Opus" in tg.send_audio.await_args.kwargs["caption"]
+
+    async def test_one_file_over_the_listening_cap_sends_both_as_opus_at_one_bitrate(self, tmp_path, monkeypatch):
+        # The local Bot API server takes 2000 MB, but Telegram Web would not play a 517 MB FLAC.
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)  # yours is 4 bytes, the proposal 6
+        bot.pipeline.upload_limit_bytes = 2000 * 10**6
+        config.library_sweep_listen_max_bytes = 5
+        asked = []
+        bot.pipeline.opus_bitrates_that_fit = lambda secs, limit=None: asked.append(limit) or [160, 128]
+        made = []
+
+        async def to_opus(path, kbps):
+            out = tmp_path / f"listen{len(made)}.ogg"
+            out.write_bytes(b"o")
+            made.append((path, kbps, str(out)))
+            return str(out)
+
+        bot.pipeline.convert_to_opus = to_opus
+        tg = AsyncMock()
+        await bot._send_sweep_pair(tg, CHAT, review, 1, 1)
+        assert asked == [5, 5], "the bitrates are chosen for the listening cap"
+        assert [(p, k) for p, k, _ in made] == [(review.current_path, 160), (review.proposal_path, 160)]
+        names = [c.kwargs["filename"] for c in tg.send_audio.await_args_list]
+        assert names == [f"{STEM} (yours).ogg", f"{STEM} (proposal).ogg"]
+        assert all("Opus 160 kbps" in c.kwargs["caption"] for c in tg.send_audio.await_args_list)
+        assert not any(os.path.exists(out) for _, _, out in made), "the Opus copies are deleted"
+        assert Path(review.proposal_path).read_bytes() == b"theirs"
+
+    async def test_a_cancel_between_the_two_conversions_deletes_the_first_copy(self, tmp_path):
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        config.library_sweep_listen_max_bytes = 5
+        bot.pipeline.opus_bitrates_that_fit = lambda secs, limit=None: [160]
+        first = tmp_path / "first.ogg"
+
+        async def to_opus(path, kbps):
+            if path == review.current_path:
+                first.write_bytes(b"o")
+                return str(first)
+            raise asyncio.CancelledError
+
+        bot.pipeline.convert_to_opus = to_opus
+        with pytest.raises(asyncio.CancelledError):
+            await bot._sweep_listen_as_opus([review.current_path, review.proposal_path], 200)
+        assert not first.exists()
+
+    @pytest.mark.parametrize(("cap_mb", "proposal_len"), [(1, 200.4), (50, 0.0)])
+    async def test_a_tiny_cap_or_an_unknown_length_still_tries_every_bitrate(self, tmp_path, cap_mb, proposal_len):
+        # 1 MB: the real estimate keeps 1 MB of headroom and allows nothing. An unknown length (stored as 0):
+        # the estimate cannot tell, so every bitrate is tried. Either way the real size decides.
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        Path(review.current_path).write_bytes(b"m" * (cap_mb * 10**6 + 1))
+        review.proposal_len = proposal_len
+        config.library_sweep_listen_max_bytes = cap_mb * 10**6
+        tried = []
+
+        async def to_opus(path, kbps):
+            tried.append(kbps)
+            out = tmp_path / f"o{len(tried)}.ogg"
+            out.write_bytes(b"o" * (cap_mb * 10**6 + 1 if kbps > 96 else 10))
+            return str(out)
+
+        bot.pipeline.convert_to_opus = to_opus
+        tg = AsyncMock()
+        await bot._send_sweep_pair(tg, CHAT, review, 1, 1)
+        assert tried[-2:] == [96, 96], "the lowest bitrate was reached and used for both"
+        assert all("Opus 96 kbps" in c.kwargs["caption"] for c in tg.send_audio.await_args_list)
+
+    async def test_files_under_the_listening_cap_go_as_they_are(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("music_downloader.bot.handlers.SWEEP_SEND_PAUSE_SECS", 0)
+        bot, config = _bot(tmp_path)
+        review = _review(bot, config, tmp_path)
+        config.library_sweep_listen_max_bytes = 6
+        bot.pipeline.convert_to_opus = AsyncMock()
+        tg = AsyncMock()
+        await bot._send_sweep_pair(tg, CHAT, review, 1, 1)
+        bot.pipeline.convert_to_opus.assert_not_awaited()
+        assert [c.kwargs["filename"] for c in tg.send_audio.await_args_list][1] == f"{STEM} (proposal).flac"
 
     @pytest.mark.parametrize(
         ("choice", "mine", "proposal_left", "note"),
@@ -1165,6 +1246,9 @@ class TestConfig:
         assert (config.library_sweep_pause_secs, config.library_sweep_keep_days) == (5, 0)
         with patch.dict(os.environ, {**env, "LIBRARY_SWEEP_KEEP_DAYS": "never"}, clear=True):
             assert Config().library_sweep_keep_days is None
+        assert config.library_sweep_listen_max_bytes == 50_000_000, "the cloud API's cap by default"
+        with patch.dict(os.environ, {**env, "LIBRARY_SWEEP_LISTEN_MAX_MB": "120"}, clear=True):
+            assert Config().library_sweep_listen_max_bytes == 120_000_000
         with (
             patch.dict(os.environ, {**env, "LIBRARY_SWEEP_SCHEDULE": "fortnightly"}, clear=True),
             pytest.raises(ValueError),

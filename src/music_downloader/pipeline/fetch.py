@@ -1,6 +1,7 @@
 """Get one Soulseek result onto disk: enqueue, wait, locate, check; plus the Opus conversion."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import threading
@@ -79,17 +80,24 @@ async def locate_landed(find: Callable[[], str | None], *, sleep=asyncio.sleep) 
         waited += LOCATE_RETRY_STEP_SECS
 
 
+# A file's mtime comes from the kernel's coarse clock, which trails time.time() by up to one tick (about 10 ms),
+# so a file that lands right after *since* can read as older (a CI run of the timeout test saw it). Kept small:
+# an older copy modified inside this window before the fetch began would be deleted with it.
+MTIME_SLACK_SECS = 0.1
+
+
 def abandon(slskd: SlskdClient, find: Callable[[], str | None], username: str, filename: str, since: float) -> None:
     """Give up on a transfer: cancel it in slskd and delete what of it already landed.
 
     *find* is the disk lookup for the file; only a file written at or after
-    *since* (when the fetch began) is deleted, so an older copy of the same
-    remote file, still waiting on a button, is left alone. Never raises.
+    *since* (when the fetch began), less MTIME_SLACK_SECS for the kernel clock's
+    lag, is deleted, so an older copy of the same remote file, still waiting on
+    a button, is left alone. Never raises.
     """
     try:
         slskd.cancel_downloads(username, filename)
         path = find()
-        if path and os.path.getmtime(path) >= since:
+        if path and os.path.getmtime(path) >= since - MTIME_SLACK_SECS:
             os.remove(path)
             logger.info("Deleted %s: its transfer was given up", path)
     except Exception:
@@ -318,10 +326,34 @@ async def analyze(filepath: str) -> LosslessVerdict | None:
         return None
 
 
+def _delete_late_result(fut: asyncio.Future) -> None:
+    """Done callback: delete the temp file a conversion made after its caller was cancelled."""
+    if fut.cancelled() or fut.exception() is not None:
+        return
+    path = fut.result()
+    if isinstance(path, str):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+async def _temp_file_in_thread(func, *args) -> str | None:
+    """*func*(*args*) in a thread; it returns a temp file the caller then owns.
+
+    A cancelled caller never sees that file, and the thread keeps running, so the file it makes later is
+    deleted when it is done instead of left behind.
+    """
+    fut = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        fut.add_done_callback(_delete_late_result)
+        raise
+
+
 async def convert_to_opus(filepath: str, bitrate_kbps: int = 128) -> str | None:
     """Convert a full audio file to OGG Opus in a thread."""
     try:
-        return await asyncio.to_thread(convert_to_ogg, filepath, bitrate_kbps)
+        return await _temp_file_in_thread(convert_to_ogg, filepath, bitrate_kbps)
     except Exception:
         logger.exception("OGG conversion failed for %s", filepath)
         return None
@@ -353,7 +385,7 @@ async def transcode(path: str, fmt: str, title: str, artist: str) -> str | None:
     """Transcode *path* into send format *fmt* in a thread; the temp file path or None."""
     send_format = SEND_FORMATS[fmt]
     try:
-        return await asyncio.to_thread(
+        return await _temp_file_in_thread(
             transcode_file, path, send_format.codec_args, send_format.extension, title, artist
         )
     except Exception:
@@ -364,7 +396,7 @@ async def transcode(path: str, fmt: str, title: str, artist: str) -> str | None:
 async def preview_clip(filepath: str, duration_secs: float = 60.0) -> str | None:
     """Create a trimmed audio preview clip in a thread to avoid blocking."""
     try:
-        return await asyncio.to_thread(create_preview_clip, filepath, duration_secs)
+        return await _temp_file_in_thread(create_preview_clip, filepath, duration_secs)
     except Exception:
         logger.exception("Preview clip creation failed for %s", filepath)
         return None
